@@ -1,0 +1,5 @@
+build/
+benchmarks/
+tests/doctest.h
+*.o
+*.d
