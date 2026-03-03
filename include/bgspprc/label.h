@@ -21,6 +21,7 @@ template <typename Pack>
 struct Label {
     int vertex = -1;
     int bucket = -1;
+    Direction dir = Direction::Forward;
     double cost = INF;       // reduced cost
     double real_cost = INF;  // original cost (without duals)
 
@@ -41,18 +42,29 @@ struct Label {
     uint64_t* r1c_states = nullptr;
     int n_r1c_words = 0;
 
-    /// Reconstruct path from source to this label.
+    /// Reconstruct path from source to this label (forward labels).
     void get_path(std::vector<int>& vertices, std::vector<int>& arcs) const {
-        // Collect in reverse
         vertices.clear();
         arcs.clear();
         for (const Label* l = this; l != nullptr; l = l->parent) {
             vertices.push_back(l->vertex);
             if (l->parent_arc >= 0) arcs.push_back(l->parent_arc);
         }
-        // Reverse to get source→sink order
         std::reverse(vertices.begin(), vertices.end());
         std::reverse(arcs.begin(), arcs.end());
+    }
+
+    /// Get subpath for backward labels: returns vertices/arcs in forward
+    /// order (current_vertex → ... → sink). No reversal since backward
+    /// parent chains naturally point toward the sink.
+    void get_backward_subpath(std::vector<int>& vertices,
+                              std::vector<int>& arcs) const {
+        vertices.clear();
+        arcs.clear();
+        for (const Label* l = this; l != nullptr; l = l->parent) {
+            vertices.push_back(l->vertex);
+            if (l->parent_arc >= 0) arcs.push_back(l->parent_arc);
+        }
     }
 };
 
@@ -119,8 +131,12 @@ private:
     void allocate_block() {
         std::size_t ls = label_size();
         std::size_t bytes = ls * block_size_;
-        auto* block = static_cast<char*>(std::aligned_alloc(
-            alignof(Label<Pack>), bytes));
+        // Align blocks to 64-byte cache lines for better locality
+        constexpr std::size_t cache_line = 64;
+        std::size_t alignment = std::max(alignof(Label<Pack>), cache_line);
+        // aligned_alloc requires bytes to be a multiple of alignment
+        bytes = (bytes + alignment - 1) & ~(alignment - 1);
+        auto* block = static_cast<char*>(std::aligned_alloc(alignment, bytes));
         assert(block);
         blocks_.push_back(block);
         free_pos_ = block;
