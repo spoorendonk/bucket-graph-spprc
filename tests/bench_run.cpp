@@ -266,7 +266,7 @@ void run_bidir_rcspp() {
         auto mono_paths = mono.solve();
         auto t1 = std::chrono::high_resolution_clock::now();
         double mono_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        double mono_best = mono_paths.empty() ? 0.0 : mono_paths[0].reduced_cost;
+        double mono_best = mono_paths.empty() ? 1e18 : mono_paths[0].reduced_cost;
 
         // Bidir
         t0 = std::chrono::high_resolution_clock::now();
@@ -278,7 +278,7 @@ void run_bidir_rcspp() {
         auto bidir_paths = bidir.solve();
         t1 = std::chrono::high_resolution_clock::now();
         double bidir_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        double bidir_best = bidir_paths.empty() ? 0.0 : bidir_paths[0].reduced_cost;
+        double bidir_best = bidir_paths.empty() ? 1e18 : bidir_paths[0].reduced_cost;
 
         bool match = std::abs(mono_best - bidir_best) < 1.0 ||
                      (mono_best >= 0.0 && bidir_best >= -1e-6);
@@ -501,7 +501,7 @@ void run_stages() {
             auto paths = solver.solve();
             auto t1 = std::chrono::high_resolution_clock::now();
             double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-            double best = paths.empty() ? 0.0 : paths[0].reduced_cost;
+            double best = paths.empty() ? 1e18 : paths[0].reduced_cost;
             return {best, ms};
         };
 
@@ -556,7 +556,7 @@ void run_elimination() {
         bg.build();
 
         auto paths_before = bg.solve();
-        double best_before = paths_before.empty() ? 0.0 : paths_before[0].reduced_cost;
+        double best_before = paths_before.empty() ? 1e18 : paths_before[0].reduced_cost;
 
         int arcs_before = 0;
         for (int i = 0; i < bg.n_buckets(); ++i)
@@ -575,7 +575,7 @@ void run_elimination() {
         }
 
         auto paths_after = bg.solve();
-        double best_after = paths_after.empty() ? 0.0 : paths_after[0].reduced_cost;
+        double best_after = paths_after.empty() ? 1e18 : paths_after[0].reduced_cost;
 
         ++total;
         bool match = (best_before >= -1e-6 && best_after >= -1e-6) ||
@@ -620,7 +620,7 @@ void run_bucket_fixing() {
         bg.build();
 
         auto paths_before = bg.solve();
-        double best_before = paths_before.empty() ? 0.0 : paths_before[0].reduced_cost;
+        double best_before = paths_before.empty() ? 1e18 : paths_before[0].reduced_cost;
 
         int n_total = bg.n_buckets();
         double theta = (best_before < -1e-6) ? best_before * 0.5 : 0.0;
@@ -629,7 +629,7 @@ void run_bucket_fixing() {
         bg.fix_buckets(theta);
 
         auto paths_after = bg.solve();
-        double best_after = paths_after.empty() ? 0.0 : paths_after[0].reduced_cost;
+        double best_after = paths_after.empty() ? 1e18 : paths_after[0].reduced_cost;
 
         ++total;
         bool match = (best_before >= -1e-6 && best_after >= -1e-6) ||
@@ -666,7 +666,7 @@ void run_bucket_fixing() {
         bg.build();
 
         auto paths_before = bg.solve();
-        double best_before = paths_before.empty() ? 0.0 : paths_before[0].reduced_cost;
+        double best_before = paths_before.empty() ? 1e18 : paths_before[0].reduced_cost;
 
         int n_total = bg.n_buckets();
         double theta = (best_before < -1e-6) ? best_before * 0.5 : 0.0;
@@ -675,7 +675,7 @@ void run_bucket_fixing() {
         bg.fix_buckets(theta);
 
         auto paths_after = bg.solve();
-        double best_after = paths_after.empty() ? 0.0 : paths_after[0].reduced_cost;
+        double best_after = paths_after.empty() ? 1e18 : paths_after[0].reduced_cost;
 
         ++total_bi;
         bool match = (best_before >= -1e-6 && best_after >= -1e-6) ||
@@ -919,7 +919,7 @@ int run_verify() {
                 double bidir_best = bidir_paths.empty() ? 1e18 : bidir_paths[0].reduced_cost;
 
                 // Check vs optimal (ng-relaxation should be <= ESPPRC optimal)
-                bool opt_ok = mono_best <= expected + 1e9;
+                bool opt_ok = mono_best <= expected + 1.0;
                 bool match_ok = std::abs(mono_best - bidir_best) < 1.0;
                 bool pass = opt_ok && match_ok;
                 if (pass) ++total_pass; else ++total_fail;
@@ -985,7 +985,7 @@ int run_verify() {
 
                 bool opt_ok = true;
                 if (!std::isnan(optimal)) {
-                    opt_ok = mono_best <= optimal + 1e9;
+                    opt_ok = mono_best <= optimal + 1.0;
                 }
                 bool match_ok = std::abs(mono_best - bidir_best) < 1.0 ||
                                 (mono_best >= 0.0 && bidir_best >= -1e-6);
