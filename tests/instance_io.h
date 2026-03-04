@@ -41,6 +41,12 @@ struct Instance {
     // Ng-neighborhood: ng_neighbors[v] = list of neighbor vertex IDs
     std::vector<std::vector<int>> ng_neighbors;
 
+    // Pairwise ng-neighbor cost: ng_cost[i*n_orig + j] = cost for ranking j
+    // as neighbor of i.  Populated by loaders for complete-graph instances.
+    // Empty for sparse instances (ng-neighbors computed from arcs instead).
+    std::vector<double> ng_cost;
+    int n_orig = 0;  // original node count (before source/sink split)
+
     // Owning storage for ProblemView pointers
     std::vector<const double*> arc_res_ptrs;
     std::vector<const double*> v_lb_ptrs;
@@ -169,6 +175,13 @@ inline Instance load_sppcc(const std::string& path) {
 
     // No time windows in SPPCC — use capacity as the only main resource
     inst.n_main_resources = 1;
+
+    // Pairwise ng-cost: dist(i,j) + node_weight[j] for all i,j in 0..N-1
+    inst.n_orig = N;
+    inst.ng_cost.resize(N * N);
+    for (int i = 0; i < N; ++i)
+        for (int j = 0; j < N; ++j)
+            inst.ng_cost[i * N + j] = dist_matrix[i][j] + node_weights[j];
 
     // Initial cost from depot node weight (vehicle dual)
     // We bake this into arcs leaving source:
@@ -309,16 +322,61 @@ inline Instance load_roberti_vrp(const std::string& path) {
     // No time windows — capacity only
     inst.n_main_resources = 1;
 
+    // Pairwise ng-cost: dist(i,j) - profit[j] for all i,j in 0..N-1
+    inst.n_orig = N;
+    inst.ng_cost.resize(N * N);
+    for (int i = 0; i < N; ++i)
+        for (int j = 0; j < N; ++j)
+            inst.ng_cost[i * N + j] = dist(i, j) - profits[j];
+
     return inst;
 }
 
-/// Compute ng-neighborhoods from outgoing arc costs.
-/// For each vertex v, finds the k nearest neighbors by arc cost.
+/// Compute ng-neighborhoods from pairwise costs or outgoing arc costs.
+/// For each vertex v, finds the k nearest neighbors by cost.
+/// When ng_cost is populated (complete-graph instances like SPPCC/Roberti),
+/// uses the original NxN cost matrix to match PathWyse's computation.
 inline void compute_ng_neighbors(Instance& inst, int k = 8) {
     int nv = inst.n_vertices;
     inst.ng_neighbors.resize(nv);
 
-    // Build adjacency: for each vertex, collect {target, cost}
+    if (!inst.ng_cost.empty()) {
+        // Complete-graph instances: use pairwise ng_cost over original N nodes.
+        // ng-sets are defined over original nodes 0..N-1.
+        // Sink (= source copy) gets same ng-set as source.
+        int N = inst.n_orig;
+
+        for (int v = 0; v < N; ++v) {
+            // Collect {cost, target} pairs for all j != v
+            std::vector<std::pair<double, int>> candidates;
+            for (int j = 0; j < N; ++j) {
+                if (j == v) continue;
+                candidates.push_back({inst.ng_cost[v * N + j], j});
+            }
+            // Sort by cost ascending, break ties by ascending node ID
+            std::sort(candidates.begin(), candidates.end(),
+                      [](auto& a, auto& b) {
+                          return a.first < b.first ||
+                                 (a.first == b.first && a.second < b.second);
+                      });
+
+            inst.ng_neighbors[v].clear();
+            inst.ng_neighbors[v].push_back(v);
+            for (auto& [cost, j] : candidates) {
+                inst.ng_neighbors[v].push_back(j);
+                if (static_cast<int>(inst.ng_neighbors[v].size()) >= k)
+                    break;
+            }
+        }
+
+        // Sink gets same ng-set as source
+        if (inst.sink < nv) {
+            inst.ng_neighbors[inst.sink] = inst.ng_neighbors[inst.source];
+        }
+        return;
+    }
+
+    // Sparse-graph fallback: use outgoing arc costs
     std::vector<std::vector<std::pair<int, double>>> adj(nv);
     int na = static_cast<int>(inst.arc_from.size());
     for (int a = 0; a < na; ++a) {
@@ -328,16 +386,16 @@ inline void compute_ng_neighbors(Instance& inst, int k = 8) {
     }
 
     for (int v = 0; v < nv; ++v) {
-        // Sort outgoing arcs by cost ascending
         auto& out = adj[v];
         std::sort(out.begin(), out.end(),
-                  [](auto& a, auto& b) { return a.second < b.second; });
+                  [](auto& a, auto& b) {
+                      return a.second < b.second ||
+                             (a.second == b.second && a.first < b.first);
+                  });
 
         inst.ng_neighbors[v].clear();
-        // Always include self in ng-set
         inst.ng_neighbors[v].push_back(v);
         for (auto& [to, cost] : out) {
-            // Skip duplicates
             bool dup = false;
             for (int w : inst.ng_neighbors[v]) {
                 if (w == to) { dup = true; break; }

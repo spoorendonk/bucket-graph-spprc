@@ -16,6 +16,9 @@ build/bench_runner: tests/test_main.cpp tests/test_benchmarks.cpp | build
 build/bench_run: tests/bench_run.cpp | build
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
+build/bench_vs_pathwyse: tests/bench_vs_pathwyse.cpp | build
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
+
 build:
 	mkdir -p build
 

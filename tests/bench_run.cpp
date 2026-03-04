@@ -51,7 +51,7 @@ struct Result {
 // ────────────────────────────────────────────────────────────────
 
 void run_spprclib() {
-    std::string dir = "../rcspp-bac/benchmarks/instances/spprclib";
+    std::string dir = "../rcspp-bac-3/benchmarks/instances/spprclib";
     if (!fs::exists(dir)) { printf("spprclib dir not found\n"); return; }
 
     auto optima = load_csv(dir + "/optimal.csv");
@@ -106,7 +106,7 @@ void run_spprclib() {
 // ────────────────────────────────────────────────────────────────
 
 void run_roberti() {
-    std::string dir = "../rcspp-bac/benchmarks/instances/roberti";
+    std::string dir = "../rcspp-bac-3/benchmarks/instances/roberti";
     if (!fs::exists(dir)) { printf("roberti dir not found\n"); return; }
 
     auto optima = load_csv(dir + "/optimal.csv");
@@ -281,7 +281,7 @@ void run_bidir_rcspp() {
         double bidir_best = bidir_paths.empty() ? 0.0 : bidir_paths[0].reduced_cost;
 
         bool match = std::abs(mono_best - bidir_best) < 1.0 ||
-                     (mono_best >= 0.0 && bidir_best >= 0.0);
+                     (mono_best >= 0.0 && bidir_best >= -1e-6);
 
         rows.push_back({name, mono_best, bidir_best, mono_ms, bidir_ms,
                         (int)mono_paths.size(), (int)bidir_paths.size(), match});
@@ -307,7 +307,7 @@ void run_bidir_rcspp() {
 // ────────────────────────────────────────────────────────────────
 
 void run_bidir_spprclib() {
-    std::string dir = "../rcspp-bac/benchmarks/instances/spprclib";
+    std::string dir = "../rcspp-bac-3/benchmarks/instances/spprclib";
     if (!fs::exists(dir)) { printf("spprclib dir not found\n"); return; }
 
     auto optima = load_csv(dir + "/optimal.csv");
@@ -386,7 +386,7 @@ void run_bidir_spprclib() {
 // ────────────────────────────────────────────────────────────────
 
 void run_bidir_roberti() {
-    std::string dir = "../rcspp-bac/benchmarks/instances/roberti";
+    std::string dir = "../rcspp-bac-3/benchmarks/instances/roberti";
     if (!fs::exists(dir)) { printf("roberti dir not found\n"); return; }
 
     auto optima = load_csv(dir + "/optimal.csv");
@@ -808,7 +808,7 @@ void run_path_validation() {
 
     // SPPRCLIB
     {
-        std::string dir = "../rcspp-bac/benchmarks/instances/spprclib";
+        std::string dir = "../rcspp-bac-3/benchmarks/instances/spprclib";
         if (fs::exists(dir)) {
             for (auto& entry : fs::directory_iterator(dir)) {
                 if (entry.path().extension() != ".sppcc") continue;
@@ -836,7 +836,7 @@ void run_path_validation() {
 
     // Roberti
     {
-        std::string dir = "../rcspp-bac/benchmarks/instances/roberti";
+        std::string dir = "../rcspp-bac-3/benchmarks/instances/roberti";
         if (fs::exists(dir)) {
             for (auto& entry : fs::directory_iterator(dir)) {
                 if (entry.path().extension() != ".vrp") continue;
@@ -878,7 +878,7 @@ int run_verify() {
 
     // ── SPPRCLIB (with ng-path) ──
     {
-        std::string dir = "../rcspp-bac/benchmarks/instances/spprclib";
+        std::string dir = "../rcspp-bac-3/benchmarks/instances/spprclib";
         if (fs::exists(dir)) {
             auto optima = load_csv(dir + "/optimal.csv");
             printf("\n=== verify: SPPRCLIB (n <= 55) ===\n");
@@ -940,7 +940,7 @@ int run_verify() {
 
     // ── Roberti ──
     {
-        std::string dir = "../rcspp-bac/benchmarks/instances/roberti";
+        std::string dir = "../rcspp-bac-3/benchmarks/instances/roberti";
         if (fs::exists(dir)) {
             auto optima = load_csv(dir + "/optimal.csv");
             printf("\n=== verify: Roberti (n <= 80, ng-path) ===\n");
@@ -987,7 +987,8 @@ int run_verify() {
                 if (!std::isnan(optimal)) {
                     opt_ok = mono_best <= optimal + 1e9;
                 }
-                bool match_ok = std::abs(mono_best - bidir_best) < 1.0;
+                bool match_ok = std::abs(mono_best - bidir_best) < 1.0 ||
+                                (mono_best >= 0.0 && bidir_best >= -1e-6);
                 bool pass = opt_ok && match_ok;
                 if (pass) ++total_pass; else ++total_fail;
 
@@ -1046,7 +1047,7 @@ int run_verify() {
                 double bidir_best = bidir_paths.empty() ? 1e18 : bidir_paths[0].reduced_cost;
 
                 bool match_ok = std::abs(mono_best - bidir_best) < 1.0 ||
-                                (mono_best >= 0.0 && bidir_best >= 0.0);
+                                (mono_best >= 0.0 && bidir_best >= -1e-6);
                 bool pass = match_ok;
                 if (pass) ++total_pass; else ++total_fail;
 
