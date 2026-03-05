@@ -1101,7 +1101,7 @@ private:
     /// vertex-local offset (bi - vstart), not global bucket index.
     void update_buckets_set(
         double theta, const Label<Pack>* L, int arc_id,
-        std::vector<bool>& b_bar,     // per opposite-bucket: found compatible?
+        std::vector<uint64_t>& b_bar, // per opposite-bucket bitset: found compatible?
         int b_tilde,                   // current opposite-sense bucket to check
         Direction dir,                 // direction of L (fw → checking bw buckets)
         int vstart, int n_buckets_v,
@@ -1120,7 +1120,7 @@ private:
             return;
 
         // Check labels at b_tilde for θ-compatibility
-        if (!b_bar[b_tilde]) {
+        if (!((b_bar[b_tilde / 64] >> (b_tilde % 64)) & 1)) {
             auto& opp_labels = (dir == Direction::Forward) ?
                 bw_bucket_labels_[b_tilde] : fw_bucket_labels_[b_tilde];
             for (const auto* L_tilde : opp_labels) {
@@ -1129,7 +1129,7 @@ private:
                     is_theta_compatible(L, L_tilde, arc_id, theta) :
                     is_theta_compatible(L_tilde, L, arc_id, theta);
                 if (compat) {
-                    b_bar[b_tilde] = true;
+                    b_bar[b_tilde / 64] |= (1ULL << (b_tilde % 64));
                     break;
                 }
             }
@@ -1170,7 +1170,7 @@ private:
     }
 
     /// Check if a bucket arc should be eliminated (no θ-compatible pair found).
-    bool should_eliminate_arc(int arr_bi, const std::vector<bool>& b_bar,
+    bool should_eliminate_arc(int arr_bi, const std::vector<uint64_t>& b_bar,
                               Direction dir) const {
         int arr_v = buckets_[arr_bi].vertex;
         auto [arr_vstart, arr_vend] = vertex_bucket_range(arr_v);
@@ -1179,7 +1179,7 @@ private:
         int arr_k1 = (arr_bi - arr_vstart) % arr_nb[1];
 
         for (int bi2 = arr_vstart; bi2 < arr_vend; ++bi2) {
-            if (!b_bar[bi2]) continue;
+            if (!((b_bar[bi2 / 64] >> (bi2 % 64)) & 1)) continue;
             int k0_2 = (bi2 - arr_vstart) / arr_nb[1];
             int k1_2 = (bi2 - arr_vstart) % arr_nb[1];
 
@@ -1193,9 +1193,10 @@ private:
     }
 
     /// Process a single bucket during label-based elimination.
+    /// GetBBar: callable(int arc_id) → std::vector<uint64_t>&
+    template<typename GetBBar>
     void process_bucket_elimination(
-        int bi, Direction dir, double theta,
-        std::vector<std::vector<bool>>& b_bar_per_arc) {
+        int bi, Direction dir, double theta, GetBBar&& get_bbar) {
 
         if (fixed_.test(bi)) return;
 
@@ -1210,7 +1211,7 @@ private:
             int nbv = ve - vs;
             std::vector<bool> visited(nbv, false);
             update_buckets_set(theta, L, arc_id,
-                b_bar_per_arc[arc_id], arr_bi, dir, vs, nbv, visited);
+                get_bbar(arc_id), arr_bi, dir, vs, nbv, visited);
         };
 
         // Process jump arcs: UpdateBucketsSet for each (L, ψ)
@@ -1243,7 +1244,7 @@ private:
                     do_update(L, ba.arc_id, arr_bi);
                 }
                 eliminate = should_eliminate_arc(arr_bi,
-                    b_bar_per_arc[ba.arc_id], dir);
+                    get_bbar(ba.arc_id), dir);
             }
 
             if (!eliminate) {
@@ -1254,31 +1255,90 @@ private:
     }
 
     /// Paper's BucketArcElimination procedure (Section 4.2, page 20).
+    /// B̄ sets are per-(arc, source bucket), scoped per vertex and propagated
+    /// through Φ_b predecessors within the same vertex.
     void bucket_arc_elimination(double theta, Direction dir) {
         int nb = static_cast<int>(buckets_.size());
+        int n_words = (nb + 63) / 64;
 
-        // Per-arc B̄ sets: b_bar_per_arc[arc_id][bucket_index] = true if a
-        // θ-compatible pair was found at that opposite-sense bucket
-        std::vector<std::vector<bool>> b_bar_per_arc(pv_.n_arcs,
-            std::vector<bool>(nb, false));
+        // Precompute per-vertex arc lists and arc_id → local index mapping
+        std::vector<std::vector<int>> arcs_by_vertex(pv_.n_vertices);
+        std::vector<int> arc_local(pv_.n_arcs, -1);
+        for (int a = 0; a < pv_.n_arcs; ++a) {
+            int src = (dir == Direction::Forward)
+                ? pv_.arc_from[a] : pv_.arc_to[a];
+            arc_local[a] = static_cast<int>(arcs_by_vertex[src].size());
+            arcs_by_vertex[src].push_back(a);
+        }
 
-        // Process buckets in lexicographic κ order
         for (int v = 0; v < pv_.n_vertices; ++v) {
+            auto& arcs_from_v = arcs_by_vertex[v];
+            if (arcs_from_v.empty()) continue;
+
             auto [vstart, vend] = vertex_bucket_range(v);
             auto& nb_v = vertex_n_buckets_[v];
+            int n_bv = vend - vstart;
+
+            // Per-(local_arc, local_bucket) B̄ bitsets
+            int n_arcs_v = static_cast<int>(arcs_from_v.size());
+            int n_entries = n_arcs_v * n_bv;
+            std::vector<std::vector<uint64_t>> b_bar_local(
+                n_entries, std::vector<uint64_t>(n_words, 0));
+
+            // Process a single bucket: propagate Φ, then run elimination
+            auto process = [&](int k0, int k1) {
+                int bi = vstart + k0 * nb_v[1] + k1;
+                int local_bi = bi - vstart;
+                if (fixed_.test(bi)) return;
+
+                // Propagate B̄ from Φ_b predecessors (source-sense)
+                for (int lai = 0; lai < n_arcs_v; ++lai) {
+                    auto& cur = b_bar_local[lai * n_bv + local_bi];
+                    if (dir == Direction::Forward) {
+                        if (k0 > 0) {
+                            auto& pred = b_bar_local[
+                                lai * n_bv + ((k0 - 1) * nb_v[1] + k1)];
+                            for (int w = 0; w < n_words; ++w)
+                                cur[w] |= pred[w];
+                        }
+                        if (k1 > 0) {
+                            auto& pred = b_bar_local[
+                                lai * n_bv + (k0 * nb_v[1] + (k1 - 1))];
+                            for (int w = 0; w < n_words; ++w)
+                                cur[w] |= pred[w];
+                        }
+                    } else {
+                        if (k0 + 1 < nb_v[0]) {
+                            auto& pred = b_bar_local[
+                                lai * n_bv + ((k0 + 1) * nb_v[1] + k1)];
+                            for (int w = 0; w < n_words; ++w)
+                                cur[w] |= pred[w];
+                        }
+                        if (k1 + 1 < nb_v[1]) {
+                            auto& pred = b_bar_local[
+                                lai * n_bv + (k0 * nb_v[1] + (k1 + 1))];
+                            for (int w = 0; w < n_words; ++w)
+                                cur[w] |= pred[w];
+                        }
+                    }
+                }
+
+                // Process arcs at this bucket using per-bucket B̄
+                auto get_bbar = [&](int arc_id) -> std::vector<uint64_t>& {
+                    return b_bar_local[
+                        arc_local[arc_id] * n_bv + local_bi];
+                };
+                process_bucket_elimination(bi, dir, theta, get_bbar);
+            };
 
             if (dir == Direction::Forward) {
                 for (int k0 = 0; k0 < nb_v[0]; ++k0)
                     for (int k1 = 0; k1 < nb_v[1]; ++k1)
-                        process_bucket_elimination(
-                            vstart + k0 * nb_v[1] + k1,
-                            dir, theta, b_bar_per_arc);
+                        process(k0, k1);
             } else {
                 for (int k0 = nb_v[0] - 1; k0 >= 0; --k0)
                     for (int k1 = nb_v[1] - 1; k1 >= 0; --k1)
-                        process_bucket_elimination(
-                            vstart + k0 * nb_v[1] + k1,
-                            dir, theta, b_bar_per_arc);
+                        process(k0, k1);
             }
         }
     }
