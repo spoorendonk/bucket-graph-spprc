@@ -1073,53 +1073,76 @@ private:
     std::vector<Path> concatenate_and_extract() {
         std::vector<Path> paths;
 
+        // Pre-collect non-dominated labels by vertex (avoids repeated scans).
+        using LabelList = std::vector<const Label<Pack>*>;
+        std::vector<LabelList> fw_by_vertex(pv_.n_vertices);
+        std::vector<LabelList> bw_by_vertex(pv_.n_vertices);
+
         for (int v = 0; v < pv_.n_vertices; ++v) {
             if (v == pv_.source || v == pv_.sink) continue;
-
-            // Collect non-dominated forward and backward labels at v
             auto [start, end] = vertex_bucket_range(v);
-
-            std::vector<const Label<Pack>*> fw_labels;
-            std::vector<const Label<Pack>*> bw_labels;
-
             for (int bi = start; bi < end; ++bi) {
-                for (const auto* L : fw_bucket_labels_[bi]) {
-                    if (!L->dominated) fw_labels.push_back(L);
-                }
-                for (const auto* L : bw_bucket_labels_[bi]) {
-                    if (!L->dominated) bw_labels.push_back(L);
-                }
+                for (const auto* L : fw_bucket_labels_[bi])
+                    if (!L->dominated) fw_by_vertex[v].push_back(L);
+                for (const auto* L : bw_bucket_labels_[bi])
+                    if (!L->dominated) bw_by_vertex[v].push_back(L);
             }
+        }
 
-            if (fw_labels.empty() || bw_labels.empty()) continue;
+        auto append_bw_subpath = [](Path& p, const Label<Pack>* bw) {
+            std::vector<int> bw_verts, bw_arcs;
+            bw->get_backward_subpath(bw_verts, bw_arcs);
+            for (std::size_t k = 1; k < bw_verts.size(); ++k)
+                p.vertices.push_back(bw_verts[k]);
+            p.arcs.insert(p.arcs.end(), bw_arcs.begin(), bw_arcs.end());
+        };
 
-            // Try all pairs
-            for (const auto* fw : fw_labels) {
-                for (const auto* bw : bw_labels) {
-                    // Resource feasibility: fw.q[r] <= bw.q[r]
+        // Across-arc concatenation: for each arc a = (i,j), join fw labels at i
+        // with bw labels at j using on-the-fly extend through arc a.
+        // This finds paths crossing the bidir midpoint on a single arc.
+        for (int a = 0; a < pv_.n_arcs; ++a) {
+            int i = pv_.arc_from[a];
+            int j = pv_.arc_to[a];
+            if (i == pv_.source || i == pv_.sink) continue;
+            if (j == pv_.source || j == pv_.sink) continue;
+            if (fw_by_vertex[i].empty() || bw_by_vertex[j].empty()) continue;
+
+            double arc_cost = reduced_costs_ ? reduced_costs_[a]
+                                             : pv_.arc_base_cost[a];
+            double arc_real_cost = pv_.arc_base_cost[a];
+
+            for (const auto* fw : fw_by_vertex[i]) {
+                for (const auto* bw : bw_by_vertex[j]) {
                     bool feasible = true;
                     for (int r = 0; r < n_main_; ++r) {
-                        if (fw->q[r] > bw->q[r] + EPS) {
+                        double fw_after_arc = fw->q[r] + pv_.arc_resource[r][a];
+                        fw_after_arc = std::max(fw_after_arc, pv_.vertex_lb[r][j]);
+                        if (fw_after_arc > bw->q[r] + EPS) {
                             feasible = false;
                             break;
                         }
                     }
                     if (!feasible) continue;
 
-                    double total_cost = fw->cost + bw->cost;
-                    double total_real_cost = fw->real_cost + bw->real_cost;
+                    double total_cost = fw->cost + bw->cost + arc_cost;
+                    double total_real_cost = fw->real_cost + bw->real_cost + arc_real_cost;
 
-                    // Resource concatenation cost
                     if constexpr (Pack::size > 0) {
-                        total_cost += pack_.concatenation_cost(
-                            Symmetry::Asymmetric, v,
-                            fw->resource_states, bw->resource_states);
+                        auto [ext_states, ext_cost] = pack_.extend(
+                            Direction::Forward, fw->resource_states, a);
+                        if (ext_cost >= INF) continue;
+                        total_cost += ext_cost;
+
+                        double cc = pack_.concatenation_cost(
+                            Symmetry::Asymmetric, j,
+                            ext_states, bw->resource_states);
+                        if (cc >= INF) continue;
+                        total_cost += cc;
                     }
 
-                    // R1C concatenation cost
                     if (r1c_.has_cuts() && fw->r1c_states && bw->r1c_states) {
                         total_cost += r1c_.concatenation_cost(
-                            Symmetry::Asymmetric, v,
+                            Symmetry::Asymmetric, j,
                             {fw->r1c_states,
                              static_cast<std::size_t>(fw->n_r1c_words)},
                             {bw->r1c_states,
@@ -1128,20 +1151,10 @@ private:
 
                     if (total_cost < opts_.tolerance) {
                         Path p;
-                        // Forward subpath: source → ... → v
                         fw->get_path(p.vertices, p.arcs);
-
-                        // Backward subpath: v → ... → sink
-                        std::vector<int> bw_verts, bw_arcs;
-                        bw->get_backward_subpath(bw_verts, bw_arcs);
-
-                        // Append backward (skip first vertex = v, already in fw)
-                        for (std::size_t i = 1; i < bw_verts.size(); ++i) {
-                            p.vertices.push_back(bw_verts[i]);
-                        }
-                        p.arcs.insert(p.arcs.end(),
-                                      bw_arcs.begin(), bw_arcs.end());
-
+                        p.arcs.push_back(a);
+                        p.vertices.push_back(j);
+                        append_bw_subpath(p, bw);
                         p.reduced_cost = total_cost;
                         p.original_cost = total_real_cost;
                         paths.push_back(std::move(p));

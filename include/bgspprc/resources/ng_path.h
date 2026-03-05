@@ -13,11 +13,18 @@ namespace bgspprc {
 /// Ng-path resource for elementarity relaxation using LOCAL bit positions.
 ///
 /// Each vertex v assigns local bit positions 0..k-1 to its k ng-neighbors.
-/// State is a uint64_t with only k bits used (e.g., 8 bits for ng8).
+/// State is a uint64_t with up to k bits used.
+///
+/// Source marking: when extending arc i→j forward, we mark the SOURCE i
+/// (set i's bit in j's ordering) rather than the destination j.
+/// This allows same-vertex concatenation to work correctly and eliminates
+/// the need for separate across-arc concatenation logic.
 ///
 /// When extending arc i→j forward, we TRANSFORM the bit vector: remap common
-/// neighbors from i's local positions to j's local positions.
-/// When extending arc i→j backward (j→i), we remap from j's to i's positions.
+/// neighbors from i's local positions to j's local positions, then set i's
+/// bit in j's ordering (source marking).
+/// When extending arc i→j backward (j→i), we remap from j's to i's positions,
+/// then set j's bit in i's ordering.
 /// Both transforms are precomputed per arc for O(k) extension.
 struct NgPathResource {
     using State = uint64_t;
@@ -26,13 +33,13 @@ struct NgPathResource {
     struct ArcInfo {
         // Forward: extending from→to
         int8_t fw_check_bit;   // bit pos of to in from's ng-set (-1 if not neighbor)
-        uint64_t fw_mark_mask; // bit for from in to's ng-set (0 if not neighbor)
+        uint64_t fw_mark_mask; // bit for source 'from' in to's ordering (0 if from ∉ N(to))
         std::array<std::pair<int8_t, int8_t>, 64> fw_shift_pairs;
         int fw_n_pairs;
 
         // Backward: extending to→from (traversing arc in reverse)
         int8_t bw_check_bit;   // bit pos of from in to's ng-set (-1 if not neighbor)
-        uint64_t bw_mark_mask; // bit for to in from's ng-set (0 if not neighbor)
+        uint64_t bw_mark_mask; // bit for source 'to' in from's ordering (0 if to ∉ N(from))
         std::array<std::pair<int8_t, int8_t>, 64> bw_shift_pairs;
         int bw_n_pairs;
     };
@@ -84,9 +91,10 @@ struct NgPathResource {
             // === Forward: extending from→to ===
             // check: is 'to' in 'from's ng-set?
             ai.fw_check_bit = bit_map[static_cast<size_t>(from) * n_vertices + to];
-            // mark: 'from' in 'to's ng-set
+            // mark: source 'from' in 'to's ordering (if from ∈ N(to))
             int8_t from_in_to = bit_map[static_cast<size_t>(to) * n_vertices + from];
             ai.fw_mark_mask = (from_in_to >= 0) ? (1ULL << from_in_to) : 0ULL;
+
             // shift: remap from 'from's ordering to 'to's ordering
             ai.fw_n_pairs = 0;
             for (int w : neighbors_[from]) {
@@ -101,9 +109,10 @@ struct NgPathResource {
             // === Backward: extending to→from (reverse traversal) ===
             // check: is 'from' in 'to's ng-set?
             ai.bw_check_bit = bit_map[static_cast<size_t>(to) * n_vertices + from];
-            // mark: 'to' in 'from's ng-set
+            // mark: source 'to' in 'from's ordering (if to ∈ N(from))
             int8_t to_in_from = bit_map[static_cast<size_t>(from) * n_vertices + to];
             ai.bw_mark_mask = (to_in_from >= 0) ? (1ULL << to_in_from) : 0ULL;
+
             // shift: remap from 'to's ordering to 'from's ordering
             ai.bw_n_pairs = 0;
             for (int w : neighbors_[to]) {
@@ -117,16 +126,19 @@ struct NgPathResource {
         }
     }
 
+    /// Initialize state: no vertices visited yet (source marking).
     State init_state(Direction /*dir*/) const {
         return 0ULL;
     }
 
     /// Extend: transform bit vector from source ordering to target ordering.
+    /// Source marking: marks the source vertex's bit in the target's ordering.
     std::pair<State, double> extend(Direction dir, State s, int arc_id) const {
         auto& ai = arc_info[arc_id];
 
         if (dir == Direction::Forward) {
             // Forward: arc from→to, label at from, extending to to
+            // Check: is 'to' forbidden? (to ∈ N(from) and to's bit set in from's state)
             if (ai.fw_check_bit >= 0 && (s & (1ULL << ai.fw_check_bit)))
                 return {0ULL, INF};
 
@@ -136,7 +148,7 @@ struct NgPathResource {
                 if (s & (1ULL << fp))
                     new_s |= (1ULL << tp);
             }
-            new_s |= ai.fw_mark_mask;
+            new_s |= ai.fw_mark_mask;  // mark source 'from' in to's ordering
             return {new_s, 0.0};
         } else {
             // Backward: arc from→to traversed as to→from, label at to, extending to from
@@ -149,7 +161,7 @@ struct NgPathResource {
                 if (s & (1ULL << fp))
                     new_s |= (1ULL << tp);
             }
-            new_s |= ai.bw_mark_mask;
+            new_s |= ai.bw_mark_mask;  // mark source 'to' in from's ordering
             return {new_s, 0.0};
         }
     }
@@ -162,8 +174,8 @@ struct NgPathResource {
         return 0.0;
     }
 
-    /// Concatenation: forward and backward labels at same vertex have same
-    /// local bit mapping. If any bit is set in both, a neighbor was visited
+    /// Same-vertex concatenation: forward and backward labels at same vertex have same
+    /// local bit mapping. If any bit is set in both, a vertex was visited
     /// in both directions → cycle in the concatenated path.
     double concatenation_cost(Symmetry /*sym*/, int /*vertex*/,
                               State s_fw, State s_bw) const {

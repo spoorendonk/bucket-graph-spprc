@@ -873,8 +873,20 @@ void run_path_validation() {
 // Unified correctness verification
 // ────────────────────────────────────────────────────────────────
 
-int run_verify() {
+static void write_csv_row(std::ofstream& out, const std::string& name,
+                          double mono, double bidir, double optimal, bool pass) {
+    if (!out.is_open()) return;
+    out << name << "," << mono << "," << bidir << "," << optimal
+        << "," << (pass ? "PASS" : "FAIL") << "\n";
+}
+
+int run_verify(const std::string& csv_path = "") {
     int total_pass = 0, total_fail = 0;
+    std::ofstream csv_out;
+    if (!csv_path.empty()) {
+        csv_out.open(csv_path);
+        csv_out << "instance,mono_best,bidir_best,optimal,status\n";
+    }
 
     // ── SPPRCLIB (with ng-path) ──
     {
@@ -932,6 +944,7 @@ int run_verify() {
                        name.c_str(), mono_best, bidir_best, pass ? "PASS" : "FAIL");
                 if (!pass) printf("  [%s]", reason.c_str());
                 printf("  (opt=%.3f)\n", expected);
+                write_csv_row(csv_out, name, mono_best, bidir_best, expected, pass);
             }
         } else {
             printf("\n=== verify: SPPRCLIB — SKIPPED (dir not found) ===\n");
@@ -1000,6 +1013,8 @@ int run_verify() {
                 }
                 if (!std::isnan(optimal)) printf("  (opt=%.3f)", optimal);
                 printf("\n");
+                write_csv_row(csv_out, name, mono_best, bidir_best,
+                              std::isnan(optimal) ? 0.0 : optimal, pass);
             }
         } else {
             printf("\n=== verify: Roberti — SKIPPED (dir not found) ===\n");
@@ -1055,6 +1070,7 @@ int run_verify() {
                        name.c_str(), mono_best, bidir_best, pass ? "PASS" : "FAIL");
                 if (!pass) printf("  [match]");
                 printf("\n");
+                write_csv_row(csv_out, name, mono_best, bidir_best, 0.0, pass);
             }
         } else {
             printf("\n=== verify: RCSPP %s — SKIPPED (dir not found) ===\n", ng);
@@ -1071,7 +1087,12 @@ int run_verify() {
 
 int main(int argc, char** argv) {
     std::string mode = "all";
+    std::string csv_path;
     if (argc > 1) mode = argv[1];
+    for (int i = 2; i < argc; ++i) {
+        if (std::string(argv[i]) == "--csv" && i + 1 < argc)
+            csv_path = argv[++i];
+    }
 
     bool all = (mode == "all");
     if (all || mode == "spprclib")   run_spprclib();
@@ -1082,6 +1103,6 @@ int main(int argc, char** argv) {
     if (all || mode == "eliminate")  run_elimination();
     if (all || mode == "fixing")     run_bucket_fixing();
     if (all || mode == "validate")   run_path_validation();
-    if (mode == "verify")            return run_verify();
+    if (mode == "verify")            return run_verify(csv_path);
     return 0;
 }
