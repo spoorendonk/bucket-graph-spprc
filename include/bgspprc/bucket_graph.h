@@ -1261,24 +1261,23 @@ private:
         int nb = static_cast<int>(buckets_.size());
         int n_words = (nb + 63) / 64;
 
+        // Precompute per-vertex arc lists and arc_id → local index mapping
+        std::vector<std::vector<int>> arcs_by_vertex(pv_.n_vertices);
+        std::vector<int> arc_local(pv_.n_arcs, -1);
+        for (int a = 0; a < pv_.n_arcs; ++a) {
+            int src = (dir == Direction::Forward)
+                ? pv_.arc_from[a] : pv_.arc_to[a];
+            arc_local[a] = static_cast<int>(arcs_by_vertex[src].size());
+            arcs_by_vertex[src].push_back(a);
+        }
+
         for (int v = 0; v < pv_.n_vertices; ++v) {
+            auto& arcs_from_v = arcs_by_vertex[v];
+            if (arcs_from_v.empty()) continue;
+
             auto [vstart, vend] = vertex_bucket_range(v);
             auto& nb_v = vertex_n_buckets_[v];
             int n_bv = vend - vstart;
-
-            // Collect arcs originating from this vertex
-            std::vector<int> arcs_from_v;
-            for (int a = 0; a < pv_.n_arcs; ++a) {
-                int src = (dir == Direction::Forward)
-                    ? pv_.arc_from[a] : pv_.arc_to[a];
-                if (src == v) arcs_from_v.push_back(a);
-            }
-            if (arcs_from_v.empty()) continue;
-
-            // arc_id → local index for this vertex
-            std::vector<int> arc_local(pv_.n_arcs, -1);
-            for (int i = 0; i < static_cast<int>(arcs_from_v.size()); ++i)
-                arc_local[arcs_from_v[i]] = i;
 
             // Per-(local_arc, local_bucket) B̄ bitsets
             int n_arcs_v = static_cast<int>(arcs_from_v.size());
