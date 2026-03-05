@@ -37,6 +37,7 @@ public:
         bool bidirectional = false;
         bool symmetric = false;  // skip backward labeling, use fw labels as bw
         Stage stage = Stage::Exact;
+        int max_enum_labels = 5000000;  // safety cap on total labels during enumeration
     };
 
     BucketGraph(const ProblemView& pv, Pack pack, Options opts = {})
@@ -760,6 +761,35 @@ private:
 
     // ── SCC processing (unified for both directions) ──
 
+    /// Try to insert a label into its bucket. In Enumerate stage, uses
+    /// completion-bound pruning instead of dominance.
+    bool try_insert_label(Label<Pack>* new_label, int actual_bi, Direction dir,
+                          std::vector<std::vector<Label<Pack>*>>& labels,
+                          int& label_count) {
+        if (fixed_.test(actual_bi)) return false;
+
+        if (opts_.stage == Stage::Enumerate) {
+            auto& completion = (dir == Direction::Forward)
+                ? fw_completion_ : bw_completion_;
+            if (!completion.empty() && completion[actual_bi] < INF &&
+                new_label->cost + completion[actual_bi] >= opts_.tolerance)
+                return false;
+            labels[actual_bi].push_back(new_label);
+            ++label_count;
+            ++total_enum_labels_;
+            return true;
+        }
+
+        // Normal: dominance check
+        if (!dominated_in_bucket(new_label, actual_bi, dir, labels)) {
+            remove_dominated(new_label, actual_bi, dir, labels);
+            labels[actual_bi].push_back(new_label);
+            ++label_count;
+            return true;
+        }
+        return false;
+    }
+
     void process_scc(int scc_id, Direction dir,
                      const std::vector<std::vector<int>>& scc_buckets,
                      std::vector<std::vector<Label<Pack>*>>& labels,
@@ -767,7 +797,8 @@ private:
         auto& scc_bs = scc_buckets[scc_id];
         if (scc_bs.empty()) return;
 
-        constexpr int MAX_LABELS_PER_SCC = 500000;
+        const bool enumerating = (opts_.stage == Stage::Enumerate);
+        const int scc_cap = enumerating ? 2000000 : 500000;
         int label_count = 0;
 
         bool changed = true;
@@ -775,7 +806,8 @@ private:
             changed = false;
             for (int bi : scc_bs) {
                 if (fixed_.test(bi)) continue;
-                if (label_count >= MAX_LABELS_PER_SCC) break;
+                if (label_count >= scc_cap) break;
+                if (enumerating && total_enum_labels_ >= opts_.max_enum_labels) break;
 
                 auto& bucket_labels = labels[bi];
                 int n_labels = static_cast<int>(bucket_labels.size());
@@ -791,9 +823,20 @@ private:
                         continue;
                     }
 
-                    if (dominated_in_adjacent_buckets(label, bi, dir, labels)) {
-                        label->dominated = true;
-                        continue;
+                    if (enumerating) {
+                        // Completion-bound pruning on label before extending
+                        auto& completion = (dir == Direction::Forward)
+                            ? fw_completion_ : bw_completion_;
+                        if (!completion.empty() && completion[bi] < INF &&
+                            label->cost + completion[bi] >= opts_.tolerance) {
+                            label->extended = true;
+                            continue;
+                        }
+                    } else {
+                        if (dominated_in_adjacent_buckets(label, bi, dir, labels)) {
+                            label->dominated = true;
+                            continue;
+                        }
                     }
 
                     // Extend along bucket arcs
@@ -803,17 +846,9 @@ private:
                     for (const auto& ba : arcs) {
                         auto* new_label = extend_label(label, ba.arc_id, dir);
                         if (new_label) {
-                            int actual_bi = new_label->bucket;
-                            // Check actual landing bucket, not bucket arc target
-                            if (fixed_.test(actual_bi)) continue;
-                            if (!dominated_in_bucket(new_label, actual_bi,
-                                                     dir, labels)) {
-                                remove_dominated(new_label, actual_bi,
-                                                 dir, labels);
-                                labels[actual_bi].push_back(new_label);
-                                ++label_count;
+                            if (try_insert_label(new_label, new_label->bucket,
+                                                 dir, labels, label_count))
                                 changed = true;
-                            }
                         }
                     }
 
@@ -821,8 +856,6 @@ private:
                     auto& jarcs = (dir == Direction::Forward) ?
                         buckets_[bi].jump_arcs : buckets_[bi].bw_jump_arcs;
                     for (const auto& ja : jarcs) {
-                        // Boost: fw → max(q, lb of jump bucket)
-                        //        bw → min(q, ub of jump bucket)
                         std::array<double, 2> boost =
                             (dir == Direction::Forward) ?
                             buckets_[ja.jump_bucket].lb :
@@ -830,23 +863,17 @@ private:
                         auto* new_label = extend_label(
                             label, ja.arc_id, dir, &boost);
                         if (new_label) {
-                            int actual_bi = new_label->bucket;
-                            if (fixed_.test(actual_bi)) continue;
-                            if (!dominated_in_bucket(new_label, actual_bi,
-                                                     dir, labels)) {
-                                remove_dominated(new_label, actual_bi,
-                                                 dir, labels);
-                                labels[actual_bi].push_back(new_label);
-                                ++label_count;
+                            if (try_insert_label(new_label, new_label->bucket,
+                                                 dir, labels, label_count))
                                 changed = true;
-                            }
                         }
                     }
 
                     label->extended = true;
                 }
             }
-            if (label_count >= MAX_LABELS_PER_SCC) break;
+            if (label_count >= scc_cap) break;
+            if (enumerating && total_enum_labels_ >= opts_.max_enum_labels) break;
         }
 
         update_c_best(scc_id, dir, scc_buckets, labels);
@@ -1394,6 +1421,12 @@ private:
         reset_label_storage(fw_bucket_labels_);
         reset_c_best();
 
+        total_enum_labels_ = 0;
+        if (opts_.stage == Stage::Enumerate) {
+            if (fw_completion_.empty())
+                compute_completion_bounds(Direction::Forward);
+        }
+
         auto* src = create_initial_label(Direction::Forward);
         int src_bi = vertex_bucket_index(pv_.source, src->q);
         src->bucket = src_bi;
@@ -1428,6 +1461,14 @@ private:
         reset_label_storage(fw_bucket_labels_);
         reset_label_storage(bw_bucket_labels_);
         reset_c_best();
+
+        total_enum_labels_ = 0;
+        if (opts_.stage == Stage::Enumerate) {
+            if (fw_completion_.empty())
+                compute_completion_bounds(Direction::Forward);
+            if (bw_completion_.empty())
+                compute_completion_bounds(Direction::Backward);
+        }
 
         double mu = compute_midpoint();
 
@@ -1584,10 +1625,13 @@ private:
                         p.reduced_cost = total_cost;
                         p.original_cost = total_real_cost;
                         paths.push_back(std::move(p));
+                        if (static_cast<int>(paths.size()) >= opts_.max_paths)
+                            goto done_concat;
                     }
                 }
             }
         }
+        done_concat:
 
         return paths;
     }
@@ -1798,6 +1842,8 @@ private:
             }
         }
     }
+
+    int total_enum_labels_ = 0;  // global label counter for enumeration
 
     LabelPool<Pack> pool_;
     R1CManager r1c_;

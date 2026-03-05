@@ -24,6 +24,7 @@ public:
         bool symmetric = false;
         int max_paths = 100;
         double tolerance = -1e-6;
+        int max_enum_labels = 5000000;
     };
 
     Solver(const ProblemView& problem, Pack resources, Options opts = {})
@@ -38,6 +39,7 @@ public:
                   .bidirectional = opts_.bidirectional,
                   .symmetric = opts_.symmetric,
                   .stage = Stage::Exact,
+                  .max_enum_labels = opts_.max_enum_labels,
               }) {}
 
     /// Build bucket graph (call once, or after step size changes).

@@ -951,6 +951,103 @@ TEST_CASE("Solver: enumerate with tight gap") {
     CHECK(paths[0].reduced_cost == doctest::Approx(3.0));
 }
 
+// Graph with parallel arcs where one label strictly dominates another:
+//   Arc 0: 0→1 (cost=1, t=1)
+//   Arc 1: 0→1 (cost=3, t=1)  ← dominated by arc 0
+//   Arc 2: 1→2 (cost=1, t=1)
+//   Arc 3: 2→3 (cost=1, t=1)
+struct ParallelArcGraph {
+    int from[4]      = {0, 0, 1, 2};
+    int to[4]        = {1, 1, 2, 3};
+    double cost[4]   = {1.0, 3.0, 1.0, 1.0};
+    double time_d[4] = {1.0, 1.0, 1.0, 1.0};
+
+    double tw_lb[4] = {0.0, 0.0, 0.0, 0.0};
+    double tw_ub[4] = {10.0, 10.0, 10.0, 10.0};
+
+    const double* arc_res[1]   = {time_d};
+    const double* v_lb[1]      = {tw_lb};
+    const double* v_ub[1]      = {tw_ub};
+
+    ProblemView pv;
+
+    ParallelArcGraph() {
+        pv.n_vertices = 4;
+        pv.source = 0;
+        pv.sink = 3;
+        pv.n_arcs = 4;
+        pv.arc_from = from;
+        pv.arc_to = to;
+        pv.arc_base_cost = cost;
+        pv.n_resources = 1;
+        pv.arc_resource = arc_res;
+        pv.vertex_lb = v_lb;
+        pv.vertex_ub = v_ub;
+        pv.n_main_resources = 1;
+    }
+};
+
+TEST_CASE("Enumerate: finds dominated paths") {
+    ParallelArcGraph g;
+    using BG = BucketGraph<EmptyPack>;
+    BG bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .max_paths = 100,
+         .tolerance = 1e9, .stage = Stage::Exact});
+    bg.build();
+
+    // Exact solve: dominance prunes the cost-5 path, only cost-3 found
+    bg.set_stage(Stage::Exact);
+    bg.set_tolerance(1e9);
+    auto exact = bg.solve();
+    CHECK(exact.size() == 1);
+    CHECK(exact[0].reduced_cost == doctest::Approx(3.0));
+
+    // Enumerate with large gap: both paths found (cost-3 and cost-5)
+    bg.set_stage(Stage::Enumerate);
+    bg.set_tolerance(10.0);
+    auto enumerated = bg.solve();
+    CHECK(enumerated.size() == 2);
+    // Sorted by cost
+    CHECK(enumerated[0].reduced_cost == doctest::Approx(3.0));
+    CHECK(enumerated[1].reduced_cost == doctest::Approx(5.0));
+}
+
+TEST_CASE("Enumerate: completion-bound pruning filters correctly") {
+    ParallelArcGraph g;
+    using BG = BucketGraph<EmptyPack>;
+    BG bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .max_paths = 100,
+         .tolerance = 4.0, .stage = Stage::Enumerate});
+    bg.build();
+
+    // gap=4.0: only cost-3 path should be found (cost-5 pruned by completion bound)
+    auto paths = bg.solve();
+    CHECK(paths.size() == 1);
+    CHECK(paths[0].reduced_cost == doctest::Approx(3.0));
+}
+
+TEST_CASE("Enumerate: bidirectional finds more paths than exact") {
+    LargerGraph g;
+    using BG = BucketGraph<EmptyPack>;
+
+    // Exact bidir solve
+    BG bg_exact(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .max_paths = 1000,
+         .tolerance = 1e9, .bidirectional = true, .stage = Stage::Exact});
+    bg_exact.build();
+    auto exact = bg_exact.solve();
+
+    // Enumerate bidir solve with large gap
+    BG bg_enum(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .max_paths = 1000,
+         .tolerance = 1e9, .bidirectional = true, .stage = Stage::Enumerate});
+    bg_enum.build();
+    auto enumerated = bg_enum.solve();
+
+    // Enumerate should find at least as many paths as exact
+    CHECK(enumerated.size() >= exact.size());
+}
+
 // ── Completion bounds ──
 
 TEST_CASE("Completion bounds: sink has zero completion") {
