@@ -56,8 +56,11 @@ public:
         return paths;
     }
 
-    /// Arc elimination using optimality gap.
+    /// Arc elimination using optimality gap (bound-based).
     void eliminate_arcs(double theta) { bg_.eliminate_arcs(theta); }
+
+    /// Label-based arc elimination (Section 4.2). Tighter but requires prior solve.
+    void eliminate_arcs_label_based(double theta) { bg_.eliminate_arcs_label_based(theta); }
 
     /// Bucket fixing using optimality gap. Returns number of newly fixed buckets.
     int fix_buckets(double theta) { return bg_.fix_buckets(theta); }

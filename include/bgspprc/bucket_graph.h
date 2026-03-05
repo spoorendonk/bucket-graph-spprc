@@ -153,6 +153,32 @@ public:
         }
     }
 
+    /// Label-based arc elimination per Sadykov et al. 2021, Section 4.2.
+    /// Requires labels from a prior solve(). Tighter than bound-based
+    /// eliminate_arcs because it checks actual θ-compatible (L, L̃) pairs.
+    /// Falls back to bound-based for mono-directional (no opposite labels).
+    void eliminate_arcs_label_based(double theta) {
+        if (!opts_.bidirectional) {
+            // Mono: no backward labels → fall back to bound-based
+            eliminate_arcs(theta);
+            return;
+        }
+
+        // Phase 1: compute jump arcs (needed by BucketArcElimination)
+        obtain_jump_arcs(Direction::Forward);
+        obtain_jump_arcs(Direction::Backward);
+
+        // Phase 2: forward elimination
+        bucket_arc_elimination(theta, Direction::Forward);
+
+        // Phase 3: backward elimination
+        bucket_arc_elimination(theta, Direction::Backward);
+
+        // Phase 4: recompute jump arcs after elimination
+        obtain_jump_arcs(Direction::Forward);
+        obtain_jump_arcs(Direction::Backward);
+    }
+
     /// Bucket fixing: mark buckets as fixed using completion bounds.
     ///
     /// Fix bucket b if c_best(b) + completion(b) > theta, meaning no
@@ -447,14 +473,14 @@ private:
         std::reverse(scc_topo.begin(), scc_topo.end());
     }
 
-    // ── Jump arc generation ──
+    // ── Jump arc generation (Section 4.1, ObtainJumpBucketArcs) ──
 
-    /// Generate jump arcs after arc elimination.
-    /// For each original arc a=(u,v), if the bucket arc from some bucket b(u)
-    /// to bucket b(v) was eliminated, create a jump arc from b(u) that targets
-    /// the next non-fixed, non-eliminated reachable bucket at v.
+    /// Generate jump arcs after arc elimination per Sadykov et al. 2021 §4.1.
+    /// Jump arcs are SAME-VERTEX arcs: when a bucket arc for arc a is eliminated
+    /// from bucket b, create a jump arc from b to a higher (fw) / lower (bw)
+    /// same-vertex bucket b' that still has the bucket arc for a.
+    /// During extension, the label's resource is boosted to b'.lb (fw) / b'.ub (bw).
     void obtain_jump_arcs(Direction dir) {
-        // Clear existing jump arcs
         for (auto& b : buckets_) {
             if (dir == Direction::Forward)
                 b.jump_arcs.clear();
@@ -462,69 +488,104 @@ private:
                 b.bw_jump_arcs.clear();
         }
 
-        // Build a set of existing bucket arcs for fast lookup
-        // For each bucket, collect the set of arc_ids that have bucket arcs
         int nb = static_cast<int>(buckets_.size());
-        std::vector<std::vector<int>> existing_arc_ids(nb);
+
+        // Build per-bucket sorted arc_id sets for fast "has bucket arc?" queries
+        std::vector<std::vector<int>> existing(nb);
         for (int bi = 0; bi < nb; ++bi) {
             auto& arcs = (dir == Direction::Forward) ?
                 buckets_[bi].bucket_arcs : buckets_[bi].bw_bucket_arcs;
-            for (const auto& ba : arcs) {
-                existing_arc_ids[bi].push_back(ba.arc_id);
-            }
-            std::sort(existing_arc_ids[bi].begin(), existing_arc_ids[bi].end());
+            for (const auto& ba : arcs)
+                existing[bi].push_back(ba.arc_id);
+            std::sort(existing[bi].begin(), existing[bi].end());
         }
 
-        // For each arc in the problem, check if any source bucket lost its
-        // bucket arc due to elimination. If so, create a jump arc.
+        // Group arcs by source vertex to avoid scanning all arcs for each bucket
+        std::vector<std::vector<int>> arcs_by_vertex(pv_.n_vertices);
         for (int a = 0; a < pv_.n_arcs; ++a) {
             int src_v = (dir == Direction::Forward) ?
                 pv_.arc_from[a] : pv_.arc_to[a];
-            int tgt_v = (dir == Direction::Forward) ?
-                pv_.arc_to[a] : pv_.arc_from[a];
+            arcs_by_vertex[src_v].push_back(a);
+        }
 
-            auto [src_start, src_end] = vertex_bucket_range(src_v);
+        for (int v = 0; v < pv_.n_vertices; ++v) {
+            if (arcs_by_vertex[v].empty()) continue;
 
-            for (int bi = src_start; bi < src_end; ++bi) {
+            auto [vstart, vend] = vertex_bucket_range(v);
+            auto& nb_v = vertex_n_buckets_[v];
+            int n_buckets_v = vend - vstart;
+            if (n_buckets_v <= 1) continue;
+
+            for (int bi = vstart; bi < vend; ++bi) {
                 if (fixed_.test(bi)) continue;
+                int k0 = (bi - vstart) / nb_v[1];
+                int k1 = (bi - vstart) % nb_v[1];
 
-                // Check if this bucket already has a bucket arc for this arc
-                auto& eids = existing_arc_ids[bi];
-                if (std::binary_search(eids.begin(), eids.end(), a)) continue;
+                for (int a : arcs_by_vertex[v]) {
+                    // Does bucket bi already have a bucket arc for arc a?
+                    if (std::binary_search(existing[bi].begin(),
+                                           existing[bi].end(), a))
+                        continue;
 
-                // This arc was eliminated from this bucket.
-                // Try to find a reachable non-fixed bucket at target vertex.
-                std::array<double, 2> q_target;
-                bool feasible = true;
-                for (int r = 0; r < n_main_; ++r) {
-                    double d = pv_.arc_resource[r][a];
-                    if (dir == Direction::Forward) {
-                        q_target[r] = std::max(
-                            buckets_[bi].lb[r] + d,
-                            pv_.vertex_lb[r][tgt_v]);
-                        if (q_target[r] > pv_.vertex_ub[r][tgt_v]) {
-                            feasible = false;
-                            break;
+                    // Find B̄ = {b' at same vertex : b' ≻ b AND b' has arc a}
+                    // Forward: b' ≻ b means k' component-wise > k (jump UP)
+                    // Backward: b' ≻ b means k' component-wise < k (jump DOWN)
+                    struct Candidate { int k0, k1, bi; };
+                    std::vector<Candidate> candidates;
+
+                    for (int bi2 = vstart; bi2 < vend; ++bi2) {
+                        if (bi2 == bi) continue;
+                        int k0_2 = (bi2 - vstart) / nb_v[1];
+                        int k1_2 = (bi2 - vstart) % nb_v[1];
+
+                        bool succeeds;
+                        if (dir == Direction::Forward) {
+                            succeeds = (k0_2 >= k0 && k1_2 >= k1 &&
+                                       (k0_2 > k0 || k1_2 > k1));
+                        } else {
+                            succeeds = (k0_2 <= k0 && k1_2 <= k1 &&
+                                       (k0_2 < k0 || k1_2 < k1));
                         }
-                    } else {
-                        q_target[r] = std::min(
-                            buckets_[bi].ub[r] - d,
-                            pv_.vertex_ub[r][tgt_v]);
-                        if (q_target[r] < pv_.vertex_lb[r][tgt_v]) {
-                            feasible = false;
-                            break;
-                        }
+                        if (!succeeds) continue;
+
+                        if (!std::binary_search(existing[bi2].begin(),
+                                                existing[bi2].end(), a))
+                            continue;
+
+                        candidates.push_back({k0_2, k1_2, bi2});
                     }
-                }
-                if (!feasible) continue;
 
-                // Find first non-fixed bucket at target
-                int target_bi = vertex_bucket_index(tgt_v, q_target);
-                if (!fixed_.test(target_bi)) {
-                    if (dir == Direction::Forward)
-                        buckets_[bi].jump_arcs.push_back({target_bi, a});
-                    else
-                        buckets_[bi].bw_jump_arcs.push_back({target_bi, a});
+                    // Filter to component-wise minimal (fw) / maximal (bw)
+                    std::vector<Candidate> minimal;
+                    for (auto& c : candidates) {
+                        bool dominated = false;
+                        for (auto& m : candidates) {
+                            if (&c == &m) continue;
+                            if (dir == Direction::Forward) {
+                                // m dominates c if m is component-wise ≤ c
+                                if (m.k0 <= c.k0 && m.k1 <= c.k1 &&
+                                    (m.k0 < c.k0 || m.k1 < c.k1)) {
+                                    dominated = true;
+                                    break;
+                                }
+                            } else {
+                                // m dominates c if m is component-wise ≥ c
+                                if (m.k0 >= c.k0 && m.k1 >= c.k1 &&
+                                    (m.k0 > c.k0 || m.k1 > c.k1)) {
+                                    dominated = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!dominated) minimal.push_back(c);
+                    }
+
+                    for (auto& m : minimal) {
+                        if (dir == Direction::Forward)
+                            buckets_[bi].jump_arcs.push_back({m.bi, a});
+                        else
+                            buckets_[bi].bw_jump_arcs.push_back({m.bi, a});
+                    }
                 }
             }
         }
@@ -533,7 +594,8 @@ private:
     // ── Label extension (direction-aware) ──
 
     Label<Pack>* extend_label(const Label<Pack>* parent, int arc_id,
-                               Direction dir) {
+                               Direction dir,
+                               const std::array<double, 2>* q_boost = nullptr) {
         int new_v = (dir == Direction::Forward) ?
             pv_.arc_to[arc_id] : pv_.arc_from[arc_id];
 
@@ -549,15 +611,24 @@ private:
         L->cost = parent->cost + arc_cost;
         L->real_cost = parent->real_cost + pv_.arc_base_cost[arc_id];
 
-        // Main resource update
+        // Main resource update — modified for jump arcs (paper §4.1)
+        // For jump arcs: q^L ← max{q^{L'}, l̃_{b^jump}} (fw)
+        //            or: q^L ← min{q^{L'}, ũ_{b^jump}} (bw)
         for (int r = 0; r < n_main_; ++r) {
             double d = pv_.arc_resource[r][arc_id];
+            double q_base = parent->q[r];
+            if (q_boost) {
+                if (dir == Direction::Forward)
+                    q_base = std::max(q_base, (*q_boost)[r]);
+                else
+                    q_base = std::min(q_base, (*q_boost)[r]);
+            }
             if (dir == Direction::Forward) {
-                L->q[r] = std::max(parent->q[r] + d, pv_.vertex_lb[r][new_v]);
+                L->q[r] = std::max(q_base + d, pv_.vertex_lb[r][new_v]);
                 if (L->q[r] > pv_.vertex_ub[r][new_v])
                     return nullptr;
             } else {
-                L->q[r] = std::min(parent->q[r] - d, pv_.vertex_ub[r][new_v]);
+                L->q[r] = std::min(q_base - d, pv_.vertex_ub[r][new_v]);
                 if (L->q[r] < pv_.vertex_lb[r][new_v])
                     return nullptr;
             }
@@ -740,12 +811,18 @@ private:
                         }
                     }
 
-                    // Jump arcs
+                    // Jump arcs (paper §4.1): extend with resource boost
                     auto& jarcs = (dir == Direction::Forward) ?
                         buckets_[bi].jump_arcs : buckets_[bi].bw_jump_arcs;
                     for (const auto& ja : jarcs) {
+                        // Boost: fw → max(q, lb of jump bucket)
+                        //        bw → min(q, ub of jump bucket)
+                        std::array<double, 2> boost =
+                            (dir == Direction::Forward) ?
+                            buckets_[ja.jump_bucket].lb :
+                            buckets_[ja.jump_bucket].ub;
                         auto* new_label = extend_label(
-                            label, ja.arc_id, dir);
+                            label, ja.arc_id, dir, &boost);
                         if (new_label) {
                             int actual_bi = new_label->bucket;
                             if (fixed_.test(actual_bi)) continue;
@@ -940,6 +1017,268 @@ private:
                                                   completion[prev]);
                     }
                 }
+            }
+        }
+    }
+
+    // ── Label-based arc elimination (Section 4.2) ──
+
+    /// Check if a forward label L and backward label L_tilde form a
+    /// θ-compatible pair when joined through arc a.
+    bool is_theta_compatible(const Label<Pack>* fw, const Label<Pack>* bw,
+                             int arc_id, double theta) const {
+        int j = pv_.arc_to[arc_id];
+
+        // Resource feasibility
+        for (int r = 0; r < n_main_; ++r) {
+            double fw_after = fw->q[r] + pv_.arc_resource[r][arc_id];
+            fw_after = std::max(fw_after, pv_.vertex_lb[r][j]);
+            if (fw_after > bw->q[r] + EPS)
+                return false;
+        }
+
+        double total_cost = fw->cost + bw->cost;
+        double arc_cost = reduced_costs_ ? reduced_costs_[arc_id]
+                                         : pv_.arc_base_cost[arc_id];
+        total_cost += arc_cost;
+
+        if constexpr (Pack::size > 0) {
+            auto [ext_states, ext_cost] = pack_.extend(
+                Direction::Forward, fw->resource_states, arc_id);
+            if (ext_cost >= INF) return false;
+            total_cost += ext_cost;
+
+            double cc = pack_.concatenation_cost(
+                Symmetry::Asymmetric, j,
+                ext_states, bw->resource_states);
+            if (cc >= INF) return false;
+            total_cost += cc;
+        }
+
+        if (r1c_.has_cuts() && fw->r1c_states && bw->r1c_states) {
+            total_cost += r1c_.concatenation_cost(
+                Symmetry::Asymmetric, j,
+                {fw->r1c_states,
+                 static_cast<std::size_t>(fw->n_r1c_words)},
+                {bw->r1c_states,
+                 static_cast<std::size_t>(bw->n_r1c_words)});
+        }
+
+        return total_cost < theta;
+    }
+
+    /// Compute the arrival bucket index for a bucket arc or jump arc.
+    /// For forward: q_arr = max(src_lb + arc_resource, vertex_lb of head)
+    ///   then find which backward bucket at head contains q_arr.
+    /// Returns -1 if infeasible.
+    int compute_arrival_bucket(int src_bi, int arc_id, Direction dir,
+                               bool is_jump, int jump_bi = -1) const {
+        int head_v = (dir == Direction::Forward) ?
+            pv_.arc_to[arc_id] : pv_.arc_from[arc_id];
+
+        std::array<double, 2> q_arr = {};
+        for (int r = 0; r < n_main_; ++r) {
+            double d = pv_.arc_resource[r][arc_id];
+            double base_q;
+            if (dir == Direction::Forward) {
+                base_q = is_jump ? buckets_[jump_bi].lb[r]
+                                 : buckets_[src_bi].lb[r];
+                q_arr[r] = std::max(base_q + d, pv_.vertex_lb[r][head_v]);
+                if (q_arr[r] > pv_.vertex_ub[r][head_v]) return -1;
+            } else {
+                base_q = is_jump ? buckets_[jump_bi].ub[r]
+                                 : buckets_[src_bi].ub[r];
+                q_arr[r] = std::min(base_q - d, pv_.vertex_ub[r][head_v]);
+                if (q_arr[r] < pv_.vertex_lb[r][head_v]) return -1;
+            }
+        }
+        return vertex_bucket_index(head_v, q_arr);
+    }
+
+    /// Paper's UpdateBucketsSet procedure (Section 4.2, page 19).
+    /// Recursively checks for θ-compatible pairs starting from bucket b_tilde
+    /// in the opposite direction's label set. `visited` is indexed by
+    /// vertex-local offset (bi - vstart), not global bucket index.
+    void update_buckets_set(
+        double theta, const Label<Pack>* L, int arc_id,
+        std::vector<bool>& b_bar,     // per opposite-bucket: found compatible?
+        int b_tilde,                   // current opposite-sense bucket to check
+        Direction dir,                 // direction of L (fw → checking bw buckets)
+        int vstart, int n_buckets_v,
+        std::vector<bool>& visited) const {
+
+        int local = b_tilde - vstart;
+        if (visited[local]) return;
+        visited[local] = true;
+
+        // Cost bound prune: c̄^L + c̄_{arc} + c̃^best_{b̃} ≥ θ
+        double arc_cost = reduced_costs_ ? reduced_costs_[arc_id]
+                                         : pv_.arc_base_cost[arc_id];
+        double opp_c_best = (dir == Direction::Forward) ?
+            buckets_[b_tilde].bw_c_best : buckets_[b_tilde].c_best;
+        if (L->cost + arc_cost + opp_c_best >= theta)
+            return;
+
+        // Check labels at b_tilde for θ-compatibility
+        if (!b_bar[b_tilde]) {
+            auto& opp_labels = (dir == Direction::Forward) ?
+                bw_bucket_labels_[b_tilde] : fw_bucket_labels_[b_tilde];
+            for (const auto* L_tilde : opp_labels) {
+                if (L_tilde->dominated) continue;
+                bool compat = (dir == Direction::Forward) ?
+                    is_theta_compatible(L, L_tilde, arc_id, theta) :
+                    is_theta_compatible(L_tilde, L, arc_id, theta);
+                if (compat) {
+                    b_bar[b_tilde] = true;
+                    break;
+                }
+            }
+        }
+
+        // Recurse to adjacent smaller (opposite-sense) buckets: Φ_{b̃}
+        int v = buckets_[b_tilde].vertex;
+        auto& nb_v = vertex_n_buckets_[v];
+        int k0 = (b_tilde - vstart) / nb_v[1];
+        int k1 = (b_tilde - vstart) % nb_v[1];
+
+        // Φ for opposite-sense buckets:
+        // Eliminating forward arcs → b̃ is backward bucket → Φ goes to higher k
+        // Eliminating backward arcs → b̃ is forward bucket → Φ goes to lower k
+        if (dir == Direction::Forward) {
+            if (k0 + 1 < nb_v[0]) {
+                int adj = vstart + (k0 + 1) * nb_v[1] + k1;
+                update_buckets_set(theta, L, arc_id, b_bar, adj,
+                                   dir, vstart, n_buckets_v, visited);
+            }
+            if (k1 + 1 < nb_v[1]) {
+                int adj = vstart + k0 * nb_v[1] + (k1 + 1);
+                update_buckets_set(theta, L, arc_id, b_bar, adj,
+                                   dir, vstart, n_buckets_v, visited);
+            }
+        } else {
+            if (k0 > 0) {
+                int adj = vstart + (k0 - 1) * nb_v[1] + k1;
+                update_buckets_set(theta, L, arc_id, b_bar, adj,
+                                   dir, vstart, n_buckets_v, visited);
+            }
+            if (k1 > 0) {
+                int adj = vstart + k0 * nb_v[1] + (k1 - 1);
+                update_buckets_set(theta, L, arc_id, b_bar, adj,
+                                   dir, vstart, n_buckets_v, visited);
+            }
+        }
+    }
+
+    /// Check if a bucket arc should be eliminated (no θ-compatible pair found).
+    bool should_eliminate_arc(int arr_bi, const std::vector<bool>& b_bar,
+                              Direction dir) const {
+        int arr_v = buckets_[arr_bi].vertex;
+        auto [arr_vstart, arr_vend] = vertex_bucket_range(arr_v);
+        auto& arr_nb = vertex_n_buckets_[arr_v];
+        int arr_k0 = (arr_bi - arr_vstart) / arr_nb[1];
+        int arr_k1 = (arr_bi - arr_vstart) % arr_nb[1];
+
+        for (int bi2 = arr_vstart; bi2 < arr_vend; ++bi2) {
+            if (!b_bar[bi2]) continue;
+            int k0_2 = (bi2 - arr_vstart) / arr_nb[1];
+            int k1_2 = (bi2 - arr_vstart) % arr_nb[1];
+
+            if (dir == Direction::Forward) {
+                if (k0_2 >= arr_k0 && k1_2 >= arr_k1) return false;
+            } else {
+                if (k0_2 <= arr_k0 && k1_2 <= arr_k1) return false;
+            }
+        }
+        return true;
+    }
+
+    /// Process a single bucket during label-based elimination.
+    void process_bucket_elimination(
+        int bi, Direction dir, double theta,
+        std::vector<std::vector<bool>>& b_bar_per_arc) {
+
+        if (fixed_.test(bi)) return;
+
+        // Get labels at bucket b
+        auto& labels_b = (dir == Direction::Forward) ?
+            fw_bucket_labels_[bi] : bw_bucket_labels_[bi];
+
+        // Helper: call update_buckets_set with vertex-local visited
+        auto do_update = [&](const Label<Pack>* L, int arc_id, int arr_bi) {
+            int arr_v = buckets_[arr_bi].vertex;
+            auto [vs, ve] = vertex_bucket_range(arr_v);
+            int nbv = ve - vs;
+            std::vector<bool> visited(nbv, false);
+            update_buckets_set(theta, L, arc_id,
+                b_bar_per_arc[arc_id], arr_bi, dir, vs, nbv, visited);
+        };
+
+        // Process jump arcs: UpdateBucketsSet for each (L, ψ)
+        auto& jarcs = (dir == Direction::Forward) ?
+            buckets_[bi].jump_arcs : buckets_[bi].bw_jump_arcs;
+        for (const auto& ja : jarcs) {
+            int arr_bi = compute_arrival_bucket(bi, ja.arc_id, dir,
+                true, ja.jump_bucket);
+            if (arr_bi < 0) continue;
+
+            for (const auto* L : labels_b) {
+                if (L->dominated) continue;
+                do_update(L, ja.arc_id, arr_bi);
+            }
+        }
+
+        // Process bucket arcs: UpdateBucketsSet, then check elimination
+        auto& bucket_arcs = (dir == Direction::Forward) ?
+            buckets_[bi].bucket_arcs : buckets_[bi].bw_bucket_arcs;
+
+        int write = 0;
+        for (int read = 0; read < static_cast<int>(bucket_arcs.size()); ++read) {
+            const auto& ba = bucket_arcs[read];
+            int arr_bi = compute_arrival_bucket(bi, ba.arc_id, dir, false);
+
+            bool eliminate = (arr_bi < 0);
+            if (!eliminate) {
+                for (const auto* L : labels_b) {
+                    if (L->dominated) continue;
+                    do_update(L, ba.arc_id, arr_bi);
+                }
+                eliminate = should_eliminate_arc(arr_bi,
+                    b_bar_per_arc[ba.arc_id], dir);
+            }
+
+            if (!eliminate) {
+                bucket_arcs[write++] = ba;
+            }
+        }
+        bucket_arcs.resize(write);
+    }
+
+    /// Paper's BucketArcElimination procedure (Section 4.2, page 20).
+    void bucket_arc_elimination(double theta, Direction dir) {
+        int nb = static_cast<int>(buckets_.size());
+
+        // Per-arc B̄ sets: b_bar_per_arc[arc_id][bucket_index] = true if a
+        // θ-compatible pair was found at that opposite-sense bucket
+        std::vector<std::vector<bool>> b_bar_per_arc(pv_.n_arcs,
+            std::vector<bool>(nb, false));
+
+        // Process buckets in lexicographic κ order
+        for (int v = 0; v < pv_.n_vertices; ++v) {
+            auto [vstart, vend] = vertex_bucket_range(v);
+            auto& nb_v = vertex_n_buckets_[v];
+
+            if (dir == Direction::Forward) {
+                for (int k0 = 0; k0 < nb_v[0]; ++k0)
+                    for (int k1 = 0; k1 < nb_v[1]; ++k1)
+                        process_bucket_elimination(
+                            vstart + k0 * nb_v[1] + k1,
+                            dir, theta, b_bar_per_arc);
+            } else {
+                for (int k0 = nb_v[0] - 1; k0 >= 0; --k0)
+                    for (int k1 = nb_v[1] - 1; k1 >= 0; --k1)
+                        process_bucket_elimination(
+                            vstart + k0 * nb_v[1] + k1,
+                            dir, theta, b_bar_per_arc);
             }
         }
     }
