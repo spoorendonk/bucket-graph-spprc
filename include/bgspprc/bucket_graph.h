@@ -1677,6 +1677,7 @@ private:
         for (int k = static_cast<int>(bw_verts.size()) - 2; k >= 0; --k) {
             p.vertices.push_back(bw_verts[k]);
             int opp = find_arc(bw_verts[k + 1], bw_verts[k]);
+            assert(opp >= 0 && "symmetric mode requires opposite arc for every arc");
             p.arcs.push_back(opp);
         }
     }

@@ -1534,6 +1534,39 @@ TEST_CASE("Symmetric: with reduced costs") {
           doctest::Approx(bidir_paths[0].reduced_cost));
 }
 
+TEST_CASE("Symmetric: fine bucket steps exercise mirror_bucket") {
+    LargerSymmetricGraph g;
+
+    // step=1 → 10 buckets per vertex (window [0,10]), exercises mirror indexing
+    BucketGraph<EmptyPack> bidir(g.pv, EmptyPack{},
+        {.bucket_steps = {1.0, 1.0}, .tolerance = 1e9, .bidirectional = true});
+    bidir.build();
+    auto bidir_paths = bidir.solve();
+
+    BucketGraph<EmptyPack> sym(g.pv, EmptyPack{},
+        {.bucket_steps = {1.0, 1.0}, .tolerance = 1e9, .symmetric = true});
+    sym.build();
+    auto sym_paths = sym.solve();
+
+    REQUIRE(!bidir_paths.empty());
+    REQUIRE(!sym_paths.empty());
+    CHECK(sym_paths[0].reduced_cost ==
+          doctest::Approx(bidir_paths[0].reduced_cost));
+
+    // Verify path validity with fine steps
+    for (const auto& p : sym_paths) {
+        CHECK(p.vertices.front() == 0);
+        CHECK(p.vertices.back() == 0);
+        REQUIRE(p.arcs.size() + 1 == p.vertices.size());
+        for (size_t i = 0; i < p.arcs.size(); ++i) {
+            int a = p.arcs[i];
+            CHECK(a >= 0);
+            CHECK(g.from[a] == p.vertices[i]);
+            CHECK(g.to[a] == p.vertices[i + 1]);
+        }
+    }
+}
+
 TEST_CASE("Symmetric: solver wiring") {
     SymmetricGraph g;
     Solver<EmptyPack> solver(g.pv, EmptyPack{},
