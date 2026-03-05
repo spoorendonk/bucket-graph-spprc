@@ -36,6 +36,7 @@ public:
                   .max_paths = opts_.max_paths,
                   .tolerance = opts_.tolerance,
                   .bidirectional = opts_.bidirectional,
+                  .symmetric = opts_.symmetric,
                   .stage = Stage::Exact,
               }) {}
 
