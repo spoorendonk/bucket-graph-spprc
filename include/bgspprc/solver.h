@@ -36,6 +36,7 @@ public:
                   .max_paths = opts_.max_paths,
                   .tolerance = opts_.tolerance,
                   .bidirectional = opts_.bidirectional,
+                  .stage = Stage::Exact,
               }) {}
 
     /// Build bucket graph (call once, or after step size changes).
@@ -47,7 +48,9 @@ public:
     }
 
     /// Solve SPPRC — returns paths with negative reduced cost.
+    /// Uses multi-stage progression: Heuristic1 → Heuristic2 → Exact.
     std::vector<Path> solve() {
+        bg_.set_stage(stage_);
         auto paths = bg_.solve();
         update_stage(paths);
         return paths;
@@ -56,8 +59,11 @@ public:
     /// Arc elimination using optimality gap.
     void eliminate_arcs(double theta) { bg_.eliminate_arcs(theta); }
 
-    /// Bucket fixing using optimality gap.
-    void fix_buckets(double theta) { bg_.fix_buckets(theta); }
+    /// Bucket fixing using optimality gap. Returns number of newly fixed buckets.
+    int fix_buckets(double theta) { return bg_.fix_buckets(theta); }
+
+    /// Number of fixed buckets.
+    int n_fixed_buckets() const { return bg_.n_fixed_buckets(); }
 
     /// Reset all elimination/fixing.
     void reset_elimination() { bg_.reset_elimination(); }
@@ -71,24 +77,44 @@ public:
 
     /// Path enumeration within gap.
     std::vector<Path> enumerate(double gap) {
-        auto saved_tol = opts_.tolerance;
-        opts_.tolerance = gap;
-        // Rebuild with exact settings for enumeration
+        bg_.set_stage(Stage::Enumerate);
+        bg_.set_tolerance(gap);
         auto paths = bg_.solve();
-        opts_.tolerance = saved_tol;
+        bg_.set_tolerance(opts_.tolerance);
         return paths;
     }
 
+    /// Save warm labels for next solve (top fraction by cost).
+    void save_warm_labels(double fraction = 0.7) {
+        bg_.save_warm_labels(fraction);
+    }
+
+    /// Adaptive bucket step sizes. Returns true if steps changed (needs rebuild).
+    bool adapt_bucket_steps(double threshold = 20.0) {
+        bool changed = bg_.adapt_bucket_steps(threshold);
+        if (changed) bg_.build();
+        return changed;
+    }
+
+    /// Get current bucket steps.
+    const std::array<double, 2>& bucket_steps() const {
+        return bg_.bucket_steps();
+    }
+
 private:
-    void update_stage(const std::vector<Path>& /*paths*/) {
+    void update_stage(const std::vector<Path>& paths) {
         ++iteration_;
-        // Auto-progression: advance stage based on iteration count
-        // and whether paths were found
-        if (stage_ == Stage::Heuristic1 && iteration_ > 3) {
-            stage_ = Stage::Heuristic2;
-        }
-        if (stage_ == Stage::Heuristic2 && iteration_ > 10) {
-            stage_ = Stage::Exact;
+
+        if (stage_ == Stage::Heuristic1) {
+            // Move to Heuristic2 if no neg-cost paths found or after 3 iters
+            if (paths.empty() || iteration_ > 3) {
+                stage_ = Stage::Heuristic2;
+            }
+        } else if (stage_ == Stage::Heuristic2) {
+            // Move to Exact if no neg-cost paths found or after 10 iters
+            if (paths.empty() || iteration_ > 10) {
+                stage_ = Stage::Exact;
+            }
         }
     }
 

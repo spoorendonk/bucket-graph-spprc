@@ -152,3 +152,148 @@ TEST_CASE("End-to-end: tight time windows") {
     CHECK(paths[0].vertices[1] == 1);
     CHECK(paths[0].vertices[2] == 3);
 }
+
+// ── Bi-directional tests ──
+
+TEST_CASE("Bidirectional: same optimal as mono-directional") {
+    int from[] = {0, 0, 1, 2, 1, 3, 2};
+    int to[]   = {1, 2, 3, 3, 4, 4, 4};
+    double cost[] = {10.0, 3.0, 5.0, 4.0, 8.0, 2.0, 7.0};
+    double time_d[] = {2.0, 4.0, 3.0, 2.0, 5.0, 1.0, 3.0};
+
+    double tw_lb[] = {0.0, 0.0, 0.0, 0.0, 0.0};
+    double tw_ub[] = {20.0, 20.0, 20.0, 20.0, 20.0};
+
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 5;
+    pv.source = 0;
+    pv.sink = 4;
+    pv.n_arcs = 7;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    // Mono-directional
+    Solver<EmptyPack> mono(pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+    mono.build();
+    auto mono_paths = mono.solve();
+
+    // Bi-directional
+    Solver<EmptyPack> bidir(pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .bidirectional = true, .tolerance = 1e9});
+    bidir.build();
+    auto bidir_paths = bidir.solve();
+
+    REQUIRE(!mono_paths.empty());
+    REQUIRE(!bidir_paths.empty());
+
+    // Same best cost
+    CHECK(bidir_paths[0].reduced_cost ==
+          doctest::Approx(mono_paths[0].reduced_cost));
+
+    // Best path should be 0→2→3→4, cost=9
+    CHECK(bidir_paths[0].reduced_cost == doctest::Approx(9.0));
+    CHECK(bidir_paths[0].vertices.front() == 0);
+    CHECK(bidir_paths[0].vertices.back() == 4);
+}
+
+TEST_CASE("Bidirectional: with reduced costs") {
+    int from[] = {0, 0, 1, 2, 1, 3, 2};
+    int to[]   = {1, 2, 3, 3, 4, 4, 4};
+    double cost[] = {10.0, 3.0, 5.0, 4.0, 8.0, 2.0, 7.0};
+    double time_d[] = {2.0, 4.0, 3.0, 2.0, 5.0, 1.0, 3.0};
+
+    double tw_lb[] = {0.0, 0.0, 0.0, 0.0, 0.0};
+    double tw_ub[] = {20.0, 20.0, 20.0, 20.0, 20.0};
+
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 5;
+    pv.source = 0;
+    pv.sink = 4;
+    pv.n_arcs = 7;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    Solver<EmptyPack> bidir(pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .bidirectional = true, .tolerance = 0.0});
+    bidir.build();
+
+    double red[] = {-15.0, 3.0, 5.0, 4.0, 8.0, 2.0, 7.0};
+    bidir.update_arc_costs(red);
+
+    auto paths = bidir.solve();
+    REQUIRE(!paths.empty());
+
+    // 0→1→3→4: -15+5+2 = -8
+    CHECK(paths[0].reduced_cost == doctest::Approx(-8.0));
+    CHECK(paths[0].vertices.front() == 0);
+    CHECK(paths[0].vertices.back() == 4);
+}
+
+TEST_CASE("Bidirectional: tight time windows") {
+    int from[] = {0, 0, 1, 2, 1, 3, 2};
+    int to[]   = {1, 2, 3, 3, 4, 4, 4};
+    double cost[] = {10.0, 3.0, 5.0, 4.0, 8.0, 2.0, 7.0};
+    double time_d[] = {2.0, 4.0, 3.0, 2.0, 5.0, 1.0, 3.0};
+
+    double tw_lb[] = {0.0, 0.0, 0.0, 0.0, 0.0};
+    double tw_ub[] = {20.0, 20.0, 20.0, 20.0, 6.5};
+
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 5;
+    pv.source = 0;
+    pv.sink = 4;
+    pv.n_arcs = 7;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    // Mono
+    Solver<EmptyPack> mono(pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+    mono.build();
+    auto mono_paths = mono.solve();
+
+    // Bidir
+    Solver<EmptyPack> bidir(pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .bidirectional = true, .tolerance = 1e9});
+    bidir.build();
+    auto bidir_paths = bidir.solve();
+
+    REQUIRE(!mono_paths.empty());
+    REQUIRE(!bidir_paths.empty());
+
+    // Same best: 0→1→3→4, cost=17 (only feasible path with sink tw [0, 6.5])
+    CHECK(bidir_paths[0].reduced_cost ==
+          doctest::Approx(mono_paths[0].reduced_cost));
+    CHECK(bidir_paths[0].reduced_cost == doctest::Approx(17.0));
+}

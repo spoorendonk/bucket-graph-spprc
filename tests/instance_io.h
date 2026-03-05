@@ -36,6 +36,16 @@ struct Instance {
     std::vector<double> cap_ub;          // capacity upper bound
 
     int n_main_resources = 0;            // 1 (time-only) or 2 (time + capacity)
+    int ng_size = 0;                     // ng-neighborhood size (from file or default)
+
+    // Ng-neighborhood: ng_neighbors[v] = list of neighbor vertex IDs
+    std::vector<std::vector<int>> ng_neighbors;
+
+    // Pairwise ng-neighbor cost: ng_cost[i*n_orig + j] = cost for ranking j
+    // as neighbor of i.  Populated by loaders for complete-graph instances.
+    // Empty for sparse instances (ng-neighbors computed from arcs instead).
+    std::vector<double> ng_cost;
+    int n_orig = 0;  // original node count (before source/sink split)
 
     // Owning storage for ProblemView pointers
     std::vector<const double*> arc_res_ptrs;
@@ -166,6 +176,13 @@ inline Instance load_sppcc(const std::string& path) {
     // No time windows in SPPCC — use capacity as the only main resource
     inst.n_main_resources = 1;
 
+    // Pairwise ng-cost: dist(i,j) + node_weight[j] for all i,j in 0..N-1
+    inst.n_orig = N;
+    inst.ng_cost.resize(N * N);
+    for (int i = 0; i < N; ++i)
+        for (int j = 0; j < N; ++j)
+            inst.ng_cost[i * N + j] = dist_matrix[i][j] + node_weights[j];
+
     // Initial cost from depot node weight (vehicle dual)
     // We bake this into arcs leaving source:
     // Actually it should be a constant added once. Since it's the same for all
@@ -186,6 +203,209 @@ inline Instance load_sppcc(const std::string& path) {
     }
 
     return inst;
+}
+
+/// Parse Roberti VRP file (ESPPRC pricing instances).
+///
+/// Format: CVRP with EUC_2D coordinates, demands, profits (duals).
+/// Arc cost = euclidean_distance(i,j) - profit[j]
+/// Depot = vertex 1 (1-indexed), becomes source=0, sink=N.
+inline Instance load_roberti_vrp(const std::string& path) {
+    Instance inst;
+    std::ifstream file(path);
+    assert(file.is_open());
+
+    int dimension = 0;
+    double capacity = 0;
+    std::vector<double> x, y;
+    std::vector<double> demands;
+    std::vector<double> profits;
+    int depot = 1;
+
+    std::string line;
+    enum Section { NONE, COORDS, DEMANDS, DEPOT, PROFIT } section = NONE;
+
+    while (std::getline(file, line)) {
+        if (line.starts_with("NAME")) {
+            auto pos = line.find(':');
+            if (pos != std::string::npos) {
+                inst.name = line.substr(pos + 2);
+                // Trim
+                while (!inst.name.empty() && inst.name.back() == ' ')
+                    inst.name.pop_back();
+            }
+        } else if (line.starts_with("DIMENSION")) {
+            std::sscanf(line.c_str(), "DIMENSION : %d", &dimension);
+            x.resize(dimension);
+            y.resize(dimension);
+            demands.resize(dimension, 0);
+            profits.resize(dimension, 0);
+        } else if (line.starts_with("CAPACITY")) {
+            std::sscanf(line.c_str(), "CAPACITY : %lf", &capacity);
+        } else if (line.starts_with("NODE_COORD_SECTION")) {
+            section = COORDS;
+        } else if (line.starts_with("DEMAND_SECTION")) {
+            section = DEMANDS;
+        } else if (line.starts_with("DEPOT_SECTION")) {
+            section = DEPOT;
+        } else if (line.starts_with("PROFIT_SECTION")) {
+            section = PROFIT;
+        } else if (line.starts_with("EOF") || line.starts_with("EDGE_WEIGHT")) {
+            section = NONE;
+        } else if (section == COORDS) {
+            int id;
+            double cx, cy;
+            if (std::sscanf(line.c_str(), "%d %lf %lf", &id, &cx, &cy) == 3) {
+                x[id - 1] = cx;
+                y[id - 1] = cy;
+            }
+        } else if (section == DEMANDS) {
+            int id;
+            double d;
+            if (std::sscanf(line.c_str(), "%d %lf", &id, &d) == 2) {
+                demands[id - 1] = d;
+            }
+        } else if (section == DEPOT) {
+            int d;
+            if (std::sscanf(line.c_str(), "%d", &d) == 1 && d > 0) {
+                depot = d;
+            }
+        } else if (section == PROFIT) {
+            int id;
+            double p;
+            if (std::sscanf(line.c_str(), "%d %lf", &id, &p) == 2) {
+                profits[id - 1] = p;
+            }
+        }
+    }
+
+    // Compute Euclidean distance matrix
+    auto dist = [&](int i, int j) -> double {
+        double dx = x[i] - x[j];
+        double dy = y[i] - y[j];
+        return std::sqrt(dx * dx + dy * dy);
+    };
+
+    // Build instance: source = depot (0-indexed), sink = N (copy of depot)
+    int dep0 = depot - 1;  // 0-indexed depot
+    int N = dimension;
+    inst.n_vertices = N + 1;
+    inst.source = dep0;
+    inst.sink = N;
+
+    // Arc cost: distance(i,j) - profit[j]
+    // For arcs to sink (returning to depot): distance(i, depot) - profit[depot]
+    for (int i = 0; i < N; ++i) {
+        for (int j = 0; j < N; ++j) {
+            if (i == j) continue;
+            if (j == dep0) continue;  // use sink instead
+            if (i == dep0 && j == dep0) continue;
+
+            inst.arc_from.push_back(i);
+            inst.arc_to.push_back(j);
+            inst.arc_cost.push_back(dist(i, j) - profits[j]);
+            inst.arc_demand.push_back(demands[j]);
+        }
+        // Arc to sink (return to depot)
+        if (i != dep0) {
+            inst.arc_from.push_back(i);
+            inst.arc_to.push_back(N);
+            inst.arc_cost.push_back(dist(i, dep0) - profits[dep0]);
+            inst.arc_demand.push_back(0);
+        }
+    }
+
+    // Capacity bounds
+    inst.cap_lb.assign(inst.n_vertices, 0.0);
+    inst.cap_ub.assign(inst.n_vertices, capacity);
+
+    // No time windows — capacity only
+    inst.n_main_resources = 1;
+
+    // Pairwise ng-cost: dist(i,j) - profit[j] for all i,j in 0..N-1
+    inst.n_orig = N;
+    inst.ng_cost.resize(N * N);
+    for (int i = 0; i < N; ++i)
+        for (int j = 0; j < N; ++j)
+            inst.ng_cost[i * N + j] = dist(i, j) - profits[j];
+
+    return inst;
+}
+
+/// Compute ng-neighborhoods from pairwise costs or outgoing arc costs.
+/// For each vertex v, finds the k nearest neighbors by cost.
+/// When ng_cost is populated (complete-graph instances like SPPCC/Roberti),
+/// uses the original NxN cost matrix to match PathWyse's computation.
+inline void compute_ng_neighbors(Instance& inst, int k = 8) {
+    int nv = inst.n_vertices;
+    inst.ng_neighbors.resize(nv);
+
+    if (!inst.ng_cost.empty()) {
+        // Complete-graph instances: use pairwise ng_cost over original N nodes.
+        // ng-sets are defined over original nodes 0..N-1.
+        // Sink (= source copy) gets same ng-set as source.
+        int N = inst.n_orig;
+
+        for (int v = 0; v < N; ++v) {
+            // Collect {cost, target} pairs for all j != v
+            std::vector<std::pair<double, int>> candidates;
+            for (int j = 0; j < N; ++j) {
+                if (j == v) continue;
+                candidates.push_back({inst.ng_cost[v * N + j], j});
+            }
+            // Sort by cost ascending, break ties by ascending node ID
+            std::sort(candidates.begin(), candidates.end(),
+                      [](auto& a, auto& b) {
+                          return a.first < b.first ||
+                                 (a.first == b.first && a.second < b.second);
+                      });
+
+            inst.ng_neighbors[v].clear();
+            inst.ng_neighbors[v].push_back(v);
+            for (auto& [cost, j] : candidates) {
+                inst.ng_neighbors[v].push_back(j);
+                if (static_cast<int>(inst.ng_neighbors[v].size()) >= k)
+                    break;
+            }
+        }
+
+        // Sink gets same ng-set as source
+        if (inst.sink < nv) {
+            inst.ng_neighbors[inst.sink] = inst.ng_neighbors[inst.source];
+        }
+        return;
+    }
+
+    // Sparse-graph fallback: use outgoing arc costs
+    std::vector<std::vector<std::pair<int, double>>> adj(nv);
+    int na = static_cast<int>(inst.arc_from.size());
+    for (int a = 0; a < na; ++a) {
+        int from = inst.arc_from[a];
+        int to = inst.arc_to[a];
+        adj[from].push_back({to, inst.arc_cost[a]});
+    }
+
+    for (int v = 0; v < nv; ++v) {
+        auto& out = adj[v];
+        std::sort(out.begin(), out.end(),
+                  [](auto& a, auto& b) {
+                      return a.second < b.second ||
+                             (a.second == b.second && a.first < b.first);
+                  });
+
+        inst.ng_neighbors[v].clear();
+        inst.ng_neighbors[v].push_back(v);
+        for (auto& [to, cost] : out) {
+            bool dup = false;
+            for (int w : inst.ng_neighbors[v]) {
+                if (w == to) { dup = true; break; }
+            }
+            if (dup) continue;
+            inst.ng_neighbors[v].push_back(to);
+            if (static_cast<int>(inst.ng_neighbors[v].size()) >= k)
+                break;
+        }
+    }
 }
 
 /// Parse .graph file (rcspp_dataset format).
@@ -215,6 +435,7 @@ inline Instance load_rcspp_graph(const std::string& path) {
                         name, &n_vertices, &n_edges, &ng_size);
             inst.name = name;
             vertices.resize(n_vertices);
+            inst.ng_neighbors.resize(n_vertices);
         } else if (line[0] == 'v') {
             // v id a b d Q
             int id;
@@ -236,7 +457,10 @@ inline Instance load_rcspp_graph(const std::string& path) {
             inst.arc_demand.push_back(vertices[tgt].d);
         } else if (line[0] == 'n') {
             // n vertex neighbor1 neighbor2 ...
-            // (neighborhoods — we'll use these later for ng-path resource)
+            std::istringstream iss(line.substr(2));
+            int v, w;
+            iss >> v;
+            while (iss >> w) inst.ng_neighbors[v].push_back(w);
         }
     }
 
@@ -258,6 +482,16 @@ inline Instance load_rcspp_graph(const std::string& path) {
 
     // Two main resources: capacity + time
     inst.n_main_resources = 2;
+    inst.ng_size = ng_size;
+
+    // If no n-lines were parsed, compute ng-neighbors from arc costs
+    bool has_ng_lines = false;
+    for (int v = 0; v < n_vertices; ++v) {
+        if (!inst.ng_neighbors[v].empty()) { has_ng_lines = true; break; }
+    }
+    if (!has_ng_lines && ng_size > 0) {
+        compute_ng_neighbors(inst, ng_size);
+    }
 
     return inst;
 }
