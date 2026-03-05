@@ -853,6 +853,8 @@ private:
                     }
 
                     // Jump arcs (paper §4.1): extend with resource boost
+                    // Boost: fw → max(q, lb of jump bucket)
+                    //        bw → min(q, ub of jump bucket)
                     auto& jarcs = (dir == Direction::Forward) ?
                         buckets_[bi].jump_arcs : buckets_[bi].bw_jump_arcs;
                     for (const auto& ja : jarcs) {
@@ -1423,8 +1425,7 @@ private:
 
         total_enum_labels_ = 0;
         if (opts_.stage == Stage::Enumerate) {
-            if (fw_completion_.empty())
-                compute_completion_bounds(Direction::Forward);
+            compute_completion_bounds(Direction::Forward);
         }
 
         auto* src = create_initial_label(Direction::Forward);
@@ -1464,10 +1465,8 @@ private:
 
         total_enum_labels_ = 0;
         if (opts_.stage == Stage::Enumerate) {
-            if (fw_completion_.empty())
-                compute_completion_bounds(Direction::Forward);
-            if (bw_completion_.empty())
-                compute_completion_bounds(Direction::Backward);
+            compute_completion_bounds(Direction::Forward);
+            compute_completion_bounds(Direction::Backward);
         }
 
         double mu = compute_midpoint();
@@ -1558,6 +1557,7 @@ private:
         // Across-arc concatenation: for each arc a = (i,j), join fw labels at i
         // with bw labels at j using on-the-fly extend through arc a.
         // This finds paths crossing the bidir midpoint on a single arc.
+        [&] {
         for (int a = 0; a < pv_.n_arcs; ++a) {
             int i = pv_.arc_from[a];
             int j = pv_.arc_to[a];
@@ -1626,12 +1626,12 @@ private:
                         p.original_cost = total_real_cost;
                         paths.push_back(std::move(p));
                         if (static_cast<int>(paths.size()) >= opts_.max_paths)
-                            goto done_concat;
+                            return;
                     }
                 }
             }
         }
-        done_concat:
+        }();
 
         return paths;
     }
