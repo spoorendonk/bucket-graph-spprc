@@ -195,6 +195,115 @@ TEST_CASE("Arc elimination with tight theta removes arcs") {
     bg.reset_elimination();
 }
 
+TEST_CASE("Jump arcs are same-vertex (paper §4.1)") {
+    // With small step sizes, elimination should create jump arcs at the same
+    // vertex (bridging from a lower bucket to a higher one that retained the arc).
+    LargerGraph g;
+    BucketGraph<EmptyPack> bg(g.pv, EmptyPack{},
+        {.bucket_steps = {3.0, 1.0}, .tolerance = 1e9});
+    bg.build();
+    bg.solve();
+
+    // Tight theta to force elimination
+    bg.eliminate_arcs(8.0);
+
+    // Verify jump arcs target same vertex as source bucket
+    for (int i = 0; i < bg.n_buckets(); ++i) {
+        for (const auto& ja : bg.bucket(i).jump_arcs) {
+            CHECK(bg.bucket(ja.jump_bucket).vertex == bg.bucket(i).vertex);
+        }
+    }
+
+    bg.reset_elimination();
+}
+
+TEST_CASE("Jump arc resource boost preserves correctness") {
+    // After elimination + jump arcs, solving should still find the optimal path
+    LargerGraph g;
+    BucketGraph<EmptyPack> bg(g.pv, EmptyPack{},
+        {.bucket_steps = {3.0, 1.0}, .tolerance = 1e9});
+    bg.build();
+
+    auto paths_before = bg.solve();
+    REQUIRE(!paths_before.empty());
+    double best_before = paths_before[0].reduced_cost;
+
+    bg.eliminate_arcs(best_before + 5.0);
+    auto paths_after = bg.solve();
+    REQUIRE(!paths_after.empty());
+    CHECK(paths_after[0].reduced_cost == doctest::Approx(best_before));
+
+    bg.reset_elimination();
+}
+
+TEST_CASE("Label-based elimination preserves optimal paths") {
+    LargerGraph g;
+    BucketGraph<EmptyPack> bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .bidirectional = true});
+    bg.build();
+
+    auto paths_before = bg.solve();
+    REQUIRE(!paths_before.empty());
+    double best_before = paths_before[0].reduced_cost;
+
+    // Label-based elimination with generous theta should not remove optimal
+    bg.eliminate_arcs_label_based(best_before + 5.0);
+    auto paths_after = bg.solve();
+    REQUIRE(!paths_after.empty());
+    CHECK(paths_after[0].reduced_cost == doctest::Approx(best_before));
+
+    bg.reset_elimination();
+}
+
+TEST_CASE("Label-based elimination is at least as tight as bound-based") {
+    LargerGraph g;
+
+    // Bound-based
+    BucketGraph<EmptyPack> bg1(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .bidirectional = true});
+    bg1.build();
+    bg1.solve();
+    bg1.eliminate_arcs(8.0);
+    int arcs_bound = 0;
+    for (int i = 0; i < bg1.n_buckets(); ++i)
+        arcs_bound += static_cast<int>(bg1.bucket(i).bucket_arcs.size() +
+                                        bg1.bucket(i).bw_bucket_arcs.size());
+
+    // Label-based
+    BucketGraph<EmptyPack> bg2(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .bidirectional = true});
+    bg2.build();
+    bg2.solve();
+    bg2.eliminate_arcs_label_based(8.0);
+    int arcs_label = 0;
+    for (int i = 0; i < bg2.n_buckets(); ++i)
+        arcs_label += static_cast<int>(bg2.bucket(i).bucket_arcs.size() +
+                                        bg2.bucket(i).bw_bucket_arcs.size());
+
+    // Label-based should eliminate at least as many arcs (fewer remaining)
+    CHECK(arcs_label <= arcs_bound);
+}
+
+TEST_CASE("Label-based elimination mono falls back to bound-based") {
+    LargerGraph g;
+    BucketGraph<EmptyPack> bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+    bg.build();
+
+    auto paths_before = bg.solve();
+    REQUIRE(!paths_before.empty());
+    double best = paths_before[0].reduced_cost;
+
+    // Mono: label-based falls back to bound-based for forward arcs
+    // (no backward labels available). Should still preserve optimal.
+    bg.eliminate_arcs_label_based(best + 10.0);
+    auto paths_after = bg.solve();
+    REQUIRE(!paths_after.empty());
+    CHECK(paths_after[0].reduced_cost == doctest::Approx(best));
+
+    bg.reset_elimination();
+}
+
 TEST_CASE("Bucket fixing") {
     SimpleGraph g;
     BucketGraph<EmptyPack> bg(g.pv, EmptyPack{},
