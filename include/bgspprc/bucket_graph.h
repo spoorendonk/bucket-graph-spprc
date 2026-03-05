@@ -19,6 +19,7 @@
 #include <span>
 #include <stack>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 namespace bgspprc {
@@ -34,11 +35,13 @@ public:
         int max_paths = 100;
         double tolerance = -1e-6;
         bool bidirectional = false;
+        bool symmetric = false;  // skip backward labeling, use fw labels as bw
         Stage stage = Stage::Exact;
     };
 
     BucketGraph(const ProblemView& pv, Pack pack, Options opts = {})
         : pv_(pv), pack_(std::move(pack)), opts_(opts) {
+        if (opts_.symmetric) opts_.bidirectional = true;
         adj_.build(pv_);
         n_main_ = std::min(pv_.n_main_resources, 2);
     }
@@ -51,6 +54,9 @@ public:
         if (opts_.bidirectional) {
             build_bucket_arcs(Direction::Backward);
             compute_sccs(Direction::Backward);
+        }
+        if (opts_.symmetric) {
+            build_arc_lookup();
         }
     }
 
@@ -158,8 +164,8 @@ public:
     /// eliminate_arcs because it checks actual θ-compatible (L, L̃) pairs.
     /// Falls back to bound-based for mono-directional (no opposite labels).
     void eliminate_arcs_label_based(double theta) {
-        if (!opts_.bidirectional) {
-            // Mono: no backward labels → fall back to bound-based
+        if (!opts_.bidirectional || opts_.symmetric) {
+            // Mono or symmetric: no backward labels → fall back to bound-based
             eliminate_arcs(theta);
             return;
         }
@@ -1440,15 +1446,20 @@ private:
                         fw_bucket_labels_, mu);
         }
 
-        // Backward labeling
-        auto* snk = create_initial_label(Direction::Backward);
-        int snk_bi = vertex_bucket_index(pv_.sink, snk->q);
-        snk->bucket = snk_bi;
-        bw_bucket_labels_[snk_bi].push_back(snk);
+        if (!opts_.symmetric) {
+            // Backward labeling
+            auto* snk = create_initial_label(Direction::Backward);
+            int snk_bi = vertex_bucket_index(pv_.sink, snk->q);
+            snk->bucket = snk_bi;
+            bw_bucket_labels_[snk_bi].push_back(snk);
 
-        for (int scc : bw_scc_topo_order_) {
-            process_scc(scc, Direction::Backward, bw_scc_buckets_,
-                        bw_bucket_labels_, mu);
+            for (int scc : bw_scc_topo_order_) {
+                process_scc(scc, Direction::Backward, bw_scc_buckets_,
+                            bw_bucket_labels_, mu);
+            }
+        } else {
+            // Symmetric: populate bw_c_best from fw c_best via mirror
+            populate_symmetric_bw_c_best();
         }
 
         // Collect paths: forward labels that reached sink + concatenations
@@ -1483,10 +1494,17 @@ private:
             for (int bi = start; bi < end; ++bi) {
                 for (const auto* L : fw_bucket_labels_[bi])
                     if (!L->dominated) fw_by_vertex[v].push_back(L);
-                for (const auto* L : bw_bucket_labels_[bi])
-                    if (!L->dominated) bw_by_vertex[v].push_back(L);
+                if (!opts_.symmetric) {
+                    for (const auto* L : bw_bucket_labels_[bi])
+                        if (!L->dominated) bw_by_vertex[v].push_back(L);
+                }
             }
         }
+
+        // In symmetric mode, "bw" labels are fw labels reinterpreted
+        auto& bw_source = opts_.symmetric ? fw_by_vertex : bw_by_vertex;
+        Symmetry sym = opts_.symmetric ? Symmetry::Symmetric
+                                       : Symmetry::Asymmetric;
 
         auto append_bw_subpath = [](Path& p, const Label<Pack>* bw) {
             std::vector<int> bw_verts, bw_arcs;
@@ -1504,19 +1522,24 @@ private:
             int j = pv_.arc_to[a];
             if (i == pv_.source || i == pv_.sink) continue;
             if (j == pv_.source || j == pv_.sink) continue;
-            if (fw_by_vertex[i].empty() || bw_by_vertex[j].empty()) continue;
+            if (fw_by_vertex[i].empty() || bw_source[j].empty()) continue;
 
             double arc_cost = reduced_costs_ ? reduced_costs_[a]
                                              : pv_.arc_base_cost[a];
             double arc_real_cost = pv_.arc_base_cost[a];
 
             for (const auto* fw : fw_by_vertex[i]) {
-                for (const auto* bw : bw_by_vertex[j]) {
+                for (const auto* bw : bw_source[j]) {
                     bool feasible = true;
                     for (int r = 0; r < n_main_; ++r) {
                         double fw_after_arc = fw->q[r] + pv_.arc_resource[r][a];
                         fw_after_arc = std::max(fw_after_arc, pv_.vertex_lb[r][j]);
-                        if (fw_after_arc > bw->q[r] + EPS) {
+                        // In symmetric mode, bw->q is actually a forward q;
+                        // the backward equivalent is l_r + u_r - q_fw_r
+                        double q_bw = opts_.symmetric
+                            ? (pv_.vertex_lb[r][j] + pv_.vertex_ub[r][j] - bw->q[r])
+                            : bw->q[r];
+                        if (fw_after_arc > q_bw + EPS) {
                             feasible = false;
                             break;
                         }
@@ -1533,7 +1556,7 @@ private:
                         total_cost += ext_cost;
 
                         double cc = pack_.concatenation_cost(
-                            Symmetry::Asymmetric, j,
+                            sym, j,
                             ext_states, bw->resource_states);
                         if (cc >= INF) continue;
                         total_cost += cc;
@@ -1541,7 +1564,7 @@ private:
 
                     if (r1c_.has_cuts() && fw->r1c_states && bw->r1c_states) {
                         total_cost += r1c_.concatenation_cost(
-                            Symmetry::Asymmetric, j,
+                            sym, j,
                             {fw->r1c_states,
                              static_cast<std::size_t>(fw->n_r1c_words)},
                             {bw->r1c_states,
@@ -1553,7 +1576,11 @@ private:
                         fw->get_path(p.vertices, p.arcs);
                         p.arcs.push_back(a);
                         p.vertices.push_back(j);
-                        append_bw_subpath(p, bw);
+                        if (opts_.symmetric) {
+                            append_symmetric_bw_subpath(p, bw);
+                        } else {
+                            append_bw_subpath(p, bw);
+                        }
                         p.reduced_cost = total_cost;
                         p.original_cost = total_real_cost;
                         paths.push_back(std::move(p));
@@ -1597,6 +1624,64 @@ private:
         return paths;
     }
 
+    // ── Symmetric mode helpers ──
+
+    /// Map a bucket to its resource-mirrored counterpart at the same vertex.
+    /// With uniform windows, bucket κ = (k0, k1) mirrors to
+    /// (nb[0]-1-k0, nb[1]-1-k1).
+    int mirror_bucket(int bi) const {
+        int v = buckets_[bi].vertex;
+        int vstart = vertex_bucket_start_[v];
+        auto& nb_v = vertex_n_buckets_[v];
+        int k0 = (bi - vstart) / nb_v[1];
+        int k1 = (bi - vstart) % nb_v[1];
+        int mk0 = nb_v[0] - 1 - k0;
+        int mk1 = nb_v[1] - 1 - k1;
+        return vstart + mk0 * nb_v[1] + mk1;
+    }
+
+    /// After forward labeling, mirror c_best into bw_c_best.
+    void populate_symmetric_bw_c_best() {
+        for (int bi = 0; bi < static_cast<int>(buckets_.size()); ++bi) {
+            int mbi = mirror_bucket(bi);
+            buckets_[bi].bw_c_best = buckets_[mbi].c_best;
+        }
+    }
+
+    /// Build arc lookup table for symmetric path reconstruction.
+    void build_arc_lookup() {
+        arc_lookup_.clear();
+        arc_lookup_.reserve(pv_.n_arcs);
+        for (int a = 0; a < pv_.n_arcs; ++a) {
+            int64_t key = static_cast<int64_t>(pv_.arc_from[a]) * pv_.n_vertices
+                        + pv_.arc_to[a];
+            arc_lookup_[key] = a;
+        }
+    }
+
+    /// Find arc id for (from, to). Returns -1 if not found.
+    int find_arc(int from, int to) const {
+        auto it = arc_lookup_.find(
+            static_cast<int64_t>(from) * pv_.n_vertices + to);
+        return (it != arc_lookup_.end()) ? it->second : -1;
+    }
+
+    /// Append the reversed forward path of a symmetric "bw" label.
+    /// The bw label is actually a forward label; we reverse its path
+    /// and look up opposite arcs.
+    void append_symmetric_bw_subpath(Path& p, const Label<Pack>* bw) const {
+        std::vector<int> bw_verts, bw_arcs;
+        bw->get_path(bw_verts, bw_arcs);
+        // bw_verts = [source, ..., j], we need j→...→source reversed
+        // j is already appended, so start from index size()-2
+        for (int k = static_cast<int>(bw_verts.size()) - 2; k >= 0; --k) {
+            p.vertices.push_back(bw_verts[k]);
+            int opp = find_arc(bw_verts[k + 1], bw_verts[k]);
+            assert(opp >= 0 && "symmetric mode requires opposite arc for every arc");
+            p.arcs.push_back(opp);
+        }
+    }
+
     // ── Data ──
 
     const ProblemView& pv_;
@@ -1613,6 +1698,9 @@ private:
     std::vector<double> bw_completion_;   // backward cost-to-go (b → source)
     std::vector<int> vertex_bucket_start_;
     std::vector<std::array<int, 2>> vertex_n_buckets_;
+
+    // Arc lookup for symmetric path reconstruction: (from*V + to) → arc_id
+    std::unordered_map<int64_t, int> arc_lookup_;
 
     // Forward SCC data
     std::vector<std::vector<int>> fw_scc_buckets_;

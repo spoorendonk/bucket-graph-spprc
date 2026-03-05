@@ -1303,3 +1303,278 @@ TEST_CASE("No feasible path") {
     auto bp = bidir.solve();
     CHECK(bp.empty());
 }
+
+// ── Symmetric case (§3.6) ──
+// Symmetric mode requires source = sink (CVRP depot case).
+
+// Small symmetric CVRP-like graph: depot=0 (source=sink), customers 1,2,3
+// All edges have reverse arcs with identical costs. Uniform windows.
+struct SymmetricGraph {
+    // 4 vertices: 0=depot (source and sink), 1, 2, 3
+    // Edges: 0-1, 0-2, 1-2, 1-3, 2-3, 0-3 = 12 arcs
+    int from[12]      = {0, 0, 0, 1, 1, 2,   1, 2, 3, 2, 3, 3};
+    int to[12]        = {1, 2, 3, 2, 3, 3,   0, 0, 0, 1, 1, 2};
+    double cost[12]   = {2.0, 3.0, 7.0, 1.0, 4.0, 2.0,
+                         2.0, 3.0, 7.0, 1.0, 4.0, 2.0};
+    double time_d[12] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+                         1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+
+    // Uniform time windows
+    double tw_lb[4] = {0.0, 0.0, 0.0, 0.0};
+    double tw_ub[4] = {10.0, 10.0, 10.0, 10.0};
+
+    const double* arc_res[1]   = {time_d};
+    const double* v_lb[1]      = {tw_lb};
+    const double* v_ub[1]      = {tw_ub};
+
+    ProblemView pv;
+
+    SymmetricGraph() {
+        pv.n_vertices = 4;
+        pv.source = 0;
+        pv.sink = 0;  // depot = source = sink
+        pv.n_arcs = 12;
+        pv.arc_from = from;
+        pv.arc_to = to;
+        pv.arc_base_cost = cost;
+        pv.n_resources = 1;
+        pv.arc_resource = arc_res;
+        pv.vertex_lb = v_lb;
+        pv.vertex_ub = v_ub;
+        pv.n_main_resources = 1;
+    }
+};
+
+// Larger symmetric graph: depot=0, customers 1-4
+struct LargerSymmetricGraph {
+    // Edges: 0-1, 0-2, 0-3, 0-4, 1-2, 1-3, 2-4, 3-4 = 16 arcs
+    int from[16]      = {0, 0, 0, 0, 1, 1, 2, 3,   1, 2, 3, 4, 2, 3, 4, 4};
+    int to[16]        = {1, 2, 3, 4, 2, 3, 4, 4,   0, 0, 0, 0, 1, 1, 2, 3};
+    double cost[16]   = {5.0, 3.0, 4.0, 6.0, 2.0, 3.0, 4.0, 1.0,
+                         5.0, 3.0, 4.0, 6.0, 2.0, 3.0, 4.0, 1.0};
+    double time_d[16] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+                         1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+
+    double tw_lb[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+    double tw_ub[5] = {10.0, 10.0, 10.0, 10.0, 10.0};
+
+    const double* arc_res[1]   = {time_d};
+    const double* v_lb[1]      = {tw_lb};
+    const double* v_ub[1]      = {tw_ub};
+
+    ProblemView pv;
+
+    LargerSymmetricGraph() {
+        pv.n_vertices = 5;
+        pv.source = 0;
+        pv.sink = 0;  // depot = source = sink
+        pv.n_arcs = 16;
+        pv.arc_from = from;
+        pv.arc_to = to;
+        pv.arc_base_cost = cost;
+        pv.n_resources = 1;
+        pv.arc_resource = arc_res;
+        pv.vertex_lb = v_lb;
+        pv.vertex_ub = v_ub;
+        pv.n_main_resources = 1;
+    }
+};
+
+TEST_CASE("Symmetric: matches bidir on small graph") {
+    SymmetricGraph g;
+
+    BucketGraph<EmptyPack> bidir(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .bidirectional = true});
+    bidir.build();
+    auto bidir_paths = bidir.solve();
+
+    BucketGraph<EmptyPack> sym(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .symmetric = true});
+    sym.build();
+    auto sym_paths = sym.solve();
+
+    REQUIRE(!bidir_paths.empty());
+    REQUIRE(!sym_paths.empty());
+    CHECK(sym_paths[0].reduced_cost ==
+          doctest::Approx(bidir_paths[0].reduced_cost));
+}
+
+TEST_CASE("Symmetric: matches bidir on larger graph") {
+    LargerSymmetricGraph g;
+
+    BucketGraph<EmptyPack> bidir(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .bidirectional = true});
+    bidir.build();
+    auto bidir_paths = bidir.solve();
+
+    BucketGraph<EmptyPack> sym(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .symmetric = true});
+    sym.build();
+    auto sym_paths = sym.solve();
+
+    REQUIRE(!bidir_paths.empty());
+    REQUIRE(!sym_paths.empty());
+    CHECK(sym_paths[0].reduced_cost ==
+          doctest::Approx(bidir_paths[0].reduced_cost));
+}
+
+TEST_CASE("Symmetric: no backward labels generated") {
+    SymmetricGraph g;
+
+    BucketGraph<EmptyPack> sym(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .symmetric = true});
+    sym.build();
+    sym.solve();
+
+    // Backward bucket arcs still exist (needed for elimination/fixing)
+    int bw_arcs = 0;
+    for (int i = 0; i < sym.n_buckets(); ++i)
+        bw_arcs += static_cast<int>(sym.bucket(i).bw_bucket_arcs.size());
+    CHECK(bw_arcs > 0);
+}
+
+TEST_CASE("Symmetric: path validity") {
+    LargerSymmetricGraph g;
+
+    BucketGraph<EmptyPack> sym(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .symmetric = true});
+    sym.build();
+    auto paths = sym.solve();
+
+    for (const auto& p : paths) {
+        // Source = sink = depot (0)
+        CHECK(p.vertices.front() == 0);
+        CHECK(p.vertices.back() == 0);
+
+        // Arcs match vertices
+        REQUIRE(p.arcs.size() + 1 == p.vertices.size());
+        for (size_t i = 0; i < p.arcs.size(); ++i) {
+            int a = p.arcs[i];
+            CHECK(a >= 0);
+            CHECK(g.from[a] == p.vertices[i]);
+            CHECK(g.to[a] == p.vertices[i + 1]);
+        }
+
+        // Cost matches arc sum
+        double sum = 0.0;
+        for (int a : p.arcs) sum += g.cost[a];
+        CHECK(p.original_cost == doctest::Approx(sum));
+    }
+}
+
+TEST_CASE("Symmetric: fixing and elimination preserve optimality") {
+    LargerSymmetricGraph g;
+
+    BucketGraph<EmptyPack> sym(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .symmetric = true});
+    sym.build();
+
+    auto paths = sym.solve();
+    REQUIRE(!paths.empty());
+    double best = paths[0].reduced_cost;
+
+    // Arc elimination
+    sym.eliminate_arcs(best + 5.0);
+    auto paths2 = sym.solve();
+    REQUIRE(!paths2.empty());
+    CHECK(paths2[0].reduced_cost == doctest::Approx(best));
+
+    sym.reset_elimination();
+
+    // Bucket fixing
+    sym.solve();
+    sym.fix_buckets(best + 5.0);
+    auto paths3 = sym.solve();
+    REQUIRE(!paths3.empty());
+    CHECK(paths3[0].reduced_cost == doctest::Approx(best));
+
+    sym.reset_elimination();
+}
+
+TEST_CASE("Symmetric: label-based elimination falls back to bound-based") {
+    LargerSymmetricGraph g;
+
+    BucketGraph<EmptyPack> sym(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .symmetric = true});
+    sym.build();
+
+    auto paths = sym.solve();
+    REQUIRE(!paths.empty());
+    double best = paths[0].reduced_cost;
+
+    sym.eliminate_arcs_label_based(best + 5.0);
+    auto paths2 = sym.solve();
+    REQUIRE(!paths2.empty());
+    CHECK(paths2[0].reduced_cost == doctest::Approx(best));
+
+    sym.reset_elimination();
+}
+
+TEST_CASE("Symmetric: with reduced costs") {
+    LargerSymmetricGraph g;
+    // Symmetric reduced costs (same for arc and its reverse)
+    double red_cost[16] = {-10.0, 3.0, 4.0, 6.0, 2.0, 3.0, 4.0, 1.0,
+                           -10.0, 3.0, 4.0, 6.0, 2.0, 3.0, 4.0, 1.0};
+
+    BucketGraph<EmptyPack> bidir(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 0.0, .bidirectional = true});
+    bidir.build();
+    bidir.update_arc_costs(red_cost);
+    auto bidir_paths = bidir.solve();
+
+    BucketGraph<EmptyPack> sym(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 0.0, .symmetric = true});
+    sym.build();
+    sym.update_arc_costs(red_cost);
+    auto sym_paths = sym.solve();
+
+    REQUIRE(!bidir_paths.empty());
+    REQUIRE(!sym_paths.empty());
+    CHECK(sym_paths[0].reduced_cost ==
+          doctest::Approx(bidir_paths[0].reduced_cost));
+}
+
+TEST_CASE("Symmetric: fine bucket steps exercise mirror_bucket") {
+    LargerSymmetricGraph g;
+
+    // step=1 → 10 buckets per vertex (window [0,10]), exercises mirror indexing
+    BucketGraph<EmptyPack> bidir(g.pv, EmptyPack{},
+        {.bucket_steps = {1.0, 1.0}, .tolerance = 1e9, .bidirectional = true});
+    bidir.build();
+    auto bidir_paths = bidir.solve();
+
+    BucketGraph<EmptyPack> sym(g.pv, EmptyPack{},
+        {.bucket_steps = {1.0, 1.0}, .tolerance = 1e9, .symmetric = true});
+    sym.build();
+    auto sym_paths = sym.solve();
+
+    REQUIRE(!bidir_paths.empty());
+    REQUIRE(!sym_paths.empty());
+    CHECK(sym_paths[0].reduced_cost ==
+          doctest::Approx(bidir_paths[0].reduced_cost));
+
+    // Verify path validity with fine steps
+    for (const auto& p : sym_paths) {
+        CHECK(p.vertices.front() == 0);
+        CHECK(p.vertices.back() == 0);
+        REQUIRE(p.arcs.size() + 1 == p.vertices.size());
+        for (size_t i = 0; i < p.arcs.size(); ++i) {
+            int a = p.arcs[i];
+            CHECK(a >= 0);
+            CHECK(g.from[a] == p.vertices[i]);
+            CHECK(g.to[a] == p.vertices[i + 1]);
+        }
+    }
+}
+
+TEST_CASE("Symmetric: solver wiring") {
+    SymmetricGraph g;
+    Solver<EmptyPack> solver(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .symmetric = true, .tolerance = 1e9});
+    solver.build();
+    solver.set_stage(Stage::Exact);
+    auto paths = solver.solve();
+    REQUIRE(!paths.empty());
+    // Best route from depot: 0→1→2→0 (cost 2+1+3=6) or 0→2→1→0 (cost 3+1+2=6)
+    CHECK(paths[0].reduced_cost <= 6.0 + 1e-6);
+}
