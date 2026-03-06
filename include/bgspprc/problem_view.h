@@ -30,6 +30,11 @@ struct ProblemView {
 
     int n_main_resources = 1;  // 1 or 2 (defines bucket grid dimensions)
 
+    // Per-resource non-disposability: array of n_resources bools.
+    // true = non-disposable (equality required in dominance).
+    // nullptr means all resources are disposable (default).
+    const bool* resource_nondisposable = nullptr;
+
     // Adjacency (caller-built or we build internally)
     // outgoing_arcs[v] = span of arc indices leaving v
     // incoming_arcs[v] = span of arc indices entering v
