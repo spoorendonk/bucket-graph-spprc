@@ -1759,4 +1759,122 @@ TEST_CASE("Enumerate: theta mismatch warning") {
     bg.solve();  // should not warn
     CHECK(bg.enumeration_complete());
 }
+
+TEST_CASE("Midpoint initializes to average of resource bounds") {
+    SimpleGraph g;
+    // tw_lb all 0, tw_ub all 10 → midpoint = (0+10)/2 = 5
+    BucketGraph<EmptyPack> bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .bidirectional = true});
+    bg.build();
+    bg.solve();
+    CHECK(bg.midpoint() == doctest::Approx(5.0));
+}
+
+TEST_CASE("Midpoint adjusts on forward-heavy imbalance") {
+    // Asymmetric graph: fan-out near source with small time, then a single
+    // arc with large time to sink. Forward creates many labels (one per
+    // intermediate vertex) in the q <= midpoint zone, while backward from
+    // sink crosses the midpoint in one hop and stops extending.
+    //
+    // 0→1,0→2,0→3,0→4 (t=1), 1→5,2→5,3→5,4→5 (t=1), 5→6 (t=8)
+    // TW: [0,10] for all. Midpoint = 5.
+    // Forward: labels at 1,2,3,4 (q=1), 5 (q=2), 6 (q=10) → ~9 labels
+    // Backward: 6→5 lands at q=2 < midpoint → only 1 label inserted
+    // Ratio ~9:1 → triggers 5% shift toward max.
+    int from_arr[9] = {0, 0, 0, 0, 1, 2, 3, 4, 5};
+    int to_arr[9]   = {1, 2, 3, 4, 5, 5, 5, 5, 6};
+    double cost_arr[9] = {1, 2, 3, 4, 1, 1, 1, 1, 1};
+    double time_arr[9] = {1, 1, 1, 1, 1, 1, 1, 1, 8};
+    double tw_lb[7] = {0, 0, 0, 0, 0, 0, 0};
+    double tw_ub[7] = {10, 10, 10, 10, 10, 10, 10};
+
+    const double* arc_res[1] = {time_arr};
+    const double* v_lb[1]    = {tw_lb};
+    const double* v_ub[1]    = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 7;
+    pv.source = 0;
+    pv.sink = 6;
+    pv.n_arcs = 9;
+    pv.arc_from = from_arr;
+    pv.arc_to = to_arr;
+    pv.arc_base_cost = cost_arr;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    BucketGraph<EmptyPack> bg(pv, EmptyPack{},
+        {.bucket_steps = {1.0, 1.0}, .tolerance = 1e9, .bidirectional = true,
+         .stage = Stage::Exact});
+    bg.build();
+
+    bg.solve();
+    double mid1 = bg.midpoint();
+    // First solve: initializes to 5.0, then adjusts upward (fw >> bw)
+    CHECK(mid1 > 5.0);
+
+    bg.solve();
+    double mid2 = bg.midpoint();
+    // Second solve: should shift further upward
+    CHECK(mid2 > mid1);
+}
+
+TEST_CASE("Midpoint resets on build") {
+    LargerGraph g;
+    BucketGraph<EmptyPack> bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .bidirectional = true,
+         .stage = Stage::Exact});
+    bg.build();
+    bg.solve();
+    double mid1 = bg.midpoint();
+    CHECK(mid1 != 0.0);  // should be initialized
+
+    // Rebuild resets midpoint
+    bg.build();
+    bg.solve();
+    double mid2 = bg.midpoint();
+    // After rebuild, midpoint reinitializes to default (same graph → same value)
+    CHECK(mid2 == doctest::Approx(mid1).epsilon(0.1));
+}
+
+TEST_CASE("No midpoint adjustment in heuristic/enumerate stages") {
+    LargerGraph g;
+    BucketGraph<EmptyPack> bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .bidirectional = true,
+         .stage = Stage::Heuristic1});
+    bg.build();
+    bg.solve();
+    double mid_h1 = bg.midpoint();
+    // Solve again — heuristic should not adjust
+    bg.solve();
+    double mid_h2 = bg.midpoint();
+    CHECK(mid_h1 == doctest::Approx(mid_h2));
+}
+
+TEST_CASE("Bidirectional correctness preserved with adaptive midpoint") {
+    LargerGraph g;
+
+    BucketGraph<EmptyPack> mono(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+    mono.build();
+    auto mono_paths = mono.solve();
+
+    BucketGraph<EmptyPack> bidir(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .bidirectional = true,
+         .stage = Stage::Exact});
+    bidir.build();
+    // Solve multiple times to let midpoint adapt
+    auto bidir_paths = bidir.solve();
+    bidir_paths = bidir.solve();
+    bidir_paths = bidir.solve();
+
+    REQUIRE(!mono_paths.empty());
+    REQUIRE(!bidir_paths.empty());
+    CHECK(bidir_paths[0].reduced_cost ==
+          doctest::Approx(mono_paths[0].reduced_cost));
+}
+
 #endif  // !_WIN32

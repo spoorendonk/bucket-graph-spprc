@@ -60,6 +60,7 @@ public:
         if (opts_.symmetric) {
             build_arc_lookup();
         }
+        midpoint_initialized_ = false;
     }
 
     /// Update reduced costs (fast, O(1) — just stores the pointer).
@@ -96,6 +97,9 @@ public:
     void set_stage(Stage s) { opts_.stage = s; }
     void set_tolerance(double t) { opts_.tolerance = t; }
     bool enumeration_complete() const { return enum_complete_; }
+
+    void reset_midpoint() { midpoint_initialized_ = false; }
+    double midpoint() const { return midpoint_; }
 
     /// Save best labels for warm starting the next solve.
     /// Keeps the top `fraction` of non-dominated labels by cost.
@@ -794,6 +798,8 @@ private:
             remove_dominated(new_label, actual_bi, dir, labels);
             labels[actual_bi].push_back(new_label);
             ++label_count;
+            if (dir == Direction::Forward) ++fw_label_count_;
+            else ++bw_label_count_;
             return true;
         }
         return false;
@@ -1482,13 +1488,31 @@ private:
 
     // ── Bi-directional solve ──
 
-    double compute_midpoint() const {
+    double get_midpoint() {
+        if (!midpoint_initialized_) {
+            double min_lb = INF, max_ub = -INF;
+            for (int v = 0; v < pv_.n_vertices; ++v) {
+                min_lb = std::min(min_lb, pv_.vertex_lb[0][v]);
+                max_ub = std::max(max_ub, pv_.vertex_ub[0][v]);
+            }
+            midpoint_ = (min_lb + max_ub) / 2.0;
+            midpoint_initialized_ = true;
+        }
+        return midpoint_;
+    }
+
+    void adjust_midpoint() {
+        if (fw_label_count_ == 0 && bw_label_count_ == 0) return;
         double min_lb = INF, max_ub = -INF;
         for (int v = 0; v < pv_.n_vertices; ++v) {
             min_lb = std::min(min_lb, pv_.vertex_lb[0][v]);
             max_ub = std::max(max_ub, pv_.vertex_ub[0][v]);
         }
-        return (min_lb + max_ub) / 2.0;
+        if (fw_label_count_ > 1.2 * bw_label_count_) {
+            midpoint_ += 0.05 * (max_ub - midpoint_);
+        } else if (bw_label_count_ > 1.2 * fw_label_count_) {
+            midpoint_ -= 0.05 * (midpoint_ - min_lb);
+        }
     }
 
     std::vector<Path> solve_bidirectional() {
@@ -1497,6 +1521,8 @@ private:
         reset_label_storage(bw_bucket_labels_);
         reset_c_best();
 
+        fw_label_count_ = 0;
+        bw_label_count_ = 0;
         total_enum_labels_ = 0;
         enum_complete_ = true;
         enum_sink_labels_ = 0;
@@ -1511,7 +1537,7 @@ private:
             }
         }
 
-        double mu = compute_midpoint();
+        double mu = get_midpoint();
 
         // Forward labeling
         auto* src = create_initial_label(Direction::Forward);
@@ -1548,6 +1574,9 @@ private:
             // Symmetric: populate bw_c_best from fw c_best via mirror
             populate_symmetric_bw_c_best();
         }
+
+        if (opts_.stage == Stage::Exact && !opts_.symmetric)
+            adjust_midpoint();
 
         // Collect paths: forward labels that reached sink + concatenations
         auto paths = extract_paths(fw_bucket_labels_);
@@ -1898,6 +1927,12 @@ private:
     bool enum_complete_ = true;
     int enum_sink_labels_ = 0;  // labels that landed in sink buckets
     double fixing_theta_ = INF;  // theta used in last fix_buckets call
+
+    // Adaptive midpoint for bidirectional labeling
+    int fw_label_count_ = 0;
+    int bw_label_count_ = 0;
+    double midpoint_ = 0.0;
+    bool midpoint_initialized_ = false;
 
     LabelPool<Pack> pool_;
     R1CManager r1c_;
