@@ -74,6 +74,10 @@ public:
     /// Reset all elimination/fixing.
     void reset_elimination() { bg_.reset_elimination(); }
 
+    /// Adaptive midpoint control for bidirectional labeling.
+    void reset_midpoint() { bg_.reset_midpoint(); }
+    double midpoint() const { return bg_.midpoint(); }
+
     /// Set R1C cuts.
     void set_r1c_cuts(std::span<const R1Cut> cuts) { bg_.set_r1c_cuts(cuts); }
 
