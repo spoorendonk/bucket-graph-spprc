@@ -5,6 +5,11 @@
 #include <bgspprc/resources/ng_path.h>
 #include <bgspprc/solver.h>
 
+#include <cstdio>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 using namespace bgspprc;
 
 // Helper to build a simple 4-vertex graph:
@@ -951,6 +956,98 @@ TEST_CASE("Solver: enumerate with tight gap") {
     CHECK(paths[0].reduced_cost == doctest::Approx(3.0));
 }
 
+// Graph with parallel arcs where one label strictly dominates another:
+//   Arc 0: 0→1 (cost=1, t=1)
+//   Arc 1: 0→1 (cost=3, t=1)  ← dominated by arc 0
+//   Arc 2: 1→2 (cost=1, t=1)
+//   Arc 3: 2→3 (cost=1, t=1)
+struct ParallelArcGraph {
+    int from[4]      = {0, 0, 1, 2};
+    int to[4]        = {1, 1, 2, 3};
+    double cost[4]   = {1.0, 3.0, 1.0, 1.0};
+    double time_d[4] = {1.0, 1.0, 1.0, 1.0};
+
+    double tw_lb[4] = {0.0, 0.0, 0.0, 0.0};
+    double tw_ub[4] = {10.0, 10.0, 10.0, 10.0};
+
+    const double* arc_res[1]   = {time_d};
+    const double* v_lb[1]      = {tw_lb};
+    const double* v_ub[1]      = {tw_ub};
+
+    ProblemView pv;
+
+    ParallelArcGraph() {
+        pv.n_vertices = 4;
+        pv.source = 0;
+        pv.sink = 3;
+        pv.n_arcs = 4;
+        pv.arc_from = from;
+        pv.arc_to = to;
+        pv.arc_base_cost = cost;
+        pv.n_resources = 1;
+        pv.arc_resource = arc_res;
+        pv.vertex_lb = v_lb;
+        pv.vertex_ub = v_ub;
+        pv.n_main_resources = 1;
+    }
+};
+
+TEST_CASE("Enumerate: finds dominated paths") {
+    ParallelArcGraph g;
+    using BG = BucketGraph<EmptyPack>;
+    BG bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .max_paths = 100,
+         .tolerance = 1e9, .stage = Stage::Exact});
+    bg.build();
+
+    // Exact solve: dominance prunes the cost-5 path, only cost-3 found
+    auto exact = bg.solve();
+    CHECK(exact.size() == 1);
+    CHECK(exact[0].reduced_cost == doctest::Approx(3.0));
+
+    // Enumerate with large gap: both paths found (cost-3 and cost-5)
+    bg.set_stage(Stage::Enumerate);
+    bg.set_tolerance(10.0);
+    auto enumerated = bg.solve();
+    CHECK(enumerated.size() == 2);
+    // Sorted by cost
+    CHECK(enumerated[0].reduced_cost == doctest::Approx(3.0));
+    CHECK(enumerated[1].reduced_cost == doctest::Approx(5.0));
+}
+
+TEST_CASE("Enumerate: completion-bound pruning filters correctly") {
+    ParallelArcGraph g;
+    using BG = BucketGraph<EmptyPack>;
+    BG bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .max_paths = 100,
+         .tolerance = 4.0, .stage = Stage::Enumerate});
+    bg.build();
+
+    // gap=4.0: only cost-3 path should be found (cost-5 pruned by completion bound)
+    auto paths = bg.solve();
+    CHECK(paths.size() == 1);
+    CHECK(paths[0].reduced_cost == doctest::Approx(3.0));
+}
+
+TEST_CASE("Enumerate: bidirectional finds more paths than exact") {
+    ParallelArcGraph g;
+    using BG = BucketGraph<EmptyPack>;
+
+    BG bg_exact(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .max_paths = 1000,
+         .tolerance = 1e9, .bidirectional = true, .stage = Stage::Exact});
+    bg_exact.build();
+    auto exact = bg_exact.solve();
+
+    BG bg_enum(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .max_paths = 1000,
+         .tolerance = 1e9, .bidirectional = true, .stage = Stage::Enumerate});
+    bg_enum.build();
+    auto enumerated = bg_enum.solve();
+
+    CHECK(enumerated.size() > exact.size());
+}
+
 // ── Completion bounds ──
 
 TEST_CASE("Completion bounds: sink has zero completion") {
@@ -1578,3 +1675,88 @@ TEST_CASE("Symmetric: solver wiring") {
     // Best route from depot: 0→1→2→0 (cost 2+1+3=6) or 0→2→1→0 (cost 3+1+2=6)
     CHECK(paths[0].reduced_cost <= 6.0 + 1e-6);
 }
+
+TEST_CASE("Enumerate: completeness flag") {
+    ParallelArcGraph g;
+    using BG = BucketGraph<EmptyPack>;
+
+    // Normal enumeration → complete
+    BG bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .max_paths = 1000,
+         .tolerance = 1e9, .stage = Stage::Enumerate,
+         .max_enum_labels = 5000000});
+    bg.build();
+    bg.solve();
+    CHECK(bg.enumeration_complete());
+
+    // Tiny label cap → incomplete
+    BG bg2(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .max_paths = 1000,
+         .tolerance = 1e9, .stage = Stage::Enumerate,
+         .max_enum_labels = 1});
+    bg2.build();
+    bg2.solve();
+    CHECK_FALSE(bg2.enumeration_complete());
+}
+
+TEST_CASE("Enumerate: max_paths triggers incomplete") {
+    ParallelArcGraph g;
+    using BG = BucketGraph<EmptyPack>;
+
+    BG bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .max_paths = 1,
+         .tolerance = 1e9, .stage = Stage::Enumerate});
+    bg.build();
+    auto paths = bg.solve();
+    CHECK(paths.size() == 1);
+    CHECK_FALSE(bg.enumeration_complete());
+}
+
+#ifndef _WIN32
+TEST_CASE("Enumerate: theta mismatch warning") {
+    ParallelArcGraph g;
+    using BG = BucketGraph<EmptyPack>;
+
+    BG bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .max_paths = 1000,
+         .tolerance = -1e-6, .stage = Stage::Exact});
+    bg.build();
+    bg.solve();
+
+    // Fix buckets with theta=2.0 (tight enough to fix some buckets)
+    int nf = bg.fix_buckets(2.0);
+    REQUIRE(nf > 0);
+
+    // Enumerate with a different gap — should warn on stderr
+    bg.set_stage(Stage::Enumerate);
+    bg.set_tolerance(10.0);  // differs from fixing theta=2.0
+
+    // Capture stderr via pipe
+    int pipefd[2];
+    REQUIRE(pipe(pipefd) == 0);
+    int old_fd = dup(STDERR_FILENO);
+    dup2(pipefd[1], STDERR_FILENO);
+
+    bg.solve();
+
+    // Restore stderr and read captured output
+    fflush(stderr);
+    dup2(old_fd, STDERR_FILENO);
+    close(old_fd);
+    close(pipefd[1]);
+
+    char buf[1024] = {};
+    auto n = read(pipefd[0], buf, sizeof(buf) - 1);
+    close(pipefd[0]);
+    REQUIRE(n > 0);
+
+    std::string output(buf, static_cast<std::size_t>(n));
+    CHECK(output.find("warning") != std::string::npos);
+    CHECK(output.find("theta=2") != std::string::npos);
+
+    // After reset_elimination, no warning (fixing_theta_ reset to INF)
+    bg.reset_elimination();
+    bg.solve();  // should not warn
+    CHECK(bg.enumeration_complete());
+}
+#endif  // !_WIN32

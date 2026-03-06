@@ -12,6 +12,7 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -37,6 +38,7 @@ public:
         bool bidirectional = false;
         bool symmetric = false;  // skip backward labeling, use fw labels as bw
         Stage stage = Stage::Exact;
+        int max_enum_labels = 5000000;  // safety cap on total labels during enumeration
     };
 
     BucketGraph(const ProblemView& pv, Pack pack, Options opts = {})
@@ -93,6 +95,7 @@ public:
 
     void set_stage(Stage s) { opts_.stage = s; }
     void set_tolerance(double t) { opts_.tolerance = t; }
+    bool enumeration_complete() const { return enum_complete_; }
 
     /// Save best labels for warm starting the next solve.
     /// Keeps the top `fraction` of non-dominated labels by cost.
@@ -192,6 +195,7 @@ public:
     ///
     /// Returns number of newly fixed buckets.
     int fix_buckets(double theta) {
+        fixing_theta_ = theta;
         // Ensure completion bounds are computed
         if (fw_completion_.empty())
             compute_completion_bounds(Direction::Forward);
@@ -240,6 +244,7 @@ public:
 
     void reset_elimination() {
         fixed_.clear();
+        fixing_theta_ = INF;
         fw_completion_.clear();
         bw_completion_.clear();
         for (auto& b : buckets_) {
@@ -760,6 +765,40 @@ private:
 
     // ── SCC processing (unified for both directions) ──
 
+    /// Try to insert a label into its bucket. In Enumerate stage, uses
+    /// completion-bound pruning instead of dominance.
+    bool try_insert_label(Label<Pack>* new_label, int actual_bi, Direction dir,
+                          std::vector<std::vector<Label<Pack>*>>& labels,
+                          int& label_count) {
+        if (fixed_.test(actual_bi)) return false;
+
+        if (opts_.stage == Stage::Enumerate) {
+            auto& completion = (dir == Direction::Forward)
+                ? fw_completion_ : bw_completion_;
+            if (!completion.empty() && completion[actual_bi] < INF &&
+                new_label->cost + completion[actual_bi] >= opts_.tolerance)
+                return false;
+            labels[actual_bi].push_back(new_label);
+            ++label_count;
+            ++total_enum_labels_;
+            // Conservative sink count: may overcount vs extracted paths
+            // (extract_paths still applies tolerance filter). Also doesn't
+            // include concatenation paths. Both are safe — we just exit
+            // labeling early and let final truncation handle the rest.
+            if (buckets_[actual_bi].vertex == pv_.sink) ++enum_sink_labels_;
+            return true;
+        }
+
+        // Normal: dominance check
+        if (!dominated_in_bucket(new_label, actual_bi, dir, labels)) {
+            remove_dominated(new_label, actual_bi, dir, labels);
+            labels[actual_bi].push_back(new_label);
+            ++label_count;
+            return true;
+        }
+        return false;
+    }
+
     void process_scc(int scc_id, Direction dir,
                      const std::vector<std::vector<int>>& scc_buckets,
                      std::vector<std::vector<Label<Pack>*>>& labels,
@@ -767,15 +806,34 @@ private:
         auto& scc_bs = scc_buckets[scc_id];
         if (scc_bs.empty()) return;
 
-        constexpr int MAX_LABELS_PER_SCC = 500000;
+        const bool enumerating = (opts_.stage == Stage::Enumerate);
+        // Enumeration needs more labels per SCC since dominance is disabled.
+        const int scc_cap = enumerating ? 2000000 : 500000;
         int label_count = 0;
+
+        // Check all label caps; marks enumeration incomplete on hit.
+        auto at_label_cap = [&]() -> bool {
+            if (label_count >= scc_cap) {
+                if (enumerating) enum_complete_ = false;
+                return true;
+            }
+            if (enumerating && total_enum_labels_ >= opts_.max_enum_labels) {
+                enum_complete_ = false;
+                return true;
+            }
+            if (enumerating && enum_sink_labels_ >= opts_.max_paths) {
+                enum_complete_ = false;
+                return true;
+            }
+            return false;
+        };
 
         bool changed = true;
         while (changed) {
             changed = false;
             for (int bi : scc_bs) {
                 if (fixed_.test(bi)) continue;
-                if (label_count >= MAX_LABELS_PER_SCC) break;
+                if (at_label_cap()) break;
 
                 auto& bucket_labels = labels[bi];
                 int n_labels = static_cast<int>(bucket_labels.size());
@@ -791,9 +849,20 @@ private:
                         continue;
                     }
 
-                    if (dominated_in_adjacent_buckets(label, bi, dir, labels)) {
-                        label->dominated = true;
-                        continue;
+                    if (enumerating) {
+                        // Completion-bound pruning on label before extending
+                        auto& completion = (dir == Direction::Forward)
+                            ? fw_completion_ : bw_completion_;
+                        if (!completion.empty() && completion[bi] < INF &&
+                            label->cost + completion[bi] >= opts_.tolerance) {
+                            label->extended = true;
+                            continue;
+                        }
+                    } else {
+                        if (dominated_in_adjacent_buckets(label, bi, dir, labels)) {
+                            label->dominated = true;
+                            continue;
+                        }
                     }
 
                     // Extend along bucket arcs
@@ -803,26 +872,18 @@ private:
                     for (const auto& ba : arcs) {
                         auto* new_label = extend_label(label, ba.arc_id, dir);
                         if (new_label) {
-                            int actual_bi = new_label->bucket;
-                            // Check actual landing bucket, not bucket arc target
-                            if (fixed_.test(actual_bi)) continue;
-                            if (!dominated_in_bucket(new_label, actual_bi,
-                                                     dir, labels)) {
-                                remove_dominated(new_label, actual_bi,
-                                                 dir, labels);
-                                labels[actual_bi].push_back(new_label);
-                                ++label_count;
+                            if (try_insert_label(new_label, new_label->bucket,
+                                                 dir, labels, label_count))
                                 changed = true;
-                            }
                         }
                     }
 
                     // Jump arcs (paper §4.1): extend with resource boost
+                    // Boost: fw → max(q, lb of jump bucket)
+                    //        bw → min(q, ub of jump bucket)
                     auto& jarcs = (dir == Direction::Forward) ?
                         buckets_[bi].jump_arcs : buckets_[bi].bw_jump_arcs;
                     for (const auto& ja : jarcs) {
-                        // Boost: fw → max(q, lb of jump bucket)
-                        //        bw → min(q, ub of jump bucket)
                         std::array<double, 2> boost =
                             (dir == Direction::Forward) ?
                             buckets_[ja.jump_bucket].lb :
@@ -830,23 +891,16 @@ private:
                         auto* new_label = extend_label(
                             label, ja.arc_id, dir, &boost);
                         if (new_label) {
-                            int actual_bi = new_label->bucket;
-                            if (fixed_.test(actual_bi)) continue;
-                            if (!dominated_in_bucket(new_label, actual_bi,
-                                                     dir, labels)) {
-                                remove_dominated(new_label, actual_bi,
-                                                 dir, labels);
-                                labels[actual_bi].push_back(new_label);
-                                ++label_count;
+                            if (try_insert_label(new_label, new_label->bucket,
+                                                 dir, labels, label_count))
                                 changed = true;
-                            }
                         }
                     }
 
                     label->extended = true;
                 }
             }
-            if (label_count >= MAX_LABELS_PER_SCC) break;
+            if (at_label_cap()) break;
         }
 
         update_c_best(scc_id, dir, scc_buckets, labels);
@@ -1394,10 +1448,24 @@ private:
         reset_label_storage(fw_bucket_labels_);
         reset_c_best();
 
+        total_enum_labels_ = 0;
+        enum_complete_ = true;
+        enum_sink_labels_ = 0;
+        if (opts_.stage == Stage::Enumerate) {
+            compute_completion_bounds(Direction::Forward);
+            if (fixed_.n_fixed() > 0 &&
+                std::abs(opts_.tolerance - fixing_theta_) > EPS) {
+                fprintf(stderr, "bgspprc: warning: enumerating with gap=%.6g but "
+                        "buckets were fixed with theta=%.6g; consider "
+                        "reset_elimination()\n", opts_.tolerance, fixing_theta_);
+            }
+        }
+
         auto* src = create_initial_label(Direction::Forward);
         int src_bi = vertex_bucket_index(pv_.source, src->q);
         src->bucket = src_bi;
         fw_bucket_labels_[src_bi].push_back(src);
+        if (opts_.stage == Stage::Enumerate) ++total_enum_labels_;
 
         // Inject warm labels from previous solve
         if (!warm_labels_.empty()) {
@@ -1429,6 +1497,20 @@ private:
         reset_label_storage(bw_bucket_labels_);
         reset_c_best();
 
+        total_enum_labels_ = 0;
+        enum_complete_ = true;
+        enum_sink_labels_ = 0;
+        if (opts_.stage == Stage::Enumerate) {
+            compute_completion_bounds(Direction::Forward);
+            compute_completion_bounds(Direction::Backward);
+            if (fixed_.n_fixed() > 0 &&
+                std::abs(opts_.tolerance - fixing_theta_) > EPS) {
+                fprintf(stderr, "bgspprc: warning: enumerating with gap=%.6g but "
+                        "buckets were fixed with theta=%.6g; consider "
+                        "reset_elimination()\n", opts_.tolerance, fixing_theta_);
+            }
+        }
+
         double mu = compute_midpoint();
 
         // Forward labeling
@@ -1436,6 +1518,7 @@ private:
         int src_bi = vertex_bucket_index(pv_.source, src->q);
         src->bucket = src_bi;
         fw_bucket_labels_[src_bi].push_back(src);
+        if (opts_.stage == Stage::Enumerate) ++total_enum_labels_;
 
         if (!warm_labels_.empty()) {
             inject_warm_labels(fw_bucket_labels_, Direction::Forward);
@@ -1452,6 +1535,10 @@ private:
             int snk_bi = vertex_bucket_index(pv_.sink, snk->q);
             snk->bucket = snk_bi;
             bw_bucket_labels_[snk_bi].push_back(snk);
+            if (opts_.stage == Stage::Enumerate) {
+                ++total_enum_labels_;
+                ++enum_sink_labels_;  // seed label is at sink
+            }
 
             for (int scc : bw_scc_topo_order_) {
                 process_scc(scc, Direction::Backward, bw_scc_buckets_,
@@ -1474,6 +1561,7 @@ private:
                   });
         if (static_cast<int>(paths.size()) > opts_.max_paths) {
             paths.resize(opts_.max_paths);
+            if (opts_.stage == Stage::Enumerate) enum_complete_ = false;
         }
         return paths;
     }
@@ -1517,6 +1605,7 @@ private:
         // Across-arc concatenation: for each arc a = (i,j), join fw labels at i
         // with bw labels at j using on-the-fly extend through arc a.
         // This finds paths crossing the bidir midpoint on a single arc.
+        [&] {
         for (int a = 0; a < pv_.n_arcs; ++a) {
             int i = pv_.arc_from[a];
             int j = pv_.arc_to[a];
@@ -1584,10 +1673,15 @@ private:
                         p.reduced_cost = total_cost;
                         p.original_cost = total_real_cost;
                         paths.push_back(std::move(p));
+                        if (static_cast<int>(paths.size()) >= opts_.max_paths) {
+                            if (opts_.stage == Stage::Enumerate) enum_complete_ = false;
+                            return;
+                        }
                     }
                 }
             }
         }
+        }();
 
         return paths;
     }
@@ -1619,6 +1713,7 @@ private:
 
         if (static_cast<int>(paths.size()) > opts_.max_paths) {
             paths.resize(opts_.max_paths);
+            if (opts_.stage == Stage::Enumerate) enum_complete_ = false;
         }
 
         return paths;
@@ -1798,6 +1893,11 @@ private:
             }
         }
     }
+
+    int total_enum_labels_ = 0;  // global label counter for enumeration
+    bool enum_complete_ = true;
+    int enum_sink_labels_ = 0;  // labels that landed in sink buckets
+    double fixing_theta_ = INF;  // theta used in last fix_buckets call
 
     LabelPool<Pack> pool_;
     R1CManager r1c_;
