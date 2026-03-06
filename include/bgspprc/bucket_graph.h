@@ -781,6 +781,10 @@ private:
             labels[actual_bi].push_back(new_label);
             ++label_count;
             ++total_enum_labels_;
+            // Conservative sink count: may overcount vs extracted paths
+            // (extract_paths still applies tolerance filter). Also doesn't
+            // include concatenation paths. Both are safe — we just exit
+            // labeling early and let final truncation handle the rest.
             if (buckets_[actual_bi].vertex == pv_.sink) ++enum_sink_labels_;
             return true;
         }
@@ -807,23 +811,29 @@ private:
         const int scc_cap = enumerating ? 2000000 : 500000;
         int label_count = 0;
 
+        // Check all label caps; marks enumeration incomplete on hit.
+        auto at_label_cap = [&]() -> bool {
+            if (label_count >= scc_cap) {
+                if (enumerating) enum_complete_ = false;
+                return true;
+            }
+            if (enumerating && total_enum_labels_ >= opts_.max_enum_labels) {
+                enum_complete_ = false;
+                return true;
+            }
+            if (enumerating && enum_sink_labels_ >= opts_.max_paths) {
+                enum_complete_ = false;
+                return true;
+            }
+            return false;
+        };
+
         bool changed = true;
         while (changed) {
             changed = false;
             for (int bi : scc_bs) {
                 if (fixed_.test(bi)) continue;
-                if (label_count >= scc_cap) {
-                    if (enumerating) enum_complete_ = false;
-                    break;
-                }
-                if (enumerating && total_enum_labels_ >= opts_.max_enum_labels) {
-                    enum_complete_ = false;
-                    break;
-                }
-                if (enumerating && enum_sink_labels_ >= opts_.max_paths) {
-                    enum_complete_ = false;
-                    break;
-                }
+                if (at_label_cap()) break;
 
                 auto& bucket_labels = labels[bi];
                 int n_labels = static_cast<int>(bucket_labels.size());
@@ -890,18 +900,7 @@ private:
                     label->extended = true;
                 }
             }
-            if (label_count >= scc_cap) {
-                if (enumerating) enum_complete_ = false;
-                break;
-            }
-            if (enumerating && total_enum_labels_ >= opts_.max_enum_labels) {
-                enum_complete_ = false;
-                break;
-            }
-            if (enumerating && enum_sink_labels_ >= opts_.max_paths) {
-                enum_complete_ = false;
-                break;
-            }
+            if (at_label_cap()) break;
         }
 
         update_c_best(scc_id, dir, scc_buckets, labels);

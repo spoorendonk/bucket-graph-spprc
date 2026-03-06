@@ -5,6 +5,9 @@
 #include <bgspprc/resources/ng_path.h>
 #include <bgspprc/solver.h>
 
+#include <cstdio>
+#include <unistd.h>
+
 using namespace bgspprc;
 
 // Helper to build a simple 4-vertex graph:
@@ -1705,4 +1708,51 @@ TEST_CASE("Enumerate: max_paths triggers incomplete") {
     auto paths = bg.solve();
     CHECK(paths.size() == 1);
     CHECK_FALSE(bg.enumeration_complete());
+}
+
+TEST_CASE("Enumerate: theta mismatch warning") {
+    ParallelArcGraph g;
+    using BG = BucketGraph<EmptyPack>;
+
+    BG bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .max_paths = 1000,
+         .tolerance = -1e-6, .stage = Stage::Exact});
+    bg.build();
+    bg.solve();
+
+    // Fix buckets with theta=2.0 (tight enough to fix some buckets)
+    int nf = bg.fix_buckets(2.0);
+    REQUIRE(nf > 0);
+
+    // Enumerate with a different gap — should warn on stderr
+    bg.set_stage(Stage::Enumerate);
+    bg.set_tolerance(10.0);  // differs from fixing theta=2.0
+
+    // Capture stderr via pipe
+    int pipefd[2];
+    REQUIRE(pipe(pipefd) == 0);
+    int old_fd = dup(STDERR_FILENO);
+    dup2(pipefd[1], STDERR_FILENO);
+
+    bg.solve();
+
+    // Restore stderr and read captured output
+    fflush(stderr);
+    dup2(old_fd, STDERR_FILENO);
+    close(old_fd);
+    close(pipefd[1]);
+
+    char buf[1024] = {};
+    auto n = read(pipefd[0], buf, sizeof(buf) - 1);
+    close(pipefd[0]);
+    REQUIRE(n > 0);
+
+    std::string output(buf, static_cast<std::size_t>(n));
+    CHECK(output.find("warning") != std::string::npos);
+    CHECK(output.find("theta=2") != std::string::npos);
+
+    // After reset_elimination, no warning (fixing_theta_ reset to INF)
+    bg.reset_elimination();
+    bg.solve();  // should not warn
+    CHECK(bg.enumeration_complete());
 }
