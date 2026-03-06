@@ -1148,6 +1148,36 @@ private:
         return total_cost < theta;
     }
 
+    /// Post-pass: mark bw labels past midpoint as dominated if no θ-compatible
+    /// fw label exists via incoming arcs.  Mirror of has_compatible_opposite.
+    void prune_bw_past_midpoint(double mu) {
+        for (int v = 0; v < pv_.n_vertices; ++v) {
+            if (v == pv_.source || v == pv_.sink) continue;
+            auto [start, end] = vertex_bucket_range(v);
+            for (int bi = start; bi < end; ++bi) {
+                for (auto* bw : bw_bucket_labels_[bi]) {
+                    if (bw->dominated || bw->q[0] >= mu) continue;
+                    bool found = false;
+                    for (int arc_id : adj_.incoming[v]) {
+                        int i = pv_.arc_from[arc_id];
+                        auto [istart, iend] = vertex_bucket_range(i);
+                        for (int fbi = istart; fbi < iend && !found; ++fbi) {
+                            for (const auto* fw : fw_bucket_labels_[fbi]) {
+                                if (fw->dominated) continue;
+                                if (is_theta_compatible(fw, bw, arc_id, opts_.tolerance)) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (found) break;
+                    }
+                    if (!found) bw->dominated = true;
+                }
+            }
+        }
+    }
+
     /// Check if a forward label past q* has any θ-compatible backward label
     /// via across-arc concatenation (BucketGraph 2021 §5 exact completion bounds).
     /// Iterates outgoing arcs (v,j), checks bw labels at j.
@@ -1609,6 +1639,10 @@ private:
             process_scc(scc, Direction::Forward, fw_scc_buckets_,
                         fw_bucket_labels_, mu);
         }
+
+        // Post-pass: prune bw labels past midpoint with no compatible fw label
+        if (!opts_.symmetric && opts_.stage != Stage::Enumerate)
+            prune_bw_past_midpoint(mu);
 
         if (opts_.symmetric) {
             // Symmetric: populate bw_c_best from fw c_best via mirror
