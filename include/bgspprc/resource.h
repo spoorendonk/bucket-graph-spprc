@@ -11,6 +11,7 @@ namespace bgspprc {
 /// Concept for a Meta-Solver resource type.
 ///
 /// Each resource carries per-label state and defines:
+///  - symmetric: whether this resource supports symmetric labeling (§4.1)
 ///  - extend: how state changes along an arc
 ///  - domination_cost: extra cost penalty when L1's state is "worse" than L2's
 ///  - concatenation_cost: cost adjustment when joining forward/backward labels
@@ -19,6 +20,7 @@ concept Resource = requires(const R& r, Direction dir, Symmetry sym,
                             typename R::State s, typename R::State s2,
                             int arc_id, int vertex) {
     typename R::State;
+    { r.symmetric() } -> std::same_as<bool>;
     { r.init_state(dir) } -> std::same_as<typename R::State>;
     { r.extend(dir, s, arc_id) } -> std::same_as<std::pair<typename R::State, double>>;
     { r.domination_cost(dir, vertex, s, s2) } -> std::same_as<double>;
@@ -34,6 +36,13 @@ struct ResourcePack {
     static constexpr std::size_t size = sizeof...(Rs);
 
     explicit ResourcePack(Rs... rs) : resources(std::move(rs)...) {}
+
+    /// True if all resources in the pack support symmetric labeling.
+    bool symmetric() const {
+        return std::apply(
+            [](const auto&... rs) { return (rs.symmetric() && ...); },
+            resources);
+    }
 
     StatesTuple init_states(Direction dir) const {
         return std::apply(

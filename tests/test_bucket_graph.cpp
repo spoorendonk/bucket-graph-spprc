@@ -1128,6 +1128,142 @@ TEST_CASE("NgPathResource: prevents revisiting in BucketGraph") {
     }
 }
 
+TEST_CASE("Heuristic2: relaxed ng dominance prunes more aggressively") {
+    // Graph: 0 → 1 via two paths with different intermediate vertices
+    //   0 →(a0) 2 →(a1) 1 →(a2) 3
+    //   0 →(a3) 4 →(a4) 1 →(a2) 3
+    // Both paths reach vertex 1 with same cost and q, but different ng-states.
+    // Heuristic2 ignores ng → labels look identical → one dominates the other.
+    // Exact sees distinct ng-states → neither dominates → both survive.
+    int from[] = {0, 2, 1, 0, 4};
+    int to[]   = {2, 1, 3, 4, 1};
+    double cost[] = {1.0, 1.0, 1.0, 1.0, 1.0};
+    double td[] = {1.0, 1.0, 1.0, 1.0, 1.0};
+
+    double tw_lb[] = {0.0, 0.0, 0.0, 0.0, 0.0};
+    double tw_ub[] = {20.0, 20.0, 20.0, 20.0, 20.0};
+
+    const double* arc_res[] = {td};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 5;
+    pv.source = 0;
+    pv.sink = 3;
+    pv.n_arcs = 5;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    // Full ng-neighborhoods: every vertex sees every other
+    std::vector<std::vector<int>> neighbors = {
+        {0, 1, 2, 3, 4}, {1, 0, 2, 3, 4}, {2, 0, 1, 3, 4},
+        {3, 0, 1, 2, 4}, {4, 0, 1, 2, 3}
+    };
+    NgPathResource ng(5, 5, from, to, neighbors);
+    using Pack = ResourcePack<NgPathResource>;
+
+    // Heuristic2: cost-only dominance, ng-states ignored
+    BucketGraph<Pack> bg_h2(pv, make_resource_pack(NgPathResource(ng)),
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9,
+         .stage = Stage::Heuristic2});
+    bg_h2.build();
+    auto paths_h2 = bg_h2.solve();
+
+    // Exact: full dominance including ng-states
+    BucketGraph<Pack> bg_ex(pv, make_resource_pack(NgPathResource(ng)),
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9,
+         .stage = Stage::Exact});
+    bg_ex.build();
+    auto paths_ex = bg_ex.solve();
+
+    // Both should find valid paths
+    REQUIRE(!paths_h2.empty());
+    REQUIRE(!paths_ex.empty());
+
+    // Heuristic2 ignores ng-states → more aggressive dominance → fewer paths
+    // Exact preserves labels with distinct ng-states → more paths survive
+    CHECK(paths_ex.size() >= paths_h2.size());
+}
+
+TEST_CASE("Non-disposable resource: equality required in dominance") {
+    // Two paths to vertex 2, same cost, different resource consumption.
+    // 0 →(a0) 1 →(a1) 2 →(a2) 3   (q = 1+1 = 2)
+    // 0 →(a3) 1 →(a4) 2 →(a2) 3   (q = 1+2 = 3)
+    // With disposable resource: label with q=2 dominates q=3 → 1 path.
+    // With non-disposable resource: q=2 ≠ q=3 → neither dominates → 2 paths.
+    int from[] = {0, 1, 2, 0, 1};
+    int to[]   = {1, 2, 3, 1, 2};
+    double cost[] = {1.0, 1.0, 1.0, 1.0, 1.0};
+    double td[] = {1.0, 1.0, 1.0, 1.0, 2.0};  // arc a4 consumes 2
+
+    double tw_lb[] = {0.0, 0.0, 0.0, 0.0};
+    double tw_ub[] = {20.0, 20.0, 20.0, 20.0};
+
+    const double* arc_res[] = {td};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 4;
+    pv.source = 0;
+    pv.sink = 3;
+    pv.n_arcs = 5;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    // Disposable (default): q=2 dominates q=3
+    BucketGraph<EmptyPack> bg_disp(pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9,
+         .stage = Stage::Exact});
+    bg_disp.build();
+    auto paths_disp = bg_disp.solve();
+
+    // Non-disposable: q=2 ≠ q=3, neither dominates
+    bool nondisposable[] = {true};
+    pv.resource_nondisposable = nondisposable;
+    BucketGraph<EmptyPack> bg_nondisp(pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9,
+         .stage = Stage::Exact});
+    bg_nondisp.build();
+    auto paths_nondisp = bg_nondisp.solve();
+
+    REQUIRE(!paths_disp.empty());
+    REQUIRE(!paths_nondisp.empty());
+
+    // Non-disposable should keep more paths (less dominance)
+    CHECK(paths_nondisp.size() > paths_disp.size());
+}
+
+TEST_CASE("Resource::symmetric() interface") {
+    // EmptyPack: vacuous true (no resources)
+    EmptyPack empty{};
+    CHECK(empty.symmetric() == true);
+
+    // NgPathResource: always symmetric (§4.2.2)
+    int from[] = {0, 1};
+    int to[]   = {1, 2};
+    std::vector<std::vector<int>> neighbors = {{0, 1, 2}, {0, 1, 2}, {0, 1, 2}};
+    NgPathResource ng(3, 2, from, to, neighbors);
+    CHECK(ng.symmetric() == true);
+
+    // Pack with NgPathResource: symmetric
+    auto pack = make_resource_pack(std::move(ng));
+    CHECK(pack.symmetric() == true);
+}
+
 // ── LabelPool ──
 
 TEST_CASE("LabelPool: allocation and counting") {

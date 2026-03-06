@@ -43,9 +43,16 @@ public:
 
     BucketGraph(const ProblemView& pv, Pack pack, Options opts = {})
         : pv_(pv), pack_(std::move(pack)), opts_(opts) {
-        if (opts_.symmetric) opts_.bidirectional = true;
+        if (opts_.symmetric) {
+            opts_.bidirectional = true;
+            if constexpr (Pack::size > 0)
+                assert(pack_.symmetric() &&
+                       "symmetric mode requires all resources to be symmetric");
+        }
         adj_.build(pv_);
         n_main_ = std::min(pv_.n_main_resources, 2);
+        for (int r = 0; r < n_main_; ++r)
+            main_nondisposable_[r] = pv_.resource_nondisposable && pv_.resource_nondisposable[r];
     }
 
     /// Build the bucket graph structure.
@@ -680,15 +687,18 @@ private:
         if (L1->vertex != L2->vertex) return false;
 
         for (int r = 0; r < n_main_; ++r) {
-            if (dir == Direction::Forward) {
+            if (main_nondisposable_[r]) {
+                // Non-disposable: require equality
+                if (std::abs(L1->q[r] - L2->q[r]) > EPS) return false;
+            } else if (dir == Direction::Forward) {
                 if (L1->q[r] > L2->q[r] + EPS) return false;
             } else {
                 if (L1->q[r] < L2->q[r] - EPS) return false;
             }
         }
 
-        // Heuristic1: cost-only dominance (ignore resource states)
-        if (opts_.stage == Stage::Heuristic1) {
+        // Heuristic stages: cost-only dominance (ignore ng/R1C states)
+        if (opts_.stage == Stage::Heuristic1 || opts_.stage == Stage::Heuristic2) {
             return L1->cost <= L2->cost + EPS;
         }
 
@@ -1813,6 +1823,7 @@ private:
     Options opts_;
     Adjacency adj_;
     int n_main_ = 1;
+    std::array<bool, 2> main_nondisposable_ = {false, false};
 
     const double* reduced_costs_ = nullptr;
 

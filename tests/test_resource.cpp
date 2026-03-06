@@ -61,6 +61,9 @@ TEST_CASE("ResourcePack with StandardResource") {
     auto [new_states, cost] = pack.extend(Direction::Forward, states, 0);
     CHECK(std::get<0>(new_states) == 2.0);
     CHECK(cost == 0.0);
+
+    // StandardResource is conservatively non-symmetric
+    CHECK(pack.symmetric() == false);
 }
 
 // ════════════════════════════════════════════════════════════════
