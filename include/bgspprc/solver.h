@@ -24,6 +24,7 @@ public:
         bool symmetric = false;
         int max_paths = 100;
         double tolerance = -1e-6;
+        int max_enum_labels = 5000000;
     };
 
     Solver(const ProblemView& problem, Pack resources, Options opts = {})
@@ -38,6 +39,7 @@ public:
                   .bidirectional = opts_.bidirectional,
                   .symmetric = opts_.symmetric,
                   .stage = Stage::Exact,
+                  .max_enum_labels = opts_.max_enum_labels,
               }) {}
 
     /// Build bucket graph (call once, or after step size changes).
@@ -75,6 +77,9 @@ public:
     /// Set R1C cuts.
     void set_r1c_cuts(std::span<const R1Cut> cuts) { bg_.set_r1c_cuts(cuts); }
 
+    /// Whether the last enumeration was complete (no caps hit).
+    bool enumeration_complete() const { return bg_.enumeration_complete(); }
+
     /// Stage management.
     void set_stage(Stage stage) { stage_ = stage; }
     Stage current_stage() const { return stage_; }
@@ -85,6 +90,7 @@ public:
         bg_.set_tolerance(gap);
         auto paths = bg_.solve();
         bg_.set_tolerance(opts_.tolerance);
+        bg_.set_stage(stage_);
         return paths;
     }
 
