@@ -2013,4 +2013,73 @@ TEST_CASE("Bidirectional correctness preserved with adaptive midpoint") {
           doctest::Approx(mono_paths[0].reduced_cost));
 }
 
+TEST_CASE("Exact completion bounds prune fw labels past midpoint") {
+    // 6 vertices: 0=source, 1, 2, 3, 4, 5=sink.  tw [0,10], midpoint=5.
+    //
+    // Arcs:
+    //   0→1 t=3 c=1    0→4 t=6 c=100
+    //   1→2 t=3 c=1    4→3 t=5 c=50
+    //   2→3 t=1 c=1
+    //   3→5 t=1 c=1
+    //
+    // Optimal path: 0→1→2→3→5, cost=4, time=8.
+    //
+    // Fw label at vertex 4: q=6 (past midpoint=5), cost=100.
+    // Its only outgoing arc is 4→3 (time=5).  After extension fw_after=6+5=11
+    // which exceeds every bw label's q at vertex 3 (bw q=9 via 3←5).
+    // So is_theta_compatible fails for every bw label at 3 →
+    // has_compatible_opposite returns false → fw label at 4 pruned.
+    //
+    // Fw label at vertex 2: q=6 (past midpoint=5), cost=2.
+    // Outgoing arc 2→3 (time=1): fw_after=7 ≤ bw q=9 at 3 → compatible →
+    // NOT pruned.  Found via concatenation at (2,3).
+    //
+    // Mono doesn't find a path through 4 either (extend 4→3: q=11>ub=10,
+    // infeasible).  So both solvers agree on optimal cost=4.
+
+    int from[6]      = {0, 0, 1, 2, 3, 4};
+    int to[6]        = {1, 4, 2, 3, 5, 3};
+    double cost[6]   = {1.0, 100.0, 1.0, 1.0, 1.0, 50.0};
+    double time_d[6] = {3.0, 6.0, 3.0, 1.0, 1.0, 5.0};
+
+    double tw_lb[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    double tw_ub[6] = {10.0, 10.0, 10.0, 10.0, 10.0, 10.0};
+
+    const double* arc_res[1]   = {time_d};
+    const double* v_lb[1]      = {tw_lb};
+    const double* v_ub[1]      = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 6;
+    pv.source = 0;
+    pv.sink = 5;
+    pv.n_arcs = 6;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    // Mono solve for reference
+    BucketGraph<EmptyPack> mono(pv, EmptyPack{},
+        {.bucket_steps = {1.0, 1.0}, .tolerance = 1e9});
+    mono.build();
+    auto mono_paths = mono.solve();
+    REQUIRE(!mono_paths.empty());
+    CHECK(mono_paths[0].reduced_cost == doctest::Approx(4.0));
+
+    // Bidir solve — vertex 4's fw label is pruned, vertex 2's is kept.
+    BucketGraph<EmptyPack> bidir(pv, EmptyPack{},
+        {.bucket_steps = {1.0, 1.0}, .tolerance = 1e9, .bidirectional = true,
+         .stage = Stage::Exact});
+    bidir.build();
+    auto bidir_paths = bidir.solve();
+    REQUIRE(!bidir_paths.empty());
+    CHECK(bidir_paths[0].reduced_cost ==
+          doctest::Approx(mono_paths[0].reduced_cost));
+}
+
 #endif  // !_WIN32

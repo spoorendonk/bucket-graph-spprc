@@ -881,17 +881,28 @@ private:
                         }
                     }
 
+                    // Exact completion bound pruning (§5): discard fw labels
+                    // past q* that have no θ-compatible bw label.
+                    const bool prune_past_mid = opts_.bidirectional &&
+                        !opts_.symmetric && !enumerating &&
+                        dir == Direction::Forward;
+                    auto try_insert = [&](Label<Pack>* new_label) {
+                        if (!new_label) return;
+                        if (prune_past_mid && new_label->q[0] > midpoint &&
+                            !has_compatible_opposite(new_label, opts_.tolerance,
+                                                     bw_bucket_labels_))
+                            return;
+                        if (try_insert_label(new_label, new_label->bucket,
+                                             dir, labels, label_count))
+                            changed = true;
+                    };
+
                     // Extend along bucket arcs
                     auto& arcs = (dir == Direction::Forward) ?
                         buckets_[bi].bucket_arcs : buckets_[bi].bw_bucket_arcs;
 
                     for (const auto& ba : arcs) {
-                        auto* new_label = extend_label(label, ba.arc_id, dir);
-                        if (new_label) {
-                            if (try_insert_label(new_label, new_label->bucket,
-                                                 dir, labels, label_count))
-                                changed = true;
-                        }
+                        try_insert(extend_label(label, ba.arc_id, dir));
                     }
 
                     // Jump arcs (paper §4.1): extend with resource boost
@@ -904,13 +915,7 @@ private:
                             (dir == Direction::Forward) ?
                             buckets_[ja.jump_bucket].lb :
                             buckets_[ja.jump_bucket].ub;
-                        auto* new_label = extend_label(
-                            label, ja.arc_id, dir, &boost);
-                        if (new_label) {
-                            if (try_insert_label(new_label, new_label->bucket,
-                                                 dir, labels, label_count))
-                                changed = true;
-                        }
+                        try_insert(extend_label(label, ja.arc_id, dir, &boost));
                     }
 
                     label->extended = true;
@@ -1141,6 +1146,28 @@ private:
         }
 
         return total_cost < theta;
+    }
+
+    /// Check if a forward label past q* has any θ-compatible backward label
+    /// via across-arc concatenation (BucketGraph 2021 §5 exact completion bounds).
+    /// Iterates outgoing arcs (v,j), checks bw labels at j.
+    bool has_compatible_opposite(const Label<Pack>* L, double theta,
+                                 const std::vector<std::vector<Label<Pack>*>>& bw_labels) const {
+        int v = L->vertex;
+        if (v == pv_.source || v == pv_.sink) return true;
+
+        for (int arc_id : adj_.outgoing[v]) {
+            int j = pv_.arc_to[arc_id];
+            auto [jstart, jend] = vertex_bucket_range(j);
+            for (int bi = jstart; bi < jend; ++bi) {
+                for (const auto* bw : bw_labels[bi]) {
+                    if (bw->dominated) continue;
+                    if (is_theta_compatible(L, bw, arc_id, theta))
+                        return true;
+                }
+            }
+        }
+        return false;
     }
 
     /// Compute the arrival bucket index for a bucket arc or jump arc.
@@ -1549,6 +1576,24 @@ private:
 
         double mu = get_midpoint();
 
+        if (!opts_.symmetric) {
+            // Backward labeling (run first so bw labels exist for fw
+            // exact completion bound pruning — BucketGraph 2021 §5)
+            auto* snk = create_initial_label(Direction::Backward);
+            int snk_bi = vertex_bucket_index(pv_.sink, snk->q);
+            snk->bucket = snk_bi;
+            bw_bucket_labels_[snk_bi].push_back(snk);
+            if (opts_.stage == Stage::Enumerate) {
+                ++total_enum_labels_;
+                ++enum_sink_labels_;  // seed label is at sink
+            }
+
+            for (int scc : bw_scc_topo_order_) {
+                process_scc(scc, Direction::Backward, bw_scc_buckets_,
+                            bw_bucket_labels_, mu);
+            }
+        }
+
         // Forward labeling
         auto* src = create_initial_label(Direction::Forward);
         int src_bi = vertex_bucket_index(pv_.source, src->q);
@@ -1565,22 +1610,7 @@ private:
                         fw_bucket_labels_, mu);
         }
 
-        if (!opts_.symmetric) {
-            // Backward labeling
-            auto* snk = create_initial_label(Direction::Backward);
-            int snk_bi = vertex_bucket_index(pv_.sink, snk->q);
-            snk->bucket = snk_bi;
-            bw_bucket_labels_[snk_bi].push_back(snk);
-            if (opts_.stage == Stage::Enumerate) {
-                ++total_enum_labels_;
-                ++enum_sink_labels_;  // seed label is at sink
-            }
-
-            for (int scc : bw_scc_topo_order_) {
-                process_scc(scc, Direction::Backward, bw_scc_buckets_,
-                            bw_bucket_labels_, mu);
-            }
-        } else {
+        if (opts_.symmetric) {
             // Symmetric: populate bw_c_best from fw c_best via mirror
             populate_symmetric_bw_c_best();
         }
