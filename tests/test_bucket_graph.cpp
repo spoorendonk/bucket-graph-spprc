@@ -2085,59 +2085,32 @@ TEST_CASE("Exact completion bounds prune fw labels past midpoint") {
 TEST_CASE("Backward exact completion bounds prune bw labels past midpoint") {
     // 6 vertices: 0=source, 1, 2, 3, 4, 5=sink.  tw [0,10], midpoint=5.
     //
+    // Two paths:
+    //   A: 0→1→5  t=3+3=6, c=1+1=2  (optimal, found via fw reaching sink)
+    //   B: 0→2→3→5  infeasible: fw at 2 has q=3, arc 2→3 t=8 → q=11>ub=10
+    //
     // Arcs:
-    //   0→1 t=1 c=1    0→2 t=1 c=1
-    //   1→3 t=1 c=1    2→4 t=1 c=1
-    //   3→5 t=1 c=1    4→5 t=1 c=1
-    //   5→4 (reverse: 4→5 already exists, but we need an incoming arc for bw)
+    //   0→1 t=3 c=1     1→5 t=3 c=1     (path A)
+    //   0→2 t=3 c=100   2→3 t=8 c=50    3→5 t=1 c=1  (path B, infeasible)
+    //   0→4 t=1 c=5     4→3 t=5 c=5     (path C below)
     //
-    // Redesigned: vertex 4 gets a bw label with q[0] < midpoint via a
-    // resource-heavy backward extension, but no fw label can reach it
-    // compatibly.
+    // Bw label at vertex 2: seed at 5 q=10, extend 3→5 bw q=9, extend 2→3 bw
+    //   q=min(9-8,10)=1 < mu=5. Past midpoint.
+    //   Incoming arcs of 2: only 0→2 (t=3). fw at 0: q=0.
+    //   fw_after = max(0+3,0) = 3 > bw_q=1 → INCOMPATIBLE → pruned.
     //
-    // Graph (all times forward):
-    //   0→1 t=3 c=1     main path start
-    //   1→5 t=3 c=1     main path end
-    //   0→2 t=1 c=100   detour start (expensive)
-    //   2→3 t=7 c=50    detour: eats time so bw label at 2 has low q
-    //   3→5 t=1 c=1     detour end
+    // Bw label at vertex 4: extend 4→3 bw q=min(9-5,10)=4 < mu=5.
+    //   Incoming arcs of 4: only 0→4 (t=1). fw at 0: q=0.
+    //   fw_after = max(0+1,0) = 1 ≤ bw_q=4 → COMPATIBLE → NOT pruned.
+    //   Path C: 0→4→3→5, t=1+5+1=7, c=5+5+1=11. Found via concatenation.
     //
-    // Bw from 5: bw label at 3 has q=9 (10-1=9). Extend 3→2: q=9-7=2 < mu=5.
-    // Fw from 0: fw label at 2 has q=1. Arc 2→3 has time=7.
-    //   fw_after = 1+7 = 8. bw q at 3 = 9. 8 ≤ 9 → compatible for arc 2→3.
-    // So bw label at vertex 2 (q=2) IS compatible via incoming arc 0→2:
-    //   fw at 0 has q=0, arc 0→2 time=1, fw_after = max(0+1,0) = 1.
-    //   bw at 2 has q=2. 1 ≤ 2 → compatible! Cost = 0+102+1+100 = 203.
-    //
-    // Need to make the bw label at 2 truly incompatible:
-    // Give vertex 2 a tight lower bound so fw extension can't match.
-    //
-    // Final design:
-    //   0→1 t=3 c=1     1→5 t=3 c=1     (optimal: cost=2, time=6)
-    //   0→2 t=1 c=100   2→3 t=8 c=50    3→5 t=1 c=1
-    //   vertex 2: lb=0, ub=10
-    //   vertex 3: lb=0, ub=10
-    //
-    // Bw label at 2: q=10-8=2 (via 3←sink←, then 2←3), but actually
-    // bw extends from 5 backward. Let me trace carefully:
-    //   bw seed at 5: q=10. Extend 3→5 backward: q = min(10-1, ub[3]=10) = 9.
-    //   bw at 3: q=9.  Extend 2→3 backward: q = min(9-8, ub[2]=10) = 1.
-    //   bw at 2: q=1 < mu=5. This bw label is past midpoint.
-    //
-    // Check incoming arcs of vertex 2: only arc 0→2.
-    //   fw at 0: q=0, cost=0. Arc 0→2: time=1, cost=100.
-    //   fw_after = max(0+1, lb[2]=0) = 1. bw q at 2 = 1. 1 ≤ 1+eps → compatible!
-    //
-    // Still compatible. Need fw_after > bw_q. Set arc 0→2 time = 3:
-    //   fw_after = max(0+3, 0) = 3 > bw q=1 → INCOMPATIBLE. ✓
-    //
-    // But then fw at 2 has q=3, arc 2→3 time=8: q=3+8=11 > ub=10 → infeasible.
-    // So path 0→2→3→5 is infeasible in mono too. Both agree.
+    // Both mono and bidir find paths A (cost=2) and C (cost=11).
+    // Bw label at vertex 2 is pruned (n_bw_labels_pruned ≥ 1).
 
-    int from[5]      = {0, 0, 1, 2, 3};
-    int to[5]        = {1, 2, 5, 3, 5};
-    double cost[5]   = {1.0, 100.0, 1.0, 50.0, 1.0};
-    double time_d[5] = {3.0, 3.0, 3.0, 8.0, 1.0};
+    int from[7]      = {0, 0, 0, 1, 2, 3, 4};
+    int to[7]        = {1, 2, 4, 5, 3, 5, 3};
+    double cost[7]   = {1.0, 100.0, 5.0, 1.0, 50.0, 1.0, 5.0};
+    double time_d[7] = {3.0, 3.0, 1.0, 3.0, 8.0, 1.0, 5.0};
 
     double tw_lb[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     double tw_ub[6] = {10.0, 10.0, 10.0, 10.0, 10.0, 10.0};
@@ -2150,7 +2123,7 @@ TEST_CASE("Backward exact completion bounds prune bw labels past midpoint") {
     pv.n_vertices = 6;
     pv.source = 0;
     pv.sink = 5;
-    pv.n_arcs = 5;
+    pv.n_arcs = 7;
     pv.arc_from = from;
     pv.arc_to = to;
     pv.arc_base_cost = cost;
@@ -2168,8 +2141,7 @@ TEST_CASE("Backward exact completion bounds prune bw labels past midpoint") {
     REQUIRE(!mono_paths.empty());
     CHECK(mono_paths[0].reduced_cost == doctest::Approx(2.0));
 
-    // Bidir solve — bw label at vertex 2 (q=1 < mu=5) should be pruned
-    // because fw_after=3 > bw_q=1 for the only incoming arc 0→2.
+    // Bidir solve
     BucketGraph<EmptyPack> bidir(pv, EmptyPack{},
         {.bucket_steps = {1.0, 1.0}, .tolerance = 1e9, .bidirectional = true,
          .stage = Stage::Exact});
@@ -2178,6 +2150,9 @@ TEST_CASE("Backward exact completion bounds prune bw labels past midpoint") {
     REQUIRE(!bidir_paths.empty());
     CHECK(bidir_paths[0].reduced_cost ==
           doctest::Approx(mono_paths[0].reduced_cost));
+
+    // Verify pruning actually happened (bw label at vertex 2 was pruned)
+    CHECK(bidir.n_bw_labels_pruned() >= 1);
 }
 
 #endif  // !_WIN32

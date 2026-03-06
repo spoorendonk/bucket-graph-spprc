@@ -252,6 +252,9 @@ public:
     /// Number of fixed buckets.
     int n_fixed_buckets() const { return fixed_.n_fixed(); }
 
+    /// Number of bw labels pruned by post-pass exact completion bounds.
+    int n_bw_labels_pruned() const { return bw_labels_pruned_; }
+
 
     void reset_elimination() {
         fixed_.clear();
@@ -1150,7 +1153,8 @@ private:
 
     /// Post-pass: mark bw labels past midpoint as dominated if no θ-compatible
     /// fw label exists via incoming arcs.  Mirror of has_compatible_opposite.
-    void prune_bw_past_midpoint(double mu) {
+    void prune_bw_past_midpoint(double mu, double theta) {
+        bw_labels_pruned_ = 0;
         for (int v = 0; v < pv_.n_vertices; ++v) {
             if (v == pv_.source || v == pv_.sink) continue;
             auto [start, end] = vertex_bucket_range(v);
@@ -1164,7 +1168,7 @@ private:
                         for (int fbi = istart; fbi < iend && !found; ++fbi) {
                             for (const auto* fw : fw_bucket_labels_[fbi]) {
                                 if (fw->dominated) continue;
-                                if (is_theta_compatible(fw, bw, arc_id, opts_.tolerance)) {
+                                if (is_theta_compatible(fw, bw, arc_id, theta)) {
                                     found = true;
                                     break;
                                 }
@@ -1172,7 +1176,10 @@ private:
                         }
                         if (found) break;
                     }
-                    if (!found) bw->dominated = true;
+                    if (!found) {
+                        bw->dominated = true;
+                        ++bw_labels_pruned_;
+                    }
                 }
             }
         }
@@ -1642,7 +1649,7 @@ private:
 
         // Post-pass: prune bw labels past midpoint with no compatible fw label
         if (!opts_.symmetric && opts_.stage != Stage::Enumerate)
-            prune_bw_past_midpoint(mu);
+            prune_bw_past_midpoint(mu, opts_.tolerance);
 
         if (opts_.symmetric) {
             // Symmetric: populate bw_c_best from fw c_best via mirror
@@ -2006,6 +2013,7 @@ private:
     // Adaptive midpoint for bidirectional labeling
     int fw_label_count_ = 0;
     int bw_label_count_ = 0;
+    int bw_labels_pruned_ = 0;
     double midpoint_ = 0.0;
     bool midpoint_initialized_ = false;
 
