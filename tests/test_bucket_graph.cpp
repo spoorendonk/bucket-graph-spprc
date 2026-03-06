@@ -1670,3 +1670,39 @@ TEST_CASE("Symmetric: solver wiring") {
     // Best route from depot: 0→1→2→0 (cost 2+1+3=6) or 0→2→1→0 (cost 3+1+2=6)
     CHECK(paths[0].reduced_cost <= 6.0 + 1e-6);
 }
+
+TEST_CASE("Enumerate: completeness flag") {
+    ParallelArcGraph g;
+    using BG = BucketGraph<EmptyPack>;
+
+    // Normal enumeration → complete
+    BG bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .max_paths = 1000,
+         .tolerance = 1e9, .stage = Stage::Enumerate,
+         .max_enum_labels = 5000000});
+    bg.build();
+    bg.solve();
+    CHECK(bg.enumeration_complete());
+
+    // Tiny label cap → incomplete
+    BG bg2(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .max_paths = 1000,
+         .tolerance = 1e9, .stage = Stage::Enumerate,
+         .max_enum_labels = 1});
+    bg2.build();
+    bg2.solve();
+    CHECK_FALSE(bg2.enumeration_complete());
+}
+
+TEST_CASE("Enumerate: max_paths triggers incomplete") {
+    ParallelArcGraph g;
+    using BG = BucketGraph<EmptyPack>;
+
+    BG bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .max_paths = 1,
+         .tolerance = 1e9, .stage = Stage::Enumerate});
+    bg.build();
+    auto paths = bg.solve();
+    CHECK(paths.size() == 1);
+    CHECK_FALSE(bg.enumeration_complete());
+}

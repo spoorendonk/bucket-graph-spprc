@@ -77,6 +77,9 @@ public:
     /// Set R1C cuts.
     void set_r1c_cuts(std::span<const R1Cut> cuts) { bg_.set_r1c_cuts(cuts); }
 
+    /// Whether the last enumeration was complete (no caps hit).
+    bool enumeration_complete() const { return bg_.enumeration_complete(); }
+
     /// Stage management.
     void set_stage(Stage stage) { stage_ = stage; }
     Stage current_stage() const { return stage_; }

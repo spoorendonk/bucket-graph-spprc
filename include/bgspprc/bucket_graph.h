@@ -12,6 +12,7 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -94,6 +95,7 @@ public:
 
     void set_stage(Stage s) { opts_.stage = s; }
     void set_tolerance(double t) { opts_.tolerance = t; }
+    bool enumeration_complete() const { return enum_complete_; }
 
     /// Save best labels for warm starting the next solve.
     /// Keeps the top `fraction` of non-dominated labels by cost.
@@ -193,6 +195,7 @@ public:
     ///
     /// Returns number of newly fixed buckets.
     int fix_buckets(double theta) {
+        fixing_theta_ = theta;
         // Ensure completion bounds are computed
         if (fw_completion_.empty())
             compute_completion_bounds(Direction::Forward);
@@ -241,6 +244,7 @@ public:
 
     void reset_elimination() {
         fixed_.clear();
+        fixing_theta_ = INF;
         fw_completion_.clear();
         bw_completion_.clear();
         for (auto& b : buckets_) {
@@ -777,6 +781,7 @@ private:
             labels[actual_bi].push_back(new_label);
             ++label_count;
             ++total_enum_labels_;
+            if (buckets_[actual_bi].vertex == pv_.sink) ++enum_sink_labels_;
             return true;
         }
 
@@ -807,8 +812,18 @@ private:
             changed = false;
             for (int bi : scc_bs) {
                 if (fixed_.test(bi)) continue;
-                if (label_count >= scc_cap) break;
-                if (enumerating && total_enum_labels_ >= opts_.max_enum_labels) break;
+                if (label_count >= scc_cap) {
+                    if (enumerating) enum_complete_ = false;
+                    break;
+                }
+                if (enumerating && total_enum_labels_ >= opts_.max_enum_labels) {
+                    enum_complete_ = false;
+                    break;
+                }
+                if (enumerating && enum_sink_labels_ >= opts_.max_paths) {
+                    enum_complete_ = false;
+                    break;
+                }
 
                 auto& bucket_labels = labels[bi];
                 int n_labels = static_cast<int>(bucket_labels.size());
@@ -875,8 +890,18 @@ private:
                     label->extended = true;
                 }
             }
-            if (label_count >= scc_cap) break;
-            if (enumerating && total_enum_labels_ >= opts_.max_enum_labels) break;
+            if (label_count >= scc_cap) {
+                if (enumerating) enum_complete_ = false;
+                break;
+            }
+            if (enumerating && total_enum_labels_ >= opts_.max_enum_labels) {
+                enum_complete_ = false;
+                break;
+            }
+            if (enumerating && enum_sink_labels_ >= opts_.max_paths) {
+                enum_complete_ = false;
+                break;
+            }
         }
 
         update_c_best(scc_id, dir, scc_buckets, labels);
@@ -1425,8 +1450,16 @@ private:
         reset_c_best();
 
         total_enum_labels_ = 0;
+        enum_complete_ = true;
+        enum_sink_labels_ = 0;
         if (opts_.stage == Stage::Enumerate) {
             compute_completion_bounds(Direction::Forward);
+            if (fixed_.n_fixed() > 0 &&
+                std::abs(opts_.tolerance - fixing_theta_) > EPS) {
+                fprintf(stderr, "bgspprc: warning: enumerating with gap=%.6g but "
+                        "buckets were fixed with theta=%.6g; consider "
+                        "reset_elimination()\n", opts_.tolerance, fixing_theta_);
+            }
         }
 
         auto* src = create_initial_label(Direction::Forward);
@@ -1466,9 +1499,17 @@ private:
         reset_c_best();
 
         total_enum_labels_ = 0;
+        enum_complete_ = true;
+        enum_sink_labels_ = 0;
         if (opts_.stage == Stage::Enumerate) {
             compute_completion_bounds(Direction::Forward);
             compute_completion_bounds(Direction::Backward);
+            if (fixed_.n_fixed() > 0 &&
+                std::abs(opts_.tolerance - fixing_theta_) > EPS) {
+                fprintf(stderr, "bgspprc: warning: enumerating with gap=%.6g but "
+                        "buckets were fixed with theta=%.6g; consider "
+                        "reset_elimination()\n", opts_.tolerance, fixing_theta_);
+            }
         }
 
         double mu = compute_midpoint();
@@ -1518,6 +1559,7 @@ private:
                   });
         if (static_cast<int>(paths.size()) > opts_.max_paths) {
             paths.resize(opts_.max_paths);
+            if (opts_.stage == Stage::Enumerate) enum_complete_ = false;
         }
         return paths;
     }
@@ -1629,8 +1671,10 @@ private:
                         p.reduced_cost = total_cost;
                         p.original_cost = total_real_cost;
                         paths.push_back(std::move(p));
-                        if (static_cast<int>(paths.size()) >= opts_.max_paths)
+                        if (static_cast<int>(paths.size()) >= opts_.max_paths) {
+                            if (opts_.stage == Stage::Enumerate) enum_complete_ = false;
                             return;
+                        }
                     }
                 }
             }
@@ -1667,6 +1711,7 @@ private:
 
         if (static_cast<int>(paths.size()) > opts_.max_paths) {
             paths.resize(opts_.max_paths);
+            if (opts_.stage == Stage::Enumerate) enum_complete_ = false;
         }
 
         return paths;
@@ -1848,6 +1893,9 @@ private:
     }
 
     int total_enum_labels_ = 0;  // global label counter for enumeration
+    bool enum_complete_ = true;
+    int enum_sink_labels_ = 0;  // labels that landed in sink buckets
+    double fixing_theta_ = INF;  // theta used in last fix_buckets call
 
     LabelPool<Pack> pool_;
     R1CManager r1c_;
