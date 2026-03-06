@@ -996,8 +996,6 @@ TEST_CASE("Enumerate: finds dominated paths") {
     bg.build();
 
     // Exact solve: dominance prunes the cost-5 path, only cost-3 found
-    bg.set_stage(Stage::Exact);
-    bg.set_tolerance(1e9);
     auto exact = bg.solve();
     CHECK(exact.size() == 1);
     CHECK(exact[0].reduced_cost == doctest::Approx(3.0));
@@ -1027,25 +1025,22 @@ TEST_CASE("Enumerate: completion-bound pruning filters correctly") {
 }
 
 TEST_CASE("Enumerate: bidirectional finds more paths than exact") {
-    LargerGraph g;
+    ParallelArcGraph g;
     using BG = BucketGraph<EmptyPack>;
 
-    // Exact bidir solve
     BG bg_exact(g.pv, EmptyPack{},
         {.bucket_steps = {5.0, 1.0}, .max_paths = 1000,
          .tolerance = 1e9, .bidirectional = true, .stage = Stage::Exact});
     bg_exact.build();
     auto exact = bg_exact.solve();
 
-    // Enumerate bidir solve with large gap
     BG bg_enum(g.pv, EmptyPack{},
         {.bucket_steps = {5.0, 1.0}, .max_paths = 1000,
          .tolerance = 1e9, .bidirectional = true, .stage = Stage::Enumerate});
     bg_enum.build();
     auto enumerated = bg_enum.solve();
 
-    // Enumerate should find at least as many paths as exact
-    CHECK(enumerated.size() >= exact.size());
+    CHECK(enumerated.size() > exact.size());
 }
 
 // ── Completion bounds ──

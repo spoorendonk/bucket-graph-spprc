@@ -798,6 +798,7 @@ private:
         if (scc_bs.empty()) return;
 
         const bool enumerating = (opts_.stage == Stage::Enumerate);
+        // Enumeration needs more labels per SCC since dominance is disabled.
         const int scc_cap = enumerating ? 2000000 : 500000;
         int label_count = 0;
 
@@ -1432,6 +1433,7 @@ private:
         int src_bi = vertex_bucket_index(pv_.source, src->q);
         src->bucket = src_bi;
         fw_bucket_labels_[src_bi].push_back(src);
+        if (opts_.stage == Stage::Enumerate) ++total_enum_labels_;
 
         // Inject warm labels from previous solve
         if (!warm_labels_.empty()) {
@@ -1476,6 +1478,7 @@ private:
         int src_bi = vertex_bucket_index(pv_.source, src->q);
         src->bucket = src_bi;
         fw_bucket_labels_[src_bi].push_back(src);
+        if (opts_.stage == Stage::Enumerate) ++total_enum_labels_;
 
         if (!warm_labels_.empty()) {
             inject_warm_labels(fw_bucket_labels_, Direction::Forward);
@@ -1492,6 +1495,7 @@ private:
             int snk_bi = vertex_bucket_index(pv_.sink, snk->q);
             snk->bucket = snk_bi;
             bw_bucket_labels_[snk_bi].push_back(snk);
+            if (opts_.stage == Stage::Enumerate) ++total_enum_labels_;
 
             for (int scc : bw_scc_topo_order_) {
                 process_scc(scc, Direction::Backward, bw_scc_buckets_,

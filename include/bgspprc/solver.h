@@ -86,6 +86,7 @@ public:
         bg_.set_stage(Stage::Enumerate);
         bg_.set_tolerance(gap);
         auto paths = bg_.solve();
+        bg_.set_stage(stage_);
         bg_.set_tolerance(opts_.tolerance);
         return paths;
     }
