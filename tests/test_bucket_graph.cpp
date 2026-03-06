@@ -6,7 +6,9 @@
 #include <bgspprc/solver.h>
 
 #include <cstdio>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 using namespace bgspprc;
 
@@ -1710,6 +1712,7 @@ TEST_CASE("Enumerate: max_paths triggers incomplete") {
     CHECK_FALSE(bg.enumeration_complete());
 }
 
+#ifndef _WIN32
 TEST_CASE("Enumerate: theta mismatch warning") {
     ParallelArcGraph g;
     using BG = BucketGraph<EmptyPack>;
@@ -1756,3 +1759,4 @@ TEST_CASE("Enumerate: theta mismatch warning") {
     bg.solve();  // should not warn
     CHECK(bg.enumeration_complete());
 }
+#endif  // !_WIN32

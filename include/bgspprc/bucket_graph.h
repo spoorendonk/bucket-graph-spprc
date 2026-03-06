@@ -1535,7 +1535,10 @@ private:
             int snk_bi = vertex_bucket_index(pv_.sink, snk->q);
             snk->bucket = snk_bi;
             bw_bucket_labels_[snk_bi].push_back(snk);
-            if (opts_.stage == Stage::Enumerate) ++total_enum_labels_;
+            if (opts_.stage == Stage::Enumerate) {
+                ++total_enum_labels_;
+                ++enum_sink_labels_;  // seed label is at sink
+            }
 
             for (int scc : bw_scc_topo_order_) {
                 process_scc(scc, Direction::Backward, bw_scc_buckets_,
