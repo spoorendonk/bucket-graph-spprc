@@ -24,6 +24,11 @@ namespace bgspprc {
 struct StandardResource {
     using State = double;
 
+    /// Standard resource symmetry depends on arc consumptions and bounds
+    /// (Meta-Solver 2026 §4.2.1). Caller should verify conditions externally;
+    /// conservatively returns false.
+    bool symmetric() const { return false; }
+
     const double* consumption;  // per-arc consumption d_a, size = n_arcs
     const double* lb;           // per-vertex lower bound, size = n_vertices
     const double* ub;           // per-vertex upper bound, size = n_vertices

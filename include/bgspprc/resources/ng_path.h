@@ -29,6 +29,9 @@ namespace bgspprc {
 struct NgPathResource {
     using State = uint64_t;
 
+    /// Ng-path resource is always symmetric (Meta-Solver 2026 §4.2.2).
+    bool symmetric() const { return true; }
+
     /// Per-arc precomputed transform data for both directions.
     struct ArcInfo {
         // Forward: extending from→to
