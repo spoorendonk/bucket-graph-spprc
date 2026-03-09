@@ -13,6 +13,10 @@ option(BGSPPRC_BUILD_TESTS "Build unit tests" ${PROJECT_IS_TOP_LEVEL})
 
 if(BGSPPRC_BUILD_TESTS)
     enable_testing()
+
+    # Compiler flags for project targets only (not propagated to consumers)
+    add_compile_options(-Wall -Wextra -Wpedantic -O2)
+
     add_executable(test_runner
         tests/test_main.cpp
         tests/test_resource.cpp
