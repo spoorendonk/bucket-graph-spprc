@@ -659,13 +659,16 @@ private:
             }
         }
 
-        // Meta-Solver resource extension
+        // Meta-Solver resource extension: extendAlongArc + extendToVertex
         if constexpr (Pack::size > 0) {
-            auto [new_states, extra_cost] = pack_.extend(
+            auto [arc_states, arc_cost] = pack_.extend_along_arc(
                 dir, parent->resource_states, arc_id);
-            if (extra_cost >= INF) return nullptr;
-            L->resource_states = new_states;
-            L->cost += extra_cost;
+            if (arc_cost >= INF) return nullptr;
+            auto [vtx_states, vtx_cost] = pack_.extend_to_vertex(
+                dir, arc_states, new_v);
+            if (vtx_cost >= INF) return nullptr;
+            L->resource_states = vtx_states;
+            L->cost += arc_cost + vtx_cost;
         }
 
         // R1C extension
@@ -1127,7 +1130,7 @@ private:
         total_cost += arc_cost;
 
         if constexpr (Pack::size > 0) {
-            auto [ext_states, ext_cost] = pack_.extend(
+            auto [ext_states, ext_cost] = pack_.extend_along_arc(
                 Direction::Forward, fw->resource_states, arc_id);
             if (ext_cost >= INF) return false;
             total_cost += ext_cost;
@@ -1514,6 +1517,13 @@ private:
         }
 
         L->resource_states = pack_.init_states(dir);
+        if constexpr (Pack::size > 0) {
+            auto [vtx_states, vtx_cost] = pack_.extend_to_vertex(
+                dir, L->resource_states, L->vertex);
+            if (vtx_cost >= INF) return nullptr;
+            L->resource_states = vtx_states;
+            L->cost += vtx_cost;
+        }
         if (r1c_.has_cuts()) {
             r1c_.init_state({L->r1c_states,
                 static_cast<std::size_t>(L->n_r1c_words)});
@@ -1749,7 +1759,7 @@ private:
                     double total_real_cost = fw->real_cost + bw->real_cost + arc_real_cost;
 
                     if constexpr (Pack::size > 0) {
-                        auto [ext_states, ext_cost] = pack_.extend(
+                        auto [ext_states, ext_cost] = pack_.extend_along_arc(
                             Direction::Forward, fw->resource_states, a);
                         if (ext_cost >= INF) continue;
                         total_cost += ext_cost;
