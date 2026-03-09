@@ -12,7 +12,7 @@ namespace bgspprc {
 ///
 /// Each resource carries per-label state and defines:
 ///  - symmetric: whether this resource supports symmetric labeling (§4.1)
-///  - extend: how state changes along an arc
+///  - extend_along_arc: how state changes along an arc
 ///  - domination_cost: extra cost penalty when L1's state is "worse" than L2's
 ///  - concatenation_cost: cost adjustment when joining forward/backward labels
 template <typename R>
@@ -22,7 +22,8 @@ concept Resource = requires(const R& r, Direction dir, Symmetry sym,
     typename R::State;
     { r.symmetric() } -> std::same_as<bool>;
     { r.init_state(dir) } -> std::same_as<typename R::State>;
-    { r.extend(dir, s, arc_id) } -> std::same_as<std::pair<typename R::State, double>>;
+    { r.extend_along_arc(dir, s, arc_id) } -> std::same_as<std::pair<typename R::State, double>>;
+    { r.extend_to_vertex(dir, s, vertex) } -> std::same_as<std::pair<typename R::State, double>>;
     { r.domination_cost(dir, vertex, s, s2) } -> std::same_as<double>;
     { r.concatenation_cost(sym, vertex, s, s2) } -> std::same_as<double>;
 };
@@ -52,9 +53,9 @@ struct ResourcePack {
             resources);
     }
 
-    /// Extend all resources along an arc. Returns (new_states, total_extra_cost).
+    /// Extend all resources along an arc (extendAlongArc). Returns (new_states, total_extra_cost).
     /// If any resource returns INF cost, the extension is infeasible.
-    std::pair<StatesTuple, double> extend(Direction dir,
+    std::pair<StatesTuple, double> extend_along_arc(Direction dir,
                                           const StatesTuple& states,
                                           int arc_id) const {
         StatesTuple new_states;
@@ -65,7 +66,7 @@ struct ResourcePack {
             ((
                 [&] {
                     if (!feasible) return;
-                    auto [s, c] = std::get<Is>(resources).extend(
+                    auto [s, c] = std::get<Is>(resources).extend_along_arc(
                         dir, std::get<Is>(states), arc_id);
                     if (c >= INF) {
                         feasible = false;
@@ -77,6 +78,35 @@ struct ResourcePack {
             ), ...);
         };
         do_extend(std::index_sequence_for<Rs...>{});
+
+        if (!feasible) return {StatesTuple{}, INF};
+        return {new_states, total_cost};
+    }
+
+    /// Extend all resources to a vertex (extendToVertex). Returns (new_states, total_extra_cost).
+    std::pair<StatesTuple, double> extend_to_vertex(Direction dir,
+                                                     const StatesTuple& states,
+                                                     int vertex) const {
+        StatesTuple new_states;
+        double total_cost = 0.0;
+        bool feasible = true;
+
+        auto do_ext = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+            ((
+                [&] {
+                    if (!feasible) return;
+                    auto [s, c] = std::get<Is>(resources).extend_to_vertex(
+                        dir, std::get<Is>(states), vertex);
+                    if (c >= INF) {
+                        feasible = false;
+                        return;
+                    }
+                    std::get<Is>(new_states) = s;
+                    total_cost += c;
+                }()
+            ), ...);
+        };
+        do_ext(std::index_sequence_for<Rs...>{});
 
         if (!feasible) return {StatesTuple{}, INF};
         return {new_states, total_cost};
