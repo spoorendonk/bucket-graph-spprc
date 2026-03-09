@@ -6,7 +6,7 @@
 
 #include <cstdio>
 
-#include "doctest.h"
+#include <doctest/doctest.h>
 #ifndef _WIN32
 #include <unistd.h>
 #endif
