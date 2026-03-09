@@ -779,24 +779,21 @@ TEST_CASE("Mixed ResourcePack extend_to_vertex composes correctly") {
 }
 
 // ════════════════════════════════════════════════════════════════
-// End-to-end solver tests with NgPathResource
+// Solver-level tests with NgPathResource
 // ════════════════════════════════════════════════════════════════
 
-// Graph with a cycle that has negative cost:
+// Helper: 4-vertex graph with a negative-cost cycle.
 //
 //   0 --(-5)--> 1 --(-5)--> 2 --(-5)--> 1  (cycle!)  --> 3
 //   0 --( 1)--> 3  (direct)
 //
-// Without ng-path: solver can exploit the 1→2→1 cycle for very negative cost.
-// With ng-path (all vertices in each other's ng-set): cycle is blocked.
+// Without ng-path: solver exploits the 1→2→1 cycle.
+// With full ng-path: cycle is blocked, best elementary = -9.
 
 static ProblemView make_cycle_pv(int* from, int* to, double* cost,
                                   double* time_d, double* tw_lb, double* tw_ub,
                                   const double** arc_res, const double** v_lb,
                                   const double** v_ub) {
-    // 4 vertices: 0=source, 3=sink
-    // Arcs: 0→1, 0→3, 1→2, 2→1, 1→3, 2→3
-    //  idx:  0    1    2    3    4    5
     from[0] = 0; to[0] = 1; cost[0] = -5.0; time_d[0] = 1.0;
     from[1] = 0; to[1] = 3; cost[1] =  1.0; time_d[1] = 1.0;
     from[2] = 1; to[2] = 2; cost[2] = -5.0; time_d[2] = 1.0;
@@ -829,98 +826,67 @@ static ProblemView make_cycle_pv(int* from, int* to, double* cost,
 
 using NgPack = ResourcePack<NgPathResource>;
 
-TEST_CASE("Solver with NgPathResource: cycle blocked (mono)") {
-    int from[6], to[6]; double cost[6], time_d[6], tw_lb[4], tw_ub[4];
-    const double* arc_res[1]; const double* v_lb[1]; const double* v_ub[1];
-    auto pv = make_cycle_pv(from, to, cost, time_d, tw_lb, tw_ub,
-                            arc_res, v_lb, v_ub);
-
-    // ng-neighbors: everyone is a neighbor of everyone (full elementarity for 4 verts)
-    std::vector<std::vector<int>> neighbors = {
-        {0, 1, 2, 3}, {1, 0, 2, 3}, {2, 0, 1, 3}, {3, 0, 1, 2}
-    };
-    NgPathResource ng(pv.n_vertices, pv.n_arcs, pv.arc_from, pv.arc_to, neighbors);
-    Solver<NgPack> solver(pv, make_resource_pack(std::move(ng)),
-        {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
-    solver.build();
-    solver.set_stage(Stage::Exact);
-    auto paths = solver.solve();
-
-    REQUIRE(!paths.empty());
-    // Best elementary path: 0→1→2→3 cost = -5 + -5 + 1 = -9
-    // Or: 0→1→3 cost = -5 + 1 = -4
-    // The 1→2→1 cycle is blocked, so no exploiting it.
-    CHECK(paths[0].reduced_cost == doctest::Approx(-9.0));
-
-    // Verify no vertex repeats in best path
-    auto& verts = paths[0].vertices;
-    for (size_t i = 0; i < verts.size(); ++i)
-        for (size_t j = i + 1; j < verts.size(); ++j)
-            CHECK(verts[i] != verts[j]);
+static auto make_full_neighbors(int n) {
+    std::vector<std::vector<int>> neighbors(n);
+    for (int v = 0; v < n; ++v) {
+        neighbors[v].resize(n);
+        // Put self first, then others
+        neighbors[v][0] = v;
+        for (int w = 0, pos = 1; w < n; ++w)
+            if (w != v) neighbors[v][pos++] = w;
+    }
+    return neighbors;
 }
 
-TEST_CASE("Solver with NgPathResource: cycle blocked (bidir)") {
-    int from[6], to[6]; double cost[6], time_d[6], tw_lb[4], tw_ub[4];
-    const double* arc_res[1]; const double* v_lb[1]; const double* v_ub[1];
-    auto pv = make_cycle_pv(from, to, cost, time_d, tw_lb, tw_ub,
-                            arc_res, v_lb, v_ub);
-
-    std::vector<std::vector<int>> neighbors = {
-        {0, 1, 2, 3}, {1, 0, 2, 3}, {2, 0, 1, 3}, {3, 0, 1, 2}
-    };
-    NgPathResource ng(pv.n_vertices, pv.n_arcs, pv.arc_from, pv.arc_to, neighbors);
-    Solver<NgPack> solver(pv, make_resource_pack(std::move(ng)),
-        {.bucket_steps = {10.0, 1.0}, .bidirectional = true, .tolerance = 1e9});
-    solver.build();
-    solver.set_stage(Stage::Exact);
-    auto paths = solver.solve();
-
-    REQUIRE(!paths.empty());
-    CHECK(paths[0].reduced_cost == doctest::Approx(-9.0));
-
-    auto& verts = paths[0].vertices;
-    for (size_t i = 0; i < verts.size(); ++i)
-        for (size_t j = i + 1; j < verts.size(); ++j)
-            CHECK(verts[i] != verts[j]);
+// Helper: verify all paths are elementary (no repeated vertices).
+static void check_elementary(const auto& paths) {
+    for (auto& p : paths) {
+        auto& v = p.vertices;
+        for (size_t i = 0; i < v.size(); ++i)
+            for (size_t j = i + 1; j < v.size(); ++j)
+                CHECK(v[i] != v[j]);
+    }
 }
 
-TEST_CASE("Solver with NgPathResource: mono == bidir cost") {
+TEST_CASE("Solver: ng-path blocks cycles, mono and bidir agree") {
     int from[6], to[6]; double cost[6], time_d[6], tw_lb[4], tw_ub[4];
     const double* arc_res[1]; const double* v_lb[1]; const double* v_ub[1];
     auto pv = make_cycle_pv(from, to, cost, time_d, tw_lb, tw_ub,
                             arc_res, v_lb, v_ub);
 
-    std::vector<std::vector<int>> neighbors = {
-        {0, 1, 2, 3}, {1, 0, 2, 3}, {2, 0, 1, 3}, {3, 0, 1, 2}
-    };
+    auto neighbors = make_full_neighbors(4);
 
-    NgPathResource ng_m(pv.n_vertices, pv.n_arcs, pv.arc_from, pv.arc_to, neighbors);
+    // Mono
+    NgPathResource ng_m(4, 6, from, to, neighbors);
     Solver<NgPack> mono(pv, make_resource_pack(std::move(ng_m)),
         {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
     mono.build();
     mono.set_stage(Stage::Exact);
     auto mono_paths = mono.solve();
 
-    NgPathResource ng_b(pv.n_vertices, pv.n_arcs, pv.arc_from, pv.arc_to, neighbors);
+    REQUIRE(!mono_paths.empty());
+    CHECK(mono_paths[0].reduced_cost == doctest::Approx(-9.0));
+    check_elementary(mono_paths);
+
+    // Bidir — must agree
+    NgPathResource ng_b(4, 6, from, to, neighbors);
     Solver<NgPack> bidir(pv, make_resource_pack(std::move(ng_b)),
         {.bucket_steps = {10.0, 1.0}, .bidirectional = true, .tolerance = 1e9});
     bidir.build();
     bidir.set_stage(Stage::Exact);
     auto bidir_paths = bidir.solve();
 
-    REQUIRE(!mono_paths.empty());
     REQUIRE(!bidir_paths.empty());
-    CHECK(mono_paths[0].reduced_cost ==
-          doctest::Approx(bidir_paths[0].reduced_cost).epsilon(0.01));
+    CHECK(bidir_paths[0].reduced_cost == doctest::Approx(-9.0));
+    check_elementary(bidir_paths);
 }
 
-TEST_CASE("Solver without ng: cycle exploited for lower cost") {
+TEST_CASE("Solver: without ng-path, cycles are exploited") {
     int from[6], to[6]; double cost[6], time_d[6], tw_lb[4], tw_ub[4];
     const double* arc_res[1]; const double* v_lb[1]; const double* v_ub[1];
     auto pv = make_cycle_pv(from, to, cost, time_d, tw_lb, tw_ub,
                             arc_res, v_lb, v_ub);
 
-    // Without ng-path, the solver can use the 1→2→1 cycle.
     Solver<EmptyPack> solver(pv, EmptyPack{},
         {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
     solver.build();
@@ -928,47 +894,12 @@ TEST_CASE("Solver without ng: cycle exploited for lower cost") {
     auto paths = solver.solve();
 
     REQUIRE(!paths.empty());
-    // With cycles: 0→1→2→1→2→1→...→3, each 1→2→1 adds -10 cost.
-    // Must be more negative than -9 (the elementary optimum).
     CHECK(paths[0].reduced_cost < -9.0 - 1e-6);
 }
 
-TEST_CASE("Solver with partial ng-set: only nearby vertices blocked") {
-    // Same graph, but ng-set only includes self — no cycle blocking.
-    int from[6], to[6]; double cost[6], time_d[6], tw_lb[4], tw_ub[4];
-    const double* arc_res[1]; const double* v_lb[1]; const double* v_ub[1];
-    auto pv = make_cycle_pv(from, to, cost, time_d, tw_lb, tw_ub,
-                            arc_res, v_lb, v_ub);
-
-    // ng-neighbors: only self. No neighbors means no cycle detection.
-    std::vector<std::vector<int>> neighbors = {
-        {0}, {1}, {2}, {3}
-    };
-    NgPathResource ng(pv.n_vertices, pv.n_arcs, pv.arc_from, pv.arc_to, neighbors);
-    Solver<NgPack> solver(pv, make_resource_pack(std::move(ng)),
-        {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
-    solver.build();
-    solver.set_stage(Stage::Exact);
-    auto paths = solver.solve();
-
-    REQUIRE(!paths.empty());
-    // Self-only ng-set won't block 1→2→1 because the check_bit for
-    // "is target in source's ng-set" will be -1 for non-self vertices.
-    // So cycles are still exploited.
-    CHECK(paths[0].reduced_cost < -9.0 - 1e-6);
-}
-
-// ════════════════════════════════════════════════════════════════
-// End-to-end bidir splice test: across-arc finds path same-vertex misses
-// ════════════════════════════════════════════════════════════════
-
-TEST_CASE("Bidir across-arc splice finds optimal path") {
-    // Graph: 6 vertices, source=0, sink=5
-    // Design: fw reaches v1 (q=25<50) but NOT v3 (q=55>50 stops fw).
-    //         bw reaches v3 (q=75>50) but NOT v1 (q=45<50 stops bw).
-    //         Same-vertex concat misses 0→1→3→5 because no vertex has both.
-    //         Across-arc on arc 1→3 finds it.
-    //
+TEST_CASE("Solver: bidir across-arc splice finds optimal elementary path") {
+    // 6 vertices, source=0, sink=5.
+    // Optimal elementary: 0→1→3→5 (cost=-21), crosses bidir midpoint.
     // Arcs:       cost     time
     // 0→1 (0)    -10       25
     // 0→2 (1)     -1        1
@@ -1004,31 +935,112 @@ TEST_CASE("Bidir across-arc splice finds optimal path") {
     pv.vertex_ub = v_ub;
     pv.n_main_resources = 1;
 
-    // ng-neighbors: full elementarity
-    std::vector<std::vector<int>> neighbors = {
-        {0,1,2,3,4,5}, {1,0,2,3,4,5}, {2,0,1,3,4,5},
-        {3,0,1,2,4,5}, {4,0,1,2,3,5}, {5,0,1,2,3,4}
-    };
+    auto neighbors = make_full_neighbors(6);
 
-    // Mono: should find 0→1→3→5 (cost = -10 + -10 + -1 = -21)
-    NgPathResource ng_m(pv.n_vertices, pv.n_arcs, from, to, neighbors);
+    // Mono
+    NgPathResource ng_m(6, N, from, to, neighbors);
     Solver<NgPack> mono(pv, make_resource_pack(std::move(ng_m)),
         {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
     mono.build();
     mono.set_stage(Stage::Exact);
     auto mono_paths = mono.solve();
     REQUIRE(!mono_paths.empty());
-    double mono_best = mono_paths[0].reduced_cost;
-    CHECK(mono_best == doctest::Approx(-21.0));
+    CHECK(mono_paths[0].reduced_cost == doctest::Approx(-21.0));
+    check_elementary(mono_paths);
 
-    // Bidir: should also find -21 via across-arc splice
-    NgPathResource ng_b(pv.n_vertices, pv.n_arcs, from, to, neighbors);
+    // Bidir must find same cost via across-arc splice
+    NgPathResource ng_b(6, N, from, to, neighbors);
     Solver<NgPack> bidir(pv, make_resource_pack(std::move(ng_b)),
         {.bucket_steps = {10.0, 1.0}, .bidirectional = true, .tolerance = 1e9});
     bidir.build();
     bidir.set_stage(Stage::Exact);
     auto bidir_paths = bidir.solve();
     REQUIRE(!bidir_paths.empty());
-    double bidir_best = bidir_paths[0].reduced_cost;
-    CHECK(bidir_best <= mono_best + 1e-6);
+    CHECK(bidir_paths[0].reduced_cost <= mono_paths[0].reduced_cost + 1e-6);
+    check_elementary(bidir_paths);
+}
+
+TEST_CASE("Solver: bidir with cycle + concatenation") {
+    // 5 vertices, source=0, sink=4.
+    // Negative cycle 1→2→1 plus the optimal path must cross bidir midpoint.
+    //
+    // Arcs:           cost    time
+    // 0→1 (0)         -10      20
+    // 0→3 (1)          -1       1
+    // 1→2 (2)         -10      15    ← crosses midpoint
+    // 2→1 (3)         -10       1    (cycle back)
+    // 1→4 (4)           1      30
+    // 2→4 (5)           1      30
+    // 3→4 (6)          -1       1
+    //
+    // Without ng: cycle 1→2→1→2→... exploited.
+    // With ng: best elementary = 0→1→2→4 (cost = -10 + -10 + 1 = -19)
+    // The 1→2 arc crosses midpoint → bidir needs across-arc splice.
+
+    const int N = 7;
+    int from[N] = {0, 0, 1, 2, 1, 2, 3};
+    int to[N]   = {1, 3, 2, 1, 4, 4, 4};
+    double cost[N] = {-10, -1, -10, -10, 1, 1, -1};
+    double time_d[N] = {20, 1, 15, 1, 30, 30, 1};
+    double tw_lb[5] = {0, 0, 0, 0, 0};
+    double tw_ub[5] = {100, 100, 100, 100, 100};
+
+    const double* arc_res[1] = {time_d};
+    const double* v_lb[1] = {tw_lb};
+    const double* v_ub[1] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 5;
+    pv.source = 0;
+    pv.sink = 4;
+    pv.n_arcs = N;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    auto neighbors = make_full_neighbors(5);
+
+    // Without ng: cycle exploited
+    {
+        Solver<EmptyPack> solver(pv, EmptyPack{},
+            {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
+        solver.build();
+        solver.set_stage(Stage::Exact);
+        auto paths = solver.solve();
+        REQUIRE(!paths.empty());
+        CHECK(paths[0].reduced_cost < -19.0 - 1e-6);
+    }
+
+    // Mono with ng: elementary optimum
+    double mono_best;
+    {
+        NgPathResource ng(5, N, from, to, neighbors);
+        Solver<NgPack> solver(pv, make_resource_pack(std::move(ng)),
+            {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
+        solver.build();
+        solver.set_stage(Stage::Exact);
+        auto paths = solver.solve();
+        REQUIRE(!paths.empty());
+        mono_best = paths[0].reduced_cost;
+        CHECK(mono_best == doctest::Approx(-19.0));
+        check_elementary(paths);
+    }
+
+    // Bidir with ng: must agree
+    {
+        NgPathResource ng(5, N, from, to, neighbors);
+        Solver<NgPack> solver(pv, make_resource_pack(std::move(ng)),
+            {.bucket_steps = {10.0, 1.0}, .bidirectional = true, .tolerance = 1e9});
+        solver.build();
+        solver.set_stage(Stage::Exact);
+        auto paths = solver.solve();
+        REQUIRE(!paths.empty());
+        CHECK(paths[0].reduced_cost <= mono_best + 1e-6);
+        check_elementary(paths);
+    }
 }
