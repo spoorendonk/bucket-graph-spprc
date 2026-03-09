@@ -54,7 +54,7 @@ struct Result {
 // ────────────────────────────────────────────────────────────────
 
 void run_spprclib() {
-  std::string dir = "../rcspp-bac-3/benchmarks/instances/spprclib";
+  std::string dir = DATA_DIR "/spprclib";
   if (!fs::exists(dir)) {
     printf("spprclib dir not found\n");
     return;
@@ -114,7 +114,7 @@ void run_spprclib() {
 // ────────────────────────────────────────────────────────────────
 
 void run_roberti() {
-  std::string dir = "../rcspp-bac-3/benchmarks/instances/roberti";
+  std::string dir = DATA_DIR "/roberti";
   if (!fs::exists(dir)) {
     printf("roberti dir not found\n");
     return;
@@ -233,9 +233,9 @@ void run_rcspp_dir(const std::string& dir, const std::string& label) {
 }
 
 void run_rcspp() {
-  run_rcspp_dir("benchmarks/rcspp/rcspp/ng8", "ng8");
-  run_rcspp_dir("benchmarks/rcspp/rcspp/ng16", "ng16");
-  run_rcspp_dir("benchmarks/rcspp/rcspp/ng24", "ng24");
+  run_rcspp_dir(DATA_DIR "/rcspp/ng8", "ng8");
+  run_rcspp_dir(DATA_DIR "/rcspp/ng16", "ng16");
+  run_rcspp_dir(DATA_DIR "/rcspp/ng24", "ng24");
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -243,7 +243,7 @@ void run_rcspp() {
 // ────────────────────────────────────────────────────────────────
 
 void run_bidir_rcspp() {
-  std::string dir = "benchmarks/rcspp/rcspp/ng8";
+  std::string dir = DATA_DIR "/rcspp/ng8";
   if (!fs::exists(dir)) {
     printf("rcspp dir not found\n");
     return;
@@ -329,7 +329,7 @@ void run_bidir_rcspp() {
 // ────────────────────────────────────────────────────────────────
 
 void run_bidir_spprclib() {
-  std::string dir = "../rcspp-bac-3/benchmarks/instances/spprclib";
+  std::string dir = DATA_DIR "/spprclib";
   if (!fs::exists(dir)) {
     printf("spprclib dir not found\n");
     return;
@@ -414,7 +414,7 @@ void run_bidir_spprclib() {
 // ────────────────────────────────────────────────────────────────
 
 void run_bidir_roberti() {
-  std::string dir = "../rcspp-bac-3/benchmarks/instances/roberti";
+  std::string dir = DATA_DIR "/roberti";
   if (!fs::exists(dir)) {
     printf("roberti dir not found\n");
     return;
@@ -504,7 +504,7 @@ void run_bidir_roberti() {
 // ────────────────────────────────────────────────────────────────
 
 void run_stages() {
-  std::string dir = "benchmarks/rcspp/rcspp/ng8";
+  std::string dir = DATA_DIR "/rcspp/ng8";
   if (!fs::exists(dir)) {
     printf("rcspp dir not found\n");
     return;
@@ -573,7 +573,7 @@ void run_stages() {
 // ────────────────────────────────────────────────────────────────
 
 void run_elimination() {
-  std::string dir = "benchmarks/rcspp/rcspp/ng8";
+  std::string dir = DATA_DIR "/rcspp/ng8";
   if (!fs::exists(dir)) {
     printf("rcspp dir not found\n");
     return;
@@ -639,7 +639,7 @@ void run_elimination() {
 // ────────────────────────────────────────────────────────────────
 
 void run_bucket_fixing() {
-  std::string dir = "benchmarks/rcspp/rcspp/ng8";
+  std::string dir = DATA_DIR "/rcspp/ng8";
   if (!fs::exists(dir)) {
     printf("rcspp dir not found\n");
     return;
@@ -803,7 +803,7 @@ void run_path_validation() {
 
   // RCSPP ng8 R1/RC1 (with ng-path)
   {
-    std::string dir = "benchmarks/rcspp/rcspp/ng8";
+    std::string dir = DATA_DIR "/rcspp/ng8";
     if (fs::exists(dir)) {
       for (auto& entry : fs::directory_iterator(dir)) {
         if (entry.path().extension() != ".graph") continue;
@@ -865,7 +865,7 @@ void run_path_validation() {
 
   // SPPRCLIB
   {
-    std::string dir = "../rcspp-bac-3/benchmarks/instances/spprclib";
+    std::string dir = DATA_DIR "/spprclib";
     if (fs::exists(dir)) {
       for (auto& entry : fs::directory_iterator(dir)) {
         if (entry.path().extension() != ".sppcc") continue;
@@ -895,7 +895,7 @@ void run_path_validation() {
 
   // Roberti
   {
-    std::string dir = "../rcspp-bac-3/benchmarks/instances/roberti";
+    std::string dir = DATA_DIR "/roberti";
     if (fs::exists(dir)) {
       for (auto& entry : fs::directory_iterator(dir)) {
         if (entry.path().extension() != ".vrp") continue;
@@ -952,7 +952,7 @@ int run_verify(const std::string& csv_path = "") {
 
   // ── SPPRCLIB (with ng-path) ──
   {
-    std::string dir = "../rcspp-bac-3/benchmarks/instances/spprclib";
+    std::string dir = DATA_DIR "/spprclib";
     if (fs::exists(dir)) {
       auto optima = load_csv(dir + "/optimal.csv");
       printf("\n=== verify: SPPRCLIB (n <= 55) ===\n");
@@ -1024,7 +1024,7 @@ int run_verify(const std::string& csv_path = "") {
 
   // ── Roberti ──
   {
-    std::string dir = "../rcspp-bac-3/benchmarks/instances/roberti";
+    std::string dir = DATA_DIR "/roberti";
     if (fs::exists(dir)) {
       auto optima = load_csv(dir + "/optimal.csv");
       printf("\n=== verify: Roberti (n <= 80, ng-path) ===\n");
@@ -1103,7 +1103,7 @@ int run_verify(const std::string& csv_path = "") {
 
   // ── RCSPP ng8/ng16/ng24 R1/RC1 (with ng-path resource) ──
   for (auto& ng : {"ng8"}) {
-    std::string dir = std::string("benchmarks/rcspp/rcspp/") + ng;
+    std::string dir = std::string(DATA_DIR "/rcspp/") + ng;
     if (fs::exists(dir)) {
       printf("\n=== verify: RCSPP %s (R1/RC1, ng-path) ===\n", ng);
 

@@ -1,5 +1,6 @@
 build/
 benchmarks/
+data/
 tests/doctest.h
 *.o
 *.d
