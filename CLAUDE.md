@@ -3,11 +3,14 @@
 ## Quick Reference
 
 ```bash
-# build
-make
+# build & test (standalone)
+cmake -B build -DCMAKE_CXX_COMPILER=g++-14
+cmake --build build
+ctest --test-dir build
 
-# test
-make test
+# as submodule in another project
+add_subdirectory(bucket-graph-spprc)
+target_link_libraries(my_target PRIVATE bgspprc)
 ```
 
 ## Git
