@@ -2082,4 +2082,77 @@ TEST_CASE("Exact completion bounds prune fw labels past midpoint") {
           doctest::Approx(mono_paths[0].reduced_cost));
 }
 
+TEST_CASE("Backward exact completion bounds prune bw labels past midpoint") {
+    // 6 vertices: 0=source, 1, 2, 3, 4, 5=sink.  tw [0,10], midpoint=5.
+    //
+    // Two paths:
+    //   A: 0→1→5  t=3+3=6, c=1+1=2  (optimal, found via fw reaching sink)
+    //   B: 0→2→3→5  infeasible: fw at 2 has q=3, arc 2→3 t=8 → q=11>ub=10
+    //
+    // Arcs:
+    //   0→1 t=3 c=1     1→5 t=3 c=1     (path A)
+    //   0→2 t=3 c=100   2→3 t=8 c=50    3→5 t=1 c=1  (path B, infeasible)
+    //   0→4 t=1 c=5     4→3 t=5 c=5     (path C below)
+    //
+    // Bw label at vertex 2: seed at 5 q=10, extend 3→5 bw q=9, extend 2→3 bw
+    //   q=min(9-8,10)=1 < mu=5. Past midpoint.
+    //   Incoming arcs of 2: only 0→2 (t=3). fw at 0: q=0.
+    //   fw_after = max(0+3,0) = 3 > bw_q=1 → INCOMPATIBLE → pruned.
+    //
+    // Bw label at vertex 4: extend 4→3 bw q=min(9-5,10)=4 < mu=5.
+    //   Incoming arcs of 4: only 0→4 (t=1). fw at 0: q=0.
+    //   fw_after = max(0+1,0) = 1 ≤ bw_q=4 → COMPATIBLE → NOT pruned.
+    //   Path C: 0→4→3→5, t=1+5+1=7, c=5+5+1=11. Found via concatenation.
+    //
+    // Both mono and bidir find paths A (cost=2) and C (cost=11).
+    // Bw label at vertex 2 is pruned (n_bw_labels_pruned ≥ 1).
+
+    int from[7]      = {0, 0, 0, 1, 2, 3, 4};
+    int to[7]        = {1, 2, 4, 5, 3, 5, 3};
+    double cost[7]   = {1.0, 100.0, 5.0, 1.0, 50.0, 1.0, 5.0};
+    double time_d[7] = {3.0, 3.0, 1.0, 3.0, 8.0, 1.0, 5.0};
+
+    double tw_lb[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    double tw_ub[6] = {10.0, 10.0, 10.0, 10.0, 10.0, 10.0};
+
+    const double* arc_res[1]   = {time_d};
+    const double* v_lb[1]      = {tw_lb};
+    const double* v_ub[1]      = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 6;
+    pv.source = 0;
+    pv.sink = 5;
+    pv.n_arcs = 7;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    // Mono solve for reference
+    BucketGraph<EmptyPack> mono(pv, EmptyPack{},
+        {.bucket_steps = {1.0, 1.0}, .tolerance = 1e9});
+    mono.build();
+    auto mono_paths = mono.solve();
+    REQUIRE(!mono_paths.empty());
+    CHECK(mono_paths[0].reduced_cost == doctest::Approx(2.0));
+
+    // Bidir solve
+    BucketGraph<EmptyPack> bidir(pv, EmptyPack{},
+        {.bucket_steps = {1.0, 1.0}, .tolerance = 1e9, .bidirectional = true,
+         .stage = Stage::Exact});
+    bidir.build();
+    auto bidir_paths = bidir.solve();
+    REQUIRE(!bidir_paths.empty());
+    CHECK(bidir_paths[0].reduced_cost ==
+          doctest::Approx(mono_paths[0].reduced_cost));
+
+    // Verify pruning actually happened (bw label at vertex 2 was pruned)
+    CHECK(bidir.n_bw_labels_pruned() >= 1);
+}
+
 #endif  // !_WIN32
