@@ -5,7 +5,7 @@
 #include <bgspprc/resources/standard.h>
 #include <bgspprc/solver.h>
 
-#include "doctest.h"
+#include <doctest/doctest.h>
 
 using namespace bgspprc;
 
