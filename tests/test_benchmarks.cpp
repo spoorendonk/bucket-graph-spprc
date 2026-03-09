@@ -8,7 +8,7 @@
 #include <map>
 #include <string>
 
-#include "doctest.h"
+#include <doctest/doctest.h>
 #include "instance_io.h"
 
 using namespace bgspprc;
