@@ -1,14 +1,31 @@
 #!/usr/bin/env bash
+# check_optimal.sh — Compare benchmark results against reference optimal values.
+#
+# Reads results from benchmarks/bgspprc.csv (produced by run_benchmarks.sh),
+# looks up reference optima in benchmarks/instances/<set>/optimal.csv, and
+# reports PASS/FAIL/SKIP per instance.
+#
+# Usage:
+#   ./benchmarks/check_optimal.sh [--ng K] [--csv FILE] [PATH...]
+#
+# Arguments:
+#   PATH           Instance file or directory — filter CSV to these instances.
+#                  If omitted, all CSV rows are checked.
+#   --ng K         Filter CSV to rows with this ng value.
+#   --csv FILE     Results CSV (default: benchmarks/bgspprc.csv).
+#
+# Verdict:
+#   PASS   cost ≤ optimal + 0.001
+#   FAIL   cost > optimal + 0.001, or no result
+#   SKIP   no reference optimal available
+#
+# Output:
+#   Per-instance table and PASS/FAIL/SKIP summary counts.
 set -euo pipefail
 
 usage() {
-  cat <<'EOF'
-Usage: check_optimal.sh [--ng K] [--csv FILE] [PATH...]
-  PATH    Instance file or directory — filter CSV to these instances
-  --ng K      Filter CSV to this ng value
-  --csv FILE  Results CSV (default: benchmarks/bgspprc.csv)
-EOF
-  exit 1
+  sed -n '2,/^$/s/^# \?//p' "${BASH_SOURCE[0]}"
+  exit "${1:-0}"
 }
 
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"

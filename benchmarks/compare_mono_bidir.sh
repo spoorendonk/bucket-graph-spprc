@@ -1,14 +1,27 @@
 #!/usr/bin/env bash
+# compare_mono_bidir.sh — Compare mono vs bidir solver on benchmark instances.
+#
+# Runs bgspprc-solve in both --mono and default (bidir) mode on each instance
+# and prints a side-by-side table with cost and time for each mode.
+#
+# Usage:
+#   ./benchmarks/compare_mono_bidir.sh [--ng K] [--timeout S] PATH...
+#
+# Arguments:
+#   PATH           Instance file or directory (required).
+#   --ng K         Pass --ng K to solver.
+#   --timeout S    Per-instance timeout in seconds (default: 120).
+#
+# Environment:
+#   SOLVE          Path to solver binary (default: ./build/bgspprc-solve).
+#
+# Output:
+#   Table with columns: Instance, Mono Cost, Mono ms, Bidir Cost, Bidir ms.
 set -euo pipefail
 
 usage() {
-  cat <<'EOF'
-Usage: compare_mono_bidir.sh [--ng K] [--timeout S] [PATH...]
-  PATH    Instance file or directory
-  --ng K      Pass --ng K to solver
-  --timeout S Per-instance timeout in seconds (default: 120)
-EOF
-  exit 1
+  sed -n '2,/^$/s/^# \?//p' "${BASH_SOURCE[0]}"
+  exit "${1:-0}"
 }
 
 SOLVE="${SOLVE:-./build/bgspprc-solve}"

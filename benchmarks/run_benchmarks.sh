@@ -1,15 +1,45 @@
 #!/usr/bin/env bash
+# run_benchmarks.sh — Run bgspprc-solve on benchmark instances and produce CSV results.
+#
+# Runs bgspprc-solve on instance files (.sppcc/.vrp/.graph), parses stdout,
+# and writes rows to benchmarks/bgspprc.csv (one row per instance+set+ng combo,
+# replaced on re-run).
+#
+# Usage:
+#   ./benchmarks/run_benchmarks.sh [--ng K] [--timeout S] [PATH...]
+#
+# Arguments:
+#   PATH           Instance file or directory of instances.
+#                  Default: benchmarks/instances/spprclib and
+#                  benchmarks/instances/roberti.
+#   --ng K         Pass --ng K to solver (ng-neighborhood size).
+#   --timeout S    Per-instance timeout in seconds (default: 120).
+#
+# Environment:
+#   SOLVE          Path to solver binary (default: ./build/bgspprc-solve).
+#
+# Output:
+#   benchmarks/bgspprc.csv — CSV with columns:
+#     instance, set, ng, cost, paths, time_s, timestamp
+#   Existing rows for re-run instances are replaced; other rows preserved.
+#
+# Parsed fields from bgspprc-solve stdout:
+#   "name  type  n=NN  arcs=NN  cost=X.XXX  paths=N  X.Xms"
+#   → cost, paths, time_ms (converted to time_s for CSV)
+#
+# The "set" column is inferred from the parent directory name.
+# The "ng" column uses --ng K if given, else inferred from grandparent
+# directory name matching ng[0-9]+ (e.g. rcspp/ng16/ → ng=16).
+#
+# Prerequisites:
+#   bgspprc-solve must be built:
+#     cmake -B build -DCMAKE_CXX_COMPILER=g++-14 && cmake --build build
 set -euo pipefail
 
 # ── Usage ──
 usage() {
-  cat <<'EOF'
-Usage: run_benchmarks.sh [--ng K] [--timeout S] [PATH...]
-  PATH    Instance file (.sppcc/.vrp/.graph) or directory (default: benchmarks/instances/spprclib benchmarks/instances/roberti)
-  --ng K      Pass --ng K to solver
-  --timeout S Per-instance timeout in seconds (default: 120)
-EOF
-  exit 1
+  sed -n '2,/^$/s/^# \?//p' "${BASH_SOURCE[0]}"
+  exit "${1:-0}"
 }
 
 SOLVE="${SOLVE:-./build/bgspprc-solve}"
