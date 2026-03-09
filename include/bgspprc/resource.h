@@ -26,6 +26,7 @@ concept Resource = requires(const R& r, Direction dir, Symmetry sym,
     { r.extend_to_vertex(dir, s, vertex) } -> std::same_as<std::pair<typename R::State, double>>;
     { r.domination_cost(dir, vertex, s, s2) } -> std::same_as<double>;
     { r.concatenation_cost(sym, vertex, s, s2) } -> std::same_as<double>;
+    { r.arc_concatenation_cost(sym, arc_id, s, s2) } -> std::same_as<double>;
 };
 
 /// Compile-time pack of resources. Labels carry a tuple of all states.
@@ -136,6 +137,20 @@ struct ResourcePack {
              ...);
         };
         do_cat(std::index_sequence_for<Rs...>{});
+        return total;
+    }
+
+    /// Compute arc-level concatenation cost (Meta-Solver 2026 §4.1 function 7).
+    double arc_concatenation_cost(Symmetry sym, int arc_id,
+                                  const StatesTuple& s_fw,
+                                  const StatesTuple& s_bw) const {
+        double total = 0.0;
+        auto do_acc = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+            ((total += std::get<Is>(resources).arc_concatenation_cost(
+                  sym, arc_id, std::get<Is>(s_fw), std::get<Is>(s_bw))),
+             ...);
+        };
+        do_acc(std::index_sequence_for<Rs...>{});
         return total;
     }
 };
