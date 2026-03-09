@@ -32,11 +32,19 @@ if(BGSPPRC_BUILD_TESTS)
     target_link_libraries(test_runner PRIVATE bgspprc doctest::doctest)
     add_test(NAME unit_tests COMMAND test_runner)
 
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data")
+        message(WARNING "Instance data not found. Run scripts/fetch_instances.sh to download benchmark instances.")
+    endif()
+
     add_executable(bench_runner tests/test_main.cpp tests/test_benchmarks.cpp)
     target_link_libraries(bench_runner PRIVATE bgspprc doctest::doctest)
+    target_compile_definitions(bench_runner PRIVATE
+        DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 
     add_executable(bench_run tests/bench_run.cpp)
     target_link_libraries(bench_run PRIVATE bgspprc doctest::doctest)
+    target_compile_definitions(bench_run PRIVATE
+        DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 
     add_executable(bench_vs_pathwyse tests/bench_vs_pathwyse.cpp)
     target_link_libraries(bench_vs_pathwyse PRIVATE bgspprc doctest::doctest)

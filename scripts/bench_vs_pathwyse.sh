@@ -7,7 +7,7 @@
 # Prerequisites:
 #   - build/bench_vs_pathwyse compiled
 #   - pathwyse binary at ../pathwyse/bin/pathwyse
-#   - Instance dirs (auto-detected from ../rcspp-bac* paths)
+#   - Instance dirs in data/ (run scripts/fetch_instances.sh first)
 
 set -euo pipefail
 
@@ -18,17 +18,17 @@ OUR_SOLVER="./build/bench_vs_pathwyse"
 CACHE_DIR="build/pathwyse_instances"
 CSV_FILE="build/bench_vs_pathwyse.csv"
 
-# Auto-detect instance directories
+# Instance directories (run scripts/fetch_instances.sh first)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DATA_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/data"
 SPPRCLIB_DIR=""
 ROBERTI_DIR=""
-for d in ../rcspp-bac/benchmarks/instances ../rcspp-bac-3/benchmarks/instances ../rcspp-bac-2/benchmarks/instances; do
-    if [ -d "$d/spprclib" ] && [ -z "$SPPRCLIB_DIR" ]; then
-        SPPRCLIB_DIR="$d/spprclib"
-    fi
-    if [ -d "$d/roberti" ] && [ -z "$ROBERTI_DIR" ]; then
-        ROBERTI_DIR="$d/roberti"
-    fi
-done
+if [ -d "$DATA_DIR/spprclib" ]; then
+    SPPRCLIB_DIR="$DATA_DIR/spprclib"
+fi
+if [ -d "$DATA_DIR/roberti" ]; then
+    ROBERTI_DIR="$DATA_DIR/roberti"
+fi
 
 mkdir -p "$CACHE_DIR"
 
