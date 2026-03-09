@@ -8,7 +8,7 @@
 /// Options:
 ///   --mono          Use mono solver (default: bidir)
 ///   --stage STAGE   heuristic1|heuristic2|exact (default: exact)
-///   --ng K          Override ng-neighborhood size (default: from file, else 8; 0 disables ng-path)
+///   --ng K          ng-neighborhood size (default: from file or 8; 0 disables)
 ///   --steps S1,S2   Bucket step sizes (default: per-type)
 
 #include <bgspprc/resource.h>
@@ -325,7 +325,7 @@ int main(int argc, char** argv) {
                  "Options:\n"
                  "  --mono          Use mono solver (default: bidir)\n"
                  "  --stage STAGE   heuristic1|heuristic2|exact (default: exact)\n"
-                 "  --ng K          Override ng-neighborhood size (0 disables ng-path)\n"
+                 "  --ng K          ng-neighborhood size (default: from file or 8; 0 disables)\n"
                  "  --steps S1,S2   Bucket step sizes\n");
     return 1;
   }
