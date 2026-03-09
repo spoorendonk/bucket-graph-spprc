@@ -7,12 +7,11 @@
 **Status**: Done. `dominates()` now skips ng/R1C for both Heuristic1 and
 Heuristic2 stages. Test added.
 
-### 2. Exact completion bounds during elimination
+### 2. ~~Exact completion bounds during elimination~~ ✓ DONE
 **Paper**: BucketGraph 2021 §5
-**Status**: Not implemented. For labels extended past q*, exhaustively check if
-a θ-compatible opposite label exists before keeping them. Tighter elimination,
-beyond current bound-based + label-based.
-**Effort**: Medium — requires per-label compatibility scan during elimination.
+**Status**: Done. `has_compatible_opposite` prunes fw labels past q* at creation
+if no θ-compatible bw label exists. Bw runs first so bw labels are available.
+Disabled during enumeration.
 
 ### 3. ~~Non-disposable resource dominance~~ ✓ DONE
 **Paper**: VRPSolver 2020 §5.1.2
@@ -26,23 +25,18 @@ NgPathResource=true, StandardResource=false. BucketGraph asserts on mismatch.
 
 ## Revisit
 
-### 5. R^cc (cumulative cost) and R^spd (pickup-delivery) resources
+### 5. ~~R^cc (cumulative cost) and R^spd (pickup-delivery) resources~~ ✓ DONE
 **Paper**: Meta-Solver 2026 §5–6
-**Status**: Not implemented. Application-specific resources that users would
-define via the ResourcePack interface. R^cc is novel (cumulative CVRP), R^spd
-handles simultaneous pickup and delivery.
-**Why revisit**: Validates the ResourcePack interface design — implementing these
-as user-defined resources would confirm the interface is general enough (or
-expose gaps).
+**Status**: Done. `CumulativeCostResource` (R^cc) and `PickupDeliveryResource`
+(R^spd) implemented as ResourcePack-compatible resources. No interface gaps
+found — the existing concept handles struct states, non-zero cost deltas,
+vertex-only feasibility, non-trivial domination/concatenation costs. Tests added.
 
-### 6. `extendAlongArc` / `extendToVertex` split
+### 6. ~~`extendAlongArc` / `extendToVertex` split~~ ✓ DONE
 **Paper**: Meta-Solver 2026 §4.1 (functions 3–4)
-**Status**: Deliberately unified into single `extend()`, which is equivalent.
-**Why revisit**: The split enables arc-ending labels which are the natural unit
-for across-arc concatenation. Currently concatenation extends a forward label
-through the across-arc and then checks compatibility — the split would let
-forward labels stop at the arc midpoint naturally. May also matter for resources
-where arc-ending vs vertex-ending state differs (e.g. R^spd).
+**Status**: Done. Resource concept has separate `extend_along_arc` and
+`extend_to_vertex` methods. BucketGraph calls both in sequence. NgPathResource
+uses the split for destination marking; R^spd uses it for vertex-only changes.
 
 ## Out of scope (BCP-layer)
 
