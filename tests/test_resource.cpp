@@ -2,6 +2,8 @@
 #include <bgspprc/resource.h>
 #include <bgspprc/resources/standard.h>
 #include <bgspprc/resources/ng_path.h>
+#include <bgspprc/resources/cumulative_cost.h>
+#include <bgspprc/resources/pickup_delivery.h>
 #include <bgspprc/solver.h>
 
 using namespace bgspprc;
@@ -1085,4 +1087,422 @@ TEST_CASE("Solver: bidir with cycle + concatenation") {
         CHECK(paths[0].reduced_cost <= mono_best + 1e-6);
         check_elementary(paths);
     }
+}
+
+// ════════════════════════════════════════════════════════════════
+// CumulativeCostResource (R^cc) — Meta-Solver 2026 §5
+// ════════════════════════════════════════════════════════════════
+
+TEST_CASE("CumulativeCostResource: init_state") {
+    double travel[] = {1.0};
+    double wt[] = {2.0};
+    CumulativeCostResource res(travel, wt, 10.0, 20.0, 1);
+
+    auto sf = res.init_state(Direction::Forward);
+    CHECK(sf.S == 0.0);
+    CHECK(sf.T_or_W == 0.0);
+
+    auto sb = res.init_state(Direction::Backward);
+    CHECK(sb.S == 0.0);
+    CHECK(sb.T_or_W == 0.0);
+}
+
+TEST_CASE("CumulativeCostResource: extend_along_arc forward") {
+    // Arc 0: travel_time=3, weight=2
+    // Arc 1: travel_time=5, weight=1
+    double travel[] = {3.0, 5.0};
+    double wt[] = {2.0, 1.0};
+    CumulativeCostResource res(travel, wt, 10.0, 20.0, 2);
+
+    // Start: S=0, T=0. Extend arc 0: delta = w*(T+l) = 2*(0+3) = 6
+    auto [s1, c1] = res.extend_along_arc(Direction::Forward, {0.0, 0.0}, 0);
+    CHECK(s1.S == doctest::Approx(6.0));
+    CHECK(s1.T_or_W == doctest::Approx(3.0));
+    CHECK(c1 == doctest::Approx(6.0));
+
+    // Continue: S=6, T=3. Extend arc 1: delta = 1*(3+5) = 8
+    auto [s2, c2] = res.extend_along_arc(Direction::Forward, s1, 1);
+    CHECK(s2.S == doctest::Approx(14.0));
+    CHECK(s2.T_or_W == doctest::Approx(8.0));
+    CHECK(c2 == doctest::Approx(8.0));
+}
+
+TEST_CASE("CumulativeCostResource: extend_along_arc backward") {
+    // Arc 0: travel_time=3, weight=2
+    double travel[] = {3.0};
+    double wt[] = {2.0};
+    CumulativeCostResource res(travel, wt, 10.0, 20.0, 1);
+
+    // Start: S=0, W=0. Extend arc 0: delta = (W+w)*l = (0+2)*3 = 6
+    auto [s1, c1] = res.extend_along_arc(Direction::Backward, {0.0, 0.0}, 0);
+    CHECK(s1.S == doctest::Approx(6.0));
+    CHECK(s1.T_or_W == doctest::Approx(2.0));  // W' = 0 + 2
+    CHECK(c1 == doctest::Approx(6.0));
+}
+
+TEST_CASE("CumulativeCostResource: extend_to_vertex is no-op") {
+    double travel[] = {1.0};
+    double wt[] = {2.0};
+    CumulativeCostResource res(travel, wt, 10.0, 20.0, 1);
+
+    auto [s, c] = res.extend_to_vertex(Direction::Forward, {5.0, 3.0}, 1);
+    CHECK(s.S == 5.0);
+    CHECK(s.T_or_W == 3.0);
+    CHECK(c == 0.0);
+}
+
+TEST_CASE("CumulativeCostResource: domination_cost forward") {
+    double travel[] = {1.0};
+    double wt[] = {2.0};
+    CumulativeCostResource res(travel, wt, 10.0, 20.0, 1);
+
+    // Forward: (S1-S2) + max(0, T1-T2) * W_max
+    // s1={S=5, T=3}, s2={S=2, T=1}: (5-2) + max(0,3-1)*10 = 3 + 20 = 23
+    CHECK(res.domination_cost(Direction::Forward, 0, {5.0, 3.0}, {2.0, 1.0})
+          == doctest::Approx(23.0));
+
+    // When T1 < T2: max(0, T1-T2)*W_max = 0
+    CHECK(res.domination_cost(Direction::Forward, 0, {5.0, 1.0}, {2.0, 3.0})
+          == doctest::Approx(3.0));
+
+    // Equal states → 0
+    CHECK(res.domination_cost(Direction::Forward, 0, {5.0, 3.0}, {5.0, 3.0})
+          == doctest::Approx(0.0));
+}
+
+TEST_CASE("CumulativeCostResource: domination_cost backward") {
+    double travel[] = {1.0};
+    double wt[] = {2.0};
+    CumulativeCostResource res(travel, wt, 10.0, 20.0, 1);
+
+    // Backward: (S1-S2) + max(0, W1-W2) * T_max
+    // s1={S=5, W=3}, s2={S=2, W=1}: (5-2) + max(0,3-1)*20 = 3 + 40 = 43
+    CHECK(res.domination_cost(Direction::Backward, 0, {5.0, 3.0}, {2.0, 1.0})
+          == doctest::Approx(43.0));
+}
+
+TEST_CASE("CumulativeCostResource: concatenation_cost") {
+    double travel[] = {1.0};
+    double wt[] = {2.0};
+    CumulativeCostResource res(travel, wt, 10.0, 20.0, 1);
+
+    // T_fw * W_bw
+    CHECK(res.concatenation_cost(Symmetry::Asymmetric, 0, {0.0, 4.0}, {0.0, 3.0})
+          == doctest::Approx(12.0));
+    CHECK(res.concatenation_cost(Symmetry::Asymmetric, 0, {0.0, 0.0}, {0.0, 5.0})
+          == doctest::Approx(0.0));
+}
+
+TEST_CASE("CumulativeCostResource: arc_concatenation_cost is zero") {
+    double travel[] = {1.0};
+    double wt[] = {2.0};
+    CumulativeCostResource res(travel, wt, 10.0, 20.0, 1);
+
+    CHECK(res.arc_concatenation_cost(Symmetry::Asymmetric, 0, {5.0, 3.0}, {2.0, 1.0}) == 0.0);
+}
+
+TEST_CASE("ResourcePack<CumulativeCostResource> extend + domination") {
+    double travel[] = {3.0, 5.0};
+    double wt[] = {2.0, 1.0};
+    auto pack = make_resource_pack(CumulativeCostResource(travel, wt, 10.0, 20.0, 2));
+
+    auto states = pack.init_states(Direction::Forward);
+    auto& s0 = std::get<0>(states);
+    CHECK(s0.S == 0.0);
+    CHECK(s0.T_or_W == 0.0);
+
+    auto [s1, c1] = pack.extend_along_arc(Direction::Forward, states, 0);
+    CHECK(c1 == doctest::Approx(6.0));
+    CHECK(std::get<0>(s1).S == doctest::Approx(6.0));
+
+    // Domination: init (0,0) vs extended (6,3) → (0-6) + max(0,0-3)*10 = -6
+    CHECK(pack.domination_cost(Direction::Forward, 0, states, s1) == doctest::Approx(-6.0));
+    // Extended vs init → (6-0) + max(0,3-0)*10 = 6 + 30 = 36
+    CHECK(pack.domination_cost(Direction::Forward, 0, s1, states) == doctest::Approx(36.0));
+}
+
+// ════════════════════════════════════════════════════════════════
+// PickupDeliveryResource (R^spd) — Meta-Solver 2026 §6
+// ════════════════════════════════════════════════════════════════
+
+TEST_CASE("PickupDeliveryResource: init_state") {
+    double pk[] = {0.0, 1.0, 2.0};
+    double dl[] = {0.0, 3.0, 1.0};
+    PickupDeliveryResource res(pk, dl, 10.0, 3);
+
+    auto sf = res.init_state(Direction::Forward);
+    CHECK(sf.P == 0.0);
+    CHECK(sf.D == 10.0);
+
+    auto sb = res.init_state(Direction::Backward);
+    CHECK(sb.P == 10.0);
+    CHECK(sb.D == 0.0);
+}
+
+TEST_CASE("PickupDeliveryResource: extend_to_vertex forward feasible") {
+    double pk[] = {0.0, 3.0, 2.0};
+    double dl[] = {0.0, 1.0, 4.0};
+    PickupDeliveryResource res(pk, dl, 10.0, 3);
+
+    // Start: P=0, D=10. Visit v1: p=3, d=1.
+    // P' = 0+3 = 3, D' = min(10-1, 10-3) = min(9, 7) = 7
+    auto [s1, c1] = res.extend_to_vertex(Direction::Forward, {0.0, 10.0}, 1);
+    CHECK(c1 == 0.0);
+    CHECK(s1.P == doctest::Approx(3.0));
+    CHECK(s1.D == doctest::Approx(7.0));
+}
+
+TEST_CASE("PickupDeliveryResource: extend_to_vertex forward infeasible pickup") {
+    double pk[] = {0.0, 8.0};
+    double dl[] = {0.0, 0.0};
+    PickupDeliveryResource res(pk, dl, 10.0, 2);
+
+    // P=5, D=5. Visit v1: p=8. P+p = 13 > Q=10 → infeasible
+    auto [s, c] = res.extend_to_vertex(Direction::Forward, {5.0, 5.0}, 1);
+    CHECK(c >= INF);
+}
+
+TEST_CASE("PickupDeliveryResource: extend_to_vertex forward infeasible delivery") {
+    double pk[] = {0.0, 0.0};
+    double dl[] = {0.0, 7.0};
+    PickupDeliveryResource res(pk, dl, 10.0, 2);
+
+    // P=0, D=5. Visit v1: d=7. d > D → infeasible
+    auto [s, c] = res.extend_to_vertex(Direction::Forward, {0.0, 5.0}, 1);
+    CHECK(c >= INF);
+}
+
+TEST_CASE("PickupDeliveryResource: extend_to_vertex backward feasible") {
+    double pk[] = {0.0, 2.0, 3.0};
+    double dl[] = {0.0, 1.0, 4.0};
+    PickupDeliveryResource res(pk, dl, 10.0, 3);
+
+    // Start bw: P_bar=10, D_bar=0. Visit v2: p=3, d=4.
+    // D_bar' = 0+4 = 4, P_bar' = min(10-3, 10-4) = min(7, 6) = 6
+    auto [s1, c1] = res.extend_to_vertex(Direction::Backward, {10.0, 0.0}, 2);
+    CHECK(c1 == 0.0);
+    CHECK(s1.P == doctest::Approx(6.0));
+    CHECK(s1.D == doctest::Approx(4.0));
+}
+
+TEST_CASE("PickupDeliveryResource: extend_to_vertex backward infeasible") {
+    double pk[] = {0.0, 8.0};
+    double dl[] = {0.0, 0.0};
+    PickupDeliveryResource res(pk, dl, 10.0, 2);
+
+    // P_bar=5, D_bar=3. Visit v1: p=8. p > P_bar → infeasible
+    auto [s, c] = res.extend_to_vertex(Direction::Backward, {5.0, 3.0}, 1);
+    CHECK(c >= INF);
+}
+
+TEST_CASE("PickupDeliveryResource: extend_along_arc is no-op") {
+    double pk[] = {0.0, 1.0};
+    double dl[] = {0.0, 2.0};
+    PickupDeliveryResource res(pk, dl, 10.0, 2);
+
+    auto [s, c] = res.extend_along_arc(Direction::Forward, {3.0, 7.0}, 0);
+    CHECK(s.P == 3.0);
+    CHECK(s.D == 7.0);
+    CHECK(c == 0.0);
+}
+
+TEST_CASE("PickupDeliveryResource: domination_cost forward") {
+    double pk[] = {0.0};
+    double dl[] = {0.0};
+    PickupDeliveryResource res(pk, dl, 10.0, 1);
+
+    // P1 <= P2 and D1 >= D2 → 0 (s1 dominates)
+    CHECK(res.domination_cost(Direction::Forward, 0, {2.0, 8.0}, {3.0, 7.0}) == 0.0);
+    // P1 > P2 → INF
+    CHECK(res.domination_cost(Direction::Forward, 0, {4.0, 8.0}, {3.0, 7.0}) == INF);
+    // D1 < D2 → INF
+    CHECK(res.domination_cost(Direction::Forward, 0, {2.0, 6.0}, {3.0, 7.0}) == INF);
+    // Equal → 0
+    CHECK(res.domination_cost(Direction::Forward, 0, {3.0, 7.0}, {3.0, 7.0}) == 0.0);
+}
+
+TEST_CASE("PickupDeliveryResource: domination_cost backward") {
+    double pk[] = {0.0};
+    double dl[] = {0.0};
+    PickupDeliveryResource res(pk, dl, 10.0, 1);
+
+    // D_bar1 <= D_bar2 and P_bar1 >= P_bar2 → 0
+    CHECK(res.domination_cost(Direction::Backward, 0, {8.0, 2.0}, {7.0, 3.0}) == 0.0);
+    // D_bar1 > D_bar2 → INF
+    CHECK(res.domination_cost(Direction::Backward, 0, {8.0, 4.0}, {7.0, 3.0}) == INF);
+    // P_bar1 < P_bar2 → INF
+    CHECK(res.domination_cost(Direction::Backward, 0, {6.0, 2.0}, {7.0, 3.0}) == INF);
+}
+
+TEST_CASE("PickupDeliveryResource: concatenation_cost") {
+    double pk[] = {0.0};
+    double dl[] = {0.0};
+    PickupDeliveryResource res(pk, dl, 10.0, 1);
+
+    // Compatible: P_fw <= P_bar_bw and D_bar_bw <= D_fw
+    CHECK(res.concatenation_cost(Symmetry::Asymmetric, 0, {3.0, 7.0}, {5.0, 2.0}) == 0.0);
+    // P_fw > P_bar_bw → INF
+    CHECK(res.concatenation_cost(Symmetry::Asymmetric, 0, {6.0, 7.0}, {5.0, 2.0}) == INF);
+    // D_bar_bw > D_fw → INF
+    CHECK(res.concatenation_cost(Symmetry::Asymmetric, 0, {3.0, 4.0}, {5.0, 5.0}) == INF);
+}
+
+TEST_CASE("ResourcePack<PickupDeliveryResource> through solver-like sequence") {
+    double pk[] = {0.0, 3.0, 2.0, 0.0};
+    double dl[] = {0.0, 1.0, 4.0, 0.0};
+    auto pack = make_resource_pack(PickupDeliveryResource(pk, dl, 10.0, 4));
+
+    auto states = pack.init_states(Direction::Forward);
+    auto& s0 = std::get<0>(states);
+    CHECK(s0.P == 0.0);
+    CHECK(s0.D == 10.0);
+
+    // extend_to_vertex at source (v0: p=0, d=0)
+    auto [vs0, vc0] = pack.extend_to_vertex(Direction::Forward, states, 0);
+    CHECK(vc0 == 0.0);
+
+    // extend_along_arc (no-op for PD)
+    auto [as1, ac1] = pack.extend_along_arc(Direction::Forward, vs0, 0);
+    CHECK(ac1 == 0.0);
+
+    // extend_to_vertex at v1: p=3, d=1
+    auto [vs1, vc1] = pack.extend_to_vertex(Direction::Forward, as1, 1);
+    CHECK(vc1 == 0.0);
+    CHECK(std::get<0>(vs1).P == doctest::Approx(3.0));
+    CHECK(std::get<0>(vs1).D == doctest::Approx(7.0));
+
+    // Domination: fresh state dominates consumed state
+    CHECK(pack.domination_cost(Direction::Forward, 1, states, vs1) == 0.0);
+    CHECK(pack.domination_cost(Direction::Forward, 1, vs1, states) == INF);
+}
+
+// ════════════════════════════════════════════════════════════════
+// Solver-level: R^cc changes optimal path via cumulative cost
+// ════════════════════════════════════════════════════════════════
+
+TEST_CASE("Solver: CumulativeCostResource changes optimal path") {
+    // 4 vertices: source=0, sink=3
+    // Path A: 0→1→3  base_cost = -1 + -1 = -2, but heavy first arc
+    // Path B: 0→2→3  base_cost = -1 + -1 = -2, but light first arc
+    //
+    // Without R^cc: both paths cost -2, either is optimal.
+    // With R^cc: Path A has higher cumulative cost because heavy weight
+    // arrives early, so Path B should be preferred.
+    //
+    // Arcs:       cost   time  weight
+    // 0→1 (0)     -1      5     10    (heavy)
+    // 0→2 (1)     -1      5      1    (light)
+    // 1→3 (2)     -1      5      1
+    // 2→3 (3)     -1      5      1
+
+    const int NA = 4;
+    int from[NA] = {0, 0, 1, 2};
+    int to[NA]   = {1, 2, 3, 3};
+    double cost[NA] = {-1.0, -1.0, -1.0, -1.0};
+    double time_d[NA] = {5.0, 5.0, 5.0, 5.0};
+    double tw_lb[4] = {0, 0, 0, 0};
+    double tw_ub[4] = {100, 100, 100, 100};
+
+    const double* arc_res[1] = {time_d};
+    const double* v_lb[1] = {tw_lb};
+    const double* v_ub[1] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 4;
+    pv.source = 0;
+    pv.sink = 3;
+    pv.n_arcs = NA;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    double travel[NA] = {5.0, 5.0, 5.0, 5.0};
+    double wt[NA] = {10.0, 1.0, 1.0, 1.0};
+
+    using CcPack = ResourcePack<CumulativeCostResource>;
+    CumulativeCostResource cc(travel, wt, 12.0, 100.0, NA);
+    Solver<CcPack> solver(pv, make_resource_pack(std::move(cc)),
+        {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
+    solver.build();
+    solver.set_stage(Stage::Exact);
+    auto paths = solver.solve();
+
+    REQUIRE(!paths.empty());
+    // Path A cumulative: arc0 delta=10*(0+5)=50, arc2 delta=1*(5+5)=10 → total=60
+    //   total cost = -2 + 60 = 58
+    // Path B cumulative: arc1 delta=1*(0+5)=5,  arc3 delta=1*(5+5)=10 → total=15
+    //   total cost = -2 + 15 = 13
+    // Best path should be B with total cost 13
+    CHECK(paths[0].reduced_cost == doctest::Approx(13.0));
+    // Verify it's path B: 0→2→3
+    REQUIRE(paths[0].vertices.size() == 3);
+    CHECK(paths[0].vertices[0] == 0);
+    CHECK(paths[0].vertices[1] == 2);
+    CHECK(paths[0].vertices[2] == 3);
+}
+
+// ════════════════════════════════════════════════════════════════
+// Solver-level: R^spd blocks paths that violate capacity
+// ════════════════════════════════════════════════════════════════
+
+TEST_CASE("Solver: PickupDeliveryResource blocks capacity-violating paths") {
+    // 4 vertices: source=0, sink=3, Q=5
+    // Path A: 0→1→3  cheaper but v1 has pickup=6 > Q=5 → infeasible
+    // Path B: 0→2→3  feasible (v2 has pickup=2, delivery=1)
+    //
+    // Arcs:       cost   time
+    // 0→1 (0)     -10     1
+    // 0→2 (1)     -1      1
+    // 1→3 (2)     -10     1
+    // 2→3 (3)     -1      1
+
+    const int NA = 4;
+    int from[NA] = {0, 0, 1, 2};
+    int to[NA]   = {1, 2, 3, 3};
+    double cost[NA] = {-10.0, -1.0, -10.0, -1.0};
+    double time_d[NA] = {1.0, 1.0, 1.0, 1.0};
+    double tw_lb[4] = {0, 0, 0, 0};
+    double tw_ub[4] = {100, 100, 100, 100};
+
+    const double* arc_res[1] = {time_d};
+    const double* v_lb[1] = {tw_lb};
+    const double* v_ub[1] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 4;
+    pv.source = 0;
+    pv.sink = 3;
+    pv.n_arcs = NA;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    double pk[4] = {0.0, 6.0, 2.0, 0.0};  // v1 pickup=6 exceeds Q=5
+    double dl[4] = {0.0, 0.0, 1.0, 0.0};
+
+    using PdPack = ResourcePack<PickupDeliveryResource>;
+    PickupDeliveryResource pd(pk, dl, 5.0, 4);
+    Solver<PdPack> solver(pv, make_resource_pack(std::move(pd)),
+        {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
+    solver.build();
+    solver.set_stage(Stage::Exact);
+    auto paths = solver.solve();
+
+    REQUIRE(!paths.empty());
+    // Path A (0→1→3, cost=-20) is blocked by PD. Path B (0→2→3, cost=-2) is best.
+    CHECK(paths[0].reduced_cost == doctest::Approx(-2.0));
+    REQUIRE(paths[0].vertices.size() == 3);
+    CHECK(paths[0].vertices[0] == 0);
+    CHECK(paths[0].vertices[1] == 2);
+    CHECK(paths[0].vertices[2] == 3);
 }
