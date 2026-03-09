@@ -2,8 +2,12 @@
 # check_optimal.sh — Compare benchmark results against reference optimal values.
 #
 # Reads results from benchmarks/bgspprc.csv (produced by run_benchmarks.sh),
-# looks up reference optima in benchmarks/instances/<set>/optimal.csv, and
-# reports PASS/FAIL/SKIP per instance.
+# looks up reference optima, and reports PASS/FAIL/SKIP per instance.
+#
+# Optimal lookup (in benchmarks/instances/<set>/):
+#   With --ng K: prefer optimal-ng<K>.csv, fall back to optimal.csv
+#   Without --ng: use optimal.csv
+#   Searches two levels deep to cover rcspp/ng*/ subdirectories.
 #
 # Usage:
 #   ./benchmarks/check_optimal.sh [--ng K] [--csv FILE] [PATH...]
@@ -65,14 +69,34 @@ if [[ ${#PATHS[@]} -gt 0 ]]; then
 fi
 
 # ── Load optimal values ──
+# For each set directory, prefer optimal-ng<K>.csv when --ng K is given,
+# then fall back to optimal.csv.  Search two levels deep to cover rcspp/ng*/.
+# rcspp instances (in ng* subdirectories) always have optimal=0.
 declare -A OPTIMAL
-for optfile in "$SCRIPTDIR"/instances/*/optimal.csv; do
-  [[ -f "$optfile" ]] || continue
+while IFS= read -r -d '' setdir; do
+  setname="$(basename "$setdir")"
+
+  # rcspp/ng* subdirectories: optimal is always 0
+  if [[ "$setname" =~ ^ng[0-9]+$ ]]; then
+    while IFS= read -r -d '' f; do
+      inst="$(basename "$f")"
+      OPTIMAL["${inst%.*}"]=0
+    done < <(find "$setdir" -maxdepth 1 -type f \( -name '*.graph' \) -print0)
+    continue
+  fi
+
+  optfile=""
+  if [[ -n "$NG_FILTER" && -f "$setdir/optimal-ng${NG_FILTER}.csv" ]]; then
+    optfile="$setdir/optimal-ng${NG_FILTER}.csv"
+  elif [[ -f "$setdir/optimal.csv" ]]; then
+    optfile="$setdir/optimal.csv"
+  fi
+  [[ -z "$optfile" ]] && continue
   while IFS=, read -r inst opt; do
     [[ "$inst" == "instance" || "$inst" == \#* ]] && continue
     OPTIMAL["$inst"]="$opt"
   done < "$optfile"
-done
+done < <(find "$SCRIPTDIR/instances" -mindepth 1 -maxdepth 2 -type d -print0)
 
 # ── Check results ──
 PASS=0 FAIL=0 SKIP=0 TOTAL=0
