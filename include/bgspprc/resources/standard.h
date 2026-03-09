@@ -52,7 +52,7 @@ struct StandardResource {
 
     /// Extend along arc. Returns (new_state, cost_delta).
     /// cost_delta = INF means infeasible.
-    std::pair<State, double> extend(Direction dir, State q, int arc_id) const {
+    std::pair<State, double> extend_along_arc(Direction dir, State q, int arc_id) const {
         // For a standard resource used as a non-main resource,
         // we do the same extension as main resources.
         double d = consumption[arc_id];
@@ -68,6 +68,12 @@ struct StandardResource {
             double q_new = q + d;
             return {q_new, 0.0};
         }
+    }
+
+    /// Extend to vertex: no-op for standard resource.
+    std::pair<State, double> extend_to_vertex(Direction /*dir*/, State q,
+                                               int /*vertex*/) const {
+        return {q, 0.0};
     }
 
     double domination_cost(Direction /*dir*/, int /*vertex*/,
