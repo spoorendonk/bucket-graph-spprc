@@ -18,6 +18,10 @@
 
 #include "instance_io.h"
 
+#ifndef DATA_DIR
+#define DATA_DIR "data"
+#endif
+
 using namespace bgspprc;
 namespace fs = std::filesystem;
 
@@ -40,7 +44,7 @@ static std::map<std::string, double> load_csv(const std::string& path) {
 }
 
 int main() {
-  std::string dir = "../rcspp-bac/benchmarks/instances/spprclib";
+  std::string dir = DATA_DIR "/spprclib";
   if (!fs::exists(dir)) {
     printf("spprclib dir not found\n");
     return 1;
