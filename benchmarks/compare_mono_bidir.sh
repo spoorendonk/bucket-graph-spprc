@@ -24,7 +24,9 @@ usage() {
   exit "${1:-0}"
 }
 
-SOLVE="${SOLVE:-./build/bgspprc-solve}"
+SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
+REPODIR="$(cd "$SCRIPTDIR/.." && pwd)"
+SOLVE="${SOLVE:-$REPODIR/build/bgspprc-solve}"
 NG_FLAG=()
 TIMEOUT=120
 PATHS=()

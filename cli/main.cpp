@@ -8,7 +8,8 @@
 /// Options:
 ///   --mono          Use mono solver (default: bidir)
 ///   --stage STAGE   heuristic1|heuristic2|exact (default: exact)
-///   --ng K          ng-neighborhood size (default: from file or 8; 0 disables)
+///   --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;
+///                   from file or 8 for graph; 0 disables)
 ///   --steps S1,S2   Bucket step sizes (default: per-type)
 
 #include <bgspprc/resource.h>
@@ -208,7 +209,7 @@ static Result run_graph(const std::string& path, const Options& opts) {
   } else {
     // Use ng-path resource
     int ng_k = opts.ng > 0 ? opts.ng : (inst.ng_size > 0 ? inst.ng_size : 8);
-    if (opts.ng > 0 && opts.ng != inst.ng_size) {
+    if (inst.ng_neighbors.empty() || (opts.ng > 0 && opts.ng != inst.ng_size)) {
       io::compute_ng_neighbors(inst, ng_k);
     }
 
@@ -325,7 +326,8 @@ int main(int argc, char** argv) {
                  "Options:\n"
                  "  --mono          Use mono solver (default: bidir)\n"
                  "  --stage STAGE   heuristic1|heuristic2|exact (default: exact)\n"
-                 "  --ng K          ng-neighborhood size (default: from file or 8; 0 disables)\n"
+                 "  --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;\n"
+                 "                  from file or 8 for graph; 0 disables)\n"
                  "  --steps S1,S2   Bucket step sizes\n");
     return 1;
   }

@@ -42,8 +42,9 @@ usage() {
   exit "${1:-0}"
 }
 
-SOLVE="${SOLVE:-./build/bgspprc-solve}"
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
+REPODIR="$(cd "$SCRIPTDIR/.." && pwd)"
+SOLVE="${SOLVE:-$REPODIR/build/bgspprc-solve}"
 CSV="${SCRIPTDIR}/bgspprc.csv"
 
 # ── Args ──
@@ -62,7 +63,7 @@ done
 
 # Default paths
 if [[ ${#PATHS[@]} -eq 0 ]]; then
-  PATHS=("benchmarks/instances/spprclib" "benchmarks/instances/roberti")
+  PATHS=("$SCRIPTDIR/instances/spprclib" "$SCRIPTDIR/instances/roberti")
 fi
 
 # ── Collect instance files ──
