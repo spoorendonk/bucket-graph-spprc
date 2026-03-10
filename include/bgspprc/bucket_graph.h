@@ -33,7 +33,7 @@ class BucketGraph {
  public:
   struct Options {
     std::array<double, 2> bucket_steps = {1.0, 1.0};
-    int max_paths = 100;
+    int max_paths = 0;  // 0 = unlimited
     double tolerance = -1e-6;
     bool bidirectional = false;
     bool symmetric = false;  // skip backward labeling, use fw labels as bw
@@ -831,7 +831,7 @@ class BucketGraph {
         enum_complete_ = false;
         return true;
       }
-      if (enumerating && enum_sink_labels_ >= opts_.max_paths) {
+      if (enumerating && opts_.max_paths > 0 && enum_sink_labels_ >= opts_.max_paths) {
         enum_complete_ = false;
         return true;
       }
@@ -1531,7 +1531,15 @@ class BucketGraph {
                   INF);
     }
 
-    return extract_paths(fw_bucket_labels_);
+    auto paths = extract_paths(fw_bucket_labels_);
+    std::sort(paths.begin(), paths.end(), [](const Path& a, const Path& b) {
+      return a.reduced_cost < b.reduced_cost;
+    });
+    if (opts_.max_paths > 0 && static_cast<int>(paths.size()) > opts_.max_paths) {
+      paths.resize(opts_.max_paths);
+      if (opts_.stage == Stage::Enumerate) enum_complete_ = false;
+    }
+    return paths;
   }
 
   // ── Bi-directional solve ──
@@ -1643,7 +1651,7 @@ class BucketGraph {
     std::sort(paths.begin(), paths.end(), [](const Path& a, const Path& b) {
       return a.reduced_cost < b.reduced_cost;
     });
-    if (static_cast<int>(paths.size()) > opts_.max_paths) {
+    if (opts_.max_paths > 0 && static_cast<int>(paths.size()) > opts_.max_paths) {
       paths.resize(opts_.max_paths);
       if (opts_.stage == Stage::Enumerate) enum_complete_ = false;
     }
@@ -1760,10 +1768,6 @@ class BucketGraph {
               p.reduced_cost = total_cost;
               p.original_cost = total_real_cost;
               paths.push_back(std::move(p));
-              if (static_cast<int>(paths.size()) >= opts_.max_paths) {
-                if (opts_.stage == Stage::Enumerate) enum_complete_ = false;
-                return;
-              }
             }
           }
         }
@@ -1791,15 +1795,6 @@ class BucketGraph {
           paths.push_back(std::move(p));
         }
       }
-    }
-
-    std::sort(paths.begin(), paths.end(), [](const Path& a, const Path& b) {
-      return a.reduced_cost < b.reduced_cost;
-    });
-
-    if (static_cast<int>(paths.size()) > opts_.max_paths) {
-      paths.resize(opts_.max_paths);
-      if (opts_.stage == Stage::Enumerate) enum_complete_ = false;
     }
 
     return paths;
