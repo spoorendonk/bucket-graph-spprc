@@ -77,6 +77,7 @@ static Result run_sppcc(const std::string& path, const Options& opts) {
     Solver<NgPack> solver(pv, make_resource_pack(std::move(ng)),
                           {.bucket_steps = {s1, s2},
                            .bidirectional = opts.bidir,
+                           .max_paths = 100,
                            .tolerance = 1e9});
     solver.build();
     solver.set_stage(opts.stage);
@@ -98,6 +99,7 @@ static Result run_sppcc(const std::string& path, const Options& opts) {
     Solver<EmptyPack> solver(pv, EmptyPack{},
                              {.bucket_steps = {s1, s2},
                               .bidirectional = opts.bidir,
+                              .max_paths = 100,
                               .tolerance = 1e9});
     solver.build();
     solver.set_stage(opts.stage);
@@ -137,6 +139,7 @@ static Result run_vrp(const std::string& path, const Options& opts) {
     Solver<NgPack> solver(pv, make_resource_pack(std::move(ng)),
                           {.bucket_steps = {s1, s2},
                            .bidirectional = opts.bidir,
+                           .max_paths = 100,
                            .tolerance = 1e9});
     solver.build();
     solver.set_stage(opts.stage);
@@ -158,6 +161,7 @@ static Result run_vrp(const std::string& path, const Options& opts) {
     Solver<EmptyPack> solver(pv, EmptyPack{},
                              {.bucket_steps = {s1, s2},
                               .bidirectional = opts.bidir,
+                              .max_paths = 100,
                               .tolerance = 1e9});
     solver.build();
     solver.set_stage(opts.stage);
@@ -194,6 +198,7 @@ static Result run_graph(const std::string& path, const Options& opts) {
     Solver<EmptyPack> solver(pv, EmptyPack{},
                              {.bucket_steps = {s1, s2},
                               .bidirectional = opts.bidir,
+                              .max_paths = 100,
                               .tolerance = 0.0});
     solver.build();
     solver.set_stage(opts.stage);
@@ -224,6 +229,7 @@ static Result run_graph(const std::string& path, const Options& opts) {
     Solver<NgPack> solver(pv, make_resource_pack(std::move(ng)),
                           {.bucket_steps = {s1, s2},
                            .bidirectional = opts.bidir,
+                           .max_paths = 100,
                            .tolerance = 0.0});
     solver.build();
     solver.set_stage(opts.stage);
