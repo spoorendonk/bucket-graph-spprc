@@ -5,9 +5,10 @@
 # looks up reference optima, and reports PASS/FAIL/SKIP per instance.
 #
 # Optimal lookup (in benchmarks/instances/<set>/):
-#   With --ng K: prefer optimal-ng<K>.csv, fall back to optimal.csv
-#   Without --ng: use optimal.csv
-#   Searches two levels deep to cover rcspp/ng*/ subdirectories.
+#   Each row's ng value determines the optimal file:
+#     ng non-empty: prefer optimal-ng<ng>.csv, fall back to optimal.csv
+#     ng empty: use optimal.csv
+#   rcspp instances (set matches ng[0-9]+) always have optimal=0.
 #
 # Usage:
 #   ./benchmarks/check_optimal.sh [--ng K] [--csv FILE] [PATH...]
@@ -68,41 +69,50 @@ if [[ ${#PATHS[@]} -gt 0 ]]; then
   done
 fi
 
-# ── Load optimal values ──
-# For each set directory, prefer optimal-ng<K>.csv when --ng K is given,
-# then fall back to optimal.csv.  Search two levels deep to cover rcspp/ng*/.
-# rcspp instances (in ng* subdirectories) always have optimal=0.
-declare -A OPTIMAL
-while IFS= read -r -d '' setdir; do
-  setname="$(basename "$setdir")"
+# ── On-demand optimal lookup ──
+# For each row, use the row's ng value to pick the right optimal file.
+# rcspp instances (set matches ng[0-9]+) always have optimal=0.
+# Cache loaded files to avoid re-parsing.
+declare -A OPTIMAL   # keyed as "set:ng:instance"
+declare -A LOADED    # keyed as "set:ng", value=1 when loaded
 
-  # rcspp/ng* subdirectories: optimal is always 0
-  if [[ "$setname" =~ ^ng[0-9]+$ ]]; then
-    while IFS= read -r -d '' f; do
-      inst="$(basename "$f")"
-      OPTIMAL["${inst%.*}"]=0
-    done < <(find "$setdir" -maxdepth 1 -type f \( -name '*.graph' \) -print0)
-    continue
-  fi
+load_optimal() {
+  local set="$1" ng="$2" key="${1}:${2}"
+  [[ -n "${LOADED[$key]:-}" ]] && return
+  LOADED["$key"]=1
 
-  optfile=""
-  if [[ -n "$NG_FILTER" && -f "$setdir/optimal-ng${NG_FILTER}.csv" ]]; then
-    optfile="$setdir/optimal-ng${NG_FILTER}.csv"
+  # rcspp ng* sets: optimal is always 0 — handled per-lookup, not here
+  [[ "$set" =~ ^ng[0-9]+$ ]] && return
+
+  local optfile=""
+  local setdir="$SCRIPTDIR/instances/$set"
+  if [[ -n "$ng" && -f "$setdir/optimal-ng${ng}.csv" ]]; then
+    optfile="$setdir/optimal-ng${ng}.csv"
   elif [[ -f "$setdir/optimal.csv" ]]; then
     optfile="$setdir/optimal.csv"
   fi
-  [[ -z "$optfile" ]] && continue
-  while IFS=, read -r inst opt; do
-    [[ "$inst" == "instance" || "$inst" == \#* ]] && continue
-    OPTIMAL["$inst"]="$opt"
+  [[ -z "$optfile" ]] && return
+  while IFS=, read -r _oinst _oopt; do
+    [[ "$_oinst" == "instance" || "$_oinst" == \#* ]] && continue
+    OPTIMAL["${set}:${ng}:${_oinst}"]="$_oopt"
   done < "$optfile"
-done < <(find "$SCRIPTDIR/instances" -mindepth 1 -maxdepth 2 -type d -print0)
+}
+
+lookup_optimal() {
+  local _inst="$1" _set="$2" _ng="$3"
+  # rcspp instances: optimal is always 0
+  if [[ "$_set" =~ ^ng[0-9]+$ ]]; then
+    _lookup_result=0; return
+  fi
+  load_optimal "$_set" "$_ng"
+  _lookup_result="${OPTIMAL["${_set}:${_ng}:${_inst}"]:-}"
+}
 
 # ── Check results ──
 PASS=0 FAIL=0 SKIP=0 TOTAL=0
 
-printf "%-30s  %10s  %10s  %s\n" "Instance" "Got" "Optimal" "Result"
-printf '%.0s-' {1..65}; echo
+printf "%-30s  %4s  %10s  %10s  %s\n" "Instance" "ng" "Got" "Optimal" "Result"
+printf '%.0s-' {1..72}; echo
 
 # Read CSV, skip header
 while IFS=, read -r inst set ng cost paths time_s ts; do
@@ -122,24 +132,25 @@ while IFS=, read -r inst set ng cost paths time_s ts; do
 
   TOTAL=$((TOTAL + 1))
 
-  # Look up optimal
-  opt="${OPTIMAL[$inst]:-}"
+  # Look up optimal using row's own ng value
+  lookup_optimal "$inst" "$set" "$ng"
+  opt="$_lookup_result"
 
   if [[ -z "$opt" ]]; then
-    printf "%-30s  %10s  %10s  SKIP\n" "$inst" "${cost:--}" "-"
+    printf "%-30s  %4s  %10s  %10s  SKIP\n" "$inst" "${ng:--}" "${cost:--}" "-"
     SKIP=$((SKIP + 1))
     continue
   fi
 
   if [[ -z "$cost" ]]; then
-    printf "%-30s  %10s  %10s  FAIL (no result)\n" "$inst" "-" "$opt"
+    printf "%-30s  %4s  %10s  %10s  FAIL (no result)\n" "$inst" "${ng:--}" "-" "$opt"
     FAIL=$((FAIL + 1))
     continue
   fi
 
   # Compare: cost <= optimal + eps
   result="$(awk -v c="$cost" -v o="$opt" -v e="$EPS" 'BEGIN{print (c <= o + e) ? "PASS" : "FAIL"}')"
-  printf "%-30s  %10s  %10s  %s\n" "$inst" "$cost" "$opt" "$result"
+  printf "%-30s  %4s  %10s  %10s  %s\n" "$inst" "${ng:--}" "$cost" "$opt" "$result"
   if [[ "$result" == "PASS" ]]; then
     PASS=$((PASS + 1))
   else
