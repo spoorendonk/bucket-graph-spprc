@@ -22,7 +22,7 @@ class Solver {
     std::array<double, 2> bucket_steps = {1.0, 1.0};
     bool bidirectional = false;
     bool symmetric = false;
-    int max_paths = 100;
+    int max_paths = 0;  // 0 = unlimited
     double tolerance = -1e-6;
     int max_enum_labels = 5000000;
   };
