@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Download benchmark instances into data/ at project root.
+# Download benchmark instances into benchmarks/instances/ at project root.
 # Requires: curl, unzip
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-DATA_DIR="$ROOT_DIR/data"
+DATA_DIR="$ROOT_DIR/benchmarks/instances"
 
 mkdir -p "$DATA_DIR"
 

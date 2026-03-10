@@ -4,7 +4,7 @@
 
 ```bash
 # fetch benchmark instances (once)
-scripts/fetch_instances.sh
+benchmarks/fetch_instances.sh
 
 # build & test (standalone)
 cmake -B build -DCMAKE_CXX_COMPILER=g++-14
