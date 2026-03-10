@@ -1,0 +1,18 @@
+NAME : tiny_sppcc
+COMMENT : 4-node SPPCC test fixture
+TYPE : SPPCC
+DIMENSION : 4
+CAPACITY : 100
+EDGE_WEIGHT_SECTION
+  0 10  5 20
+ 10  0  3  8
+  5  3  0  6
+ 20  8  6  0
+NODE_WEIGHT_SECTION
+  0 0 0 0
+DEMAND_SECTION
+ 1 0
+ 2 10
+ 3 20
+ 4 0
+EOF
