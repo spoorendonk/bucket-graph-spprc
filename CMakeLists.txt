@@ -58,23 +58,9 @@ if(BGSPPRC_BUILD_TESTS)
         set_tests_properties(cli_integration PROPERTIES TIMEOUT 30)
     endif()
 
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data")
-        message(WARNING "Instance data not found. Run scripts/fetch_instances.sh to download benchmark instances.")
-    endif()
-
     add_executable(bench_runner tests/test_main.cpp tests/test_benchmarks.cpp)
     target_link_libraries(bench_runner PRIVATE bgspprc doctest::doctest)
     target_include_directories(bench_runner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cli)
     target_compile_definitions(bench_runner PRIVATE
-        DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
-
-    add_executable(bench_run tests/bench_run.cpp)
-    target_link_libraries(bench_run PRIVATE bgspprc doctest::doctest)
-    target_include_directories(bench_run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cli)
-    target_compile_definitions(bench_run PRIVATE
-        DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
-
-    add_executable(bench_vs_pathwyse tests/bench_vs_pathwyse.cpp)
-    target_link_libraries(bench_vs_pathwyse PRIVATE bgspprc doctest::doctest)
-    target_include_directories(bench_vs_pathwyse PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cli)
+        DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/instances")
 endif()
