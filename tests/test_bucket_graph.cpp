@@ -795,6 +795,152 @@ TEST_CASE("R1C: concatenation cost") {
   CHECK(c2 == doctest::Approx(0.0));
 }
 
+TEST_CASE("R1C: extend_along_arc does memory reset without vertex toggle") {
+  R1CManager mgr;
+
+  R1Cut cut;
+  cut.base_set = {1};
+  cut.multipliers = {0.5};
+  cut.memory_arcs = {{0, 0}};  // arc 0 is in AM
+  cut.dual_value = -5.0;
+
+  mgr.set_cuts({{cut}}, 3, 2);
+
+  uint64_t s[1] = {1ULL};  // bit set (visited vertex in C while in-memory)
+
+  // Arc 0 is in AM → bit should survive (no reset)
+  uint64_t out0[1] = {0};
+  double c0 = mgr.extend_along_arc({s, 1}, {out0, 1}, 0);
+  CHECK(c0 == doctest::Approx(0.0));
+  CHECK(out0[0] == 1ULL);
+
+  // Arc 1 is NOT in AM → bit should be cleared
+  uint64_t out1[1] = {0};
+  double c1 = mgr.extend_along_arc({s, 1}, {out1, 1}, 1);
+  CHECK(c1 == doctest::Approx(0.0));
+  CHECK(out1[0] == 0ULL);
+}
+
+TEST_CASE("R1C: extend_along_arc clears concatenation overlap") {
+  R1CManager mgr;
+
+  // Cut with C={1,2}, AM = {arc 0, arc 2}
+  R1Cut cut;
+  cut.base_set = {1, 2};
+  cut.multipliers = {0.5, 0.5};
+  cut.memory_arcs = {{0, 0}, {2, 0}};  // arcs 0 and 2 in AM
+  cut.dual_value = -5.0;               // β = 5.0
+
+  mgr.set_cuts({{cut}}, 4, 4);
+
+  uint64_t fw[1] = {1ULL};  // fw has bit set
+  uint64_t bw[1] = {1ULL};  // bw has bit set
+
+  // Without extend_along_arc: s_fw & s_bw = 1 → -β = -5.0 (wrong if joining
+  // arc not in AM)
+  double wrong =
+      mgr.concatenation_cost(Symmetry::Asymmetric, 1, {fw, 1}, {bw, 1});
+  CHECK(wrong == doctest::Approx(-5.0));
+
+  // Arc 1 is NOT in AM → memory reset clears fw bit
+  uint64_t ext[1] = {0};
+  mgr.extend_along_arc({fw, 1}, {ext, 1}, 1);
+  CHECK(ext[0] == 0ULL);
+
+  // With extended state: s_ext & s_bw = 0 → 0 cost (correct)
+  double correct =
+      mgr.concatenation_cost(Symmetry::Asymmetric, 1, {ext, 1}, {bw, 1});
+  CHECK(correct == doctest::Approx(0.0));
+}
+
+TEST_CASE("R1C: extend_along_arc multiple cuts mixed memory") {
+  R1CManager mgr;
+
+  // 3 cuts with different AM sets
+  R1Cut cut0, cut1, cut2;
+  cut0.base_set = {1};
+  cut0.multipliers = {0.5};
+  cut0.memory_arcs = {{0, 0}, {1, 0}};  // arc 1 in AM for cut0
+  cut0.dual_value = -1.0;
+
+  cut1.base_set = {2};
+  cut1.multipliers = {0.5};
+  cut1.memory_arcs = {{0, 0}};  // arc 1 NOT in AM for cut1
+  cut1.dual_value = -2.0;
+
+  cut2.base_set = {1, 2};
+  cut2.multipliers = {0.5, 0.5};
+  cut2.memory_arcs = {{2, 0}};  // arc 1 NOT in AM for cut2
+  cut2.dual_value = -3.0;
+
+  mgr.set_cuts(std::vector<R1Cut>{cut0, cut1, cut2}, 4, 4);
+
+  // All bits set
+  uint64_t fw[1] = {0b111ULL};
+  uint64_t bw[1] = {0b111ULL};
+
+  // Extend along arc 1: only cut0 survives (arc 1 in AM for cut0 only)
+  uint64_t ext[1] = {0};
+  mgr.extend_along_arc({fw, 1}, {ext, 1}, 1);
+  CHECK((ext[0] & 1ULL) == 1ULL);  // cut0 survives
+  CHECK((ext[0] & 2ULL) == 0ULL);  // cut1 cleared
+  CHECK((ext[0] & 4ULL) == 0ULL);  // cut2 cleared
+
+  // Concatenation cost with extended state: only cut0 overlap → cost -= β₀ = -1.0
+  double c =
+      mgr.concatenation_cost(Symmetry::Asymmetric, 1, {ext, 1}, {bw, 1});
+  CHECK(c == doctest::Approx(-1.0));  // only cut0's -β₀
+
+  // Without fix (all bits): would be -1 + -2 + -3 = -6.0
+  double c_all =
+      mgr.concatenation_cost(Symmetry::Asymmetric, 1, {fw, 1}, {bw, 1});
+  CHECK(c_all == doctest::Approx(-6.0));
+}
+
+TEST_CASE("R1C: bidir concatenation uses extended R1C state") {
+  // End-to-end test: bidir solve with R1C should match mono solve.
+  // Without the fix, bidir would report lower cost due to overcounted R1C.
+  LargerGraph g;
+
+  // LargerGraph: 6 vertices (0=src, 5=sink), 8 arcs
+  // arcs: 0:(0,1) 1:(0,2) 2:(1,3) 3:(2,4) 4:(3,5) 5:(4,5) 6:(1,4) 7:(2,3)
+
+  // Set up R1C cut where the bidir joining arc is NOT in AM.
+  // Cut C={3}, with AM = {arc 2:(1,3), arc 7:(2,3)} — arcs arriving at v3.
+  // The joining arc in bidir will likely be arc 4:(3,5) or arc 2:(1,3) etc.
+  // Key: if bidir joins on an arc NOT in AM, the fw R1C bit should be cleared.
+  R1Cut cut;
+  cut.base_set = {3};
+  cut.multipliers = {0.5};
+  // Only arcs 2:(1,3) and 7:(2,3) are in AM — NOT arcs 4:(3,5) or 6:(1,4)
+  cut.memory_arcs = {{2, 0}, {7, 0}};
+  cut.dual_value = -10.0;  // β = 10.0 — large enough to affect path ranking
+
+  // Mono solve
+  BucketGraph<EmptyPack> bg_mono(
+      g.pv, EmptyPack{},
+      {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+  bg_mono.build();
+  bg_mono.set_stage(Stage::Exact);
+  bg_mono.set_r1c_cuts({{cut}});
+  auto mono_paths = bg_mono.solve();
+  REQUIRE(!mono_paths.empty());
+
+  // Bidir solve
+  BucketGraph<EmptyPack> bg_bidir(
+      g.pv, EmptyPack{},
+      {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .bidirectional = true});
+  bg_bidir.build();
+  bg_bidir.set_stage(Stage::Exact);
+  bg_bidir.set_r1c_cuts({{cut}});
+  auto bidir_paths = bg_bidir.solve();
+  REQUIRE(!bidir_paths.empty());
+
+  // Best path cost should be the same (or bidir >= mono, never less)
+  CHECK(bidir_paths[0].reduced_cost >=
+        mono_paths[0].reduced_cost - 1e-6);
+}
+
 TEST_CASE("R1C: multiple cuts packed in one word") {
   R1CManager mgr;
 

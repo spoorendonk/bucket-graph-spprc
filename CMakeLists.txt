@@ -39,7 +39,8 @@ if(BGSPPRC_BUILD_TESTS)
         tests/test_main.cpp
         tests/test_resource.cpp
         tests/test_bucket_graph.cpp
-        tests/test_small_instance.cpp)
+        tests/test_small_instance.cpp
+        tests/test_stress.cpp)
     target_link_libraries(test_runner PRIVATE bgspprc doctest::doctest)
     add_test(NAME unit_tests COMMAND test_runner)
 

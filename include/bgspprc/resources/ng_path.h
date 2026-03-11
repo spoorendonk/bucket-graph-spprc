@@ -182,10 +182,16 @@ struct NgPathResource {
     }
   }
 
-  /// extendToVertex: set the destination vertex's self bit.
+  /// extendToVertex: set the destination vertex's self bit, and also
+  /// mark vertex in its own ng-neighborhood (if v ∈ N(v)) so that
+  /// self-loop arcs are correctly detected by extend_along_arc's check.
   std::pair<State, double> extend_to_vertex(Direction /*dir*/, State s,
                                             int vertex) const {
-    return {s | (1ULL << self_bit_[vertex]), 0.0};
+    s |= (1ULL << self_bit_[vertex]);
+    int8_t self_as_neighbor =
+        bit_map[static_cast<size_t>(vertex) * n_vertices_ + vertex];
+    if (self_as_neighbor >= 0) s |= (1ULL << self_as_neighbor);
+    return {s, 0.0};
   }
 
   /// Domination: L1 dominates L2 only if L1's visited set is subset of L2's.

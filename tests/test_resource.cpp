@@ -201,8 +201,8 @@ TEST_CASE("NgPathResource: extend_to_vertex sets self bit") {
 
   auto [s, c] = ng.extend_to_vertex(Direction::Forward, 0ULL, 2);
   CHECK(c == 0.0);
-  // v2's self_bit_ = 3
-  CHECK(s == (1ULL << 3));
+  // v2's self_bit_ = 3, and v2 ∈ N(v2) at position 0 → both bits set
+  CHECK(s == ((1ULL << 3) | (1ULL << 0)));
 
   // Idempotent
   auto [s2, c2] = ng.extend_to_vertex(Direction::Forward, s, 2);
@@ -855,6 +855,249 @@ TEST_CASE("Mixed ResourcePack extend_to_vertex composes correctly") {
   auto ng_state = std::get<1>(v1_states);
   NgPathResource ng2 = make_ng5();
   CHECK((ng_state & (1ULL << ng2.self_bit_[1])) != 0);
+}
+
+// ════════════════════════════════════════════════════════════════
+// NgPathResource — Edge-case tests for (arc type, neighborhood config, state)
+// ════════════════════════════════════════════════════════════════
+
+TEST_CASE("NgPathResource: extend_to_vertex v not in own ng-set sets only self "
+          "bit") {
+  // 3 vertices, neighbors[1] = {0, 2} — v1 NOT in its own ng-set
+  int from[] = {0, 1};
+  int to[] = {1, 2};
+  std::vector<std::vector<int>> neighbors = {{0}, {0, 2}, {2}};
+  NgPathResource ng(3, 2, from, to, neighbors);
+
+  CHECK(ng.bit_map[1 * 3 + 0] == 0);   // v0 in N(v1) at pos 0
+  CHECK(ng.bit_map[1 * 3 + 2] == 1);   // v2 in N(v1) at pos 1
+  CHECK(ng.bit_map[1 * 3 + 1] == -1);  // v1 NOT in N(v1)
+  CHECK(ng.self_bit_[1] == 2);         // 2 neighbors → self bit at pos 2
+
+  auto [s, c] = ng.extend_to_vertex(Direction::Forward, 0ULL, 1);
+  CHECK(c == 0.0);
+  // Only self bit set — no neighbor-self bit since v1 ∉ N(v1)
+  CHECK(s == (1ULL << 2));
+}
+
+TEST_CASE(
+    "NgPathResource: self-loop blocked when v is in own ng-set") {
+  // 3 vertices, neighbors[1] = {0, 1, 2}, self-loop arc 1→1
+  int from[] = {0, 1, 1};
+  int to[] = {1, 1, 2};
+  std::vector<std::vector<int>> neighbors = {{0, 1, 2}, {0, 1, 2}, {0, 1, 2}};
+  NgPathResource ng(3, 3, from, to, neighbors);
+
+  CHECK(ng.bit_map[1 * 3 + 1] == 1);  // v1 in N(v1) at pos 1
+  CHECK(ng.self_bit_[1] == 3);        // 3 neighbors → self bit at 3
+
+  // extend_to_vertex sets self bit + neighbor-self bit
+  auto [s, _] = ng.extend_to_vertex(Direction::Forward, 0ULL, 1);
+  CHECK(s == ((1ULL << 3) | (1ULL << 1)));  // self bit + neighbor-self bit
+
+  // Self-loop arc (index 1): fw_check_bit = bit_map[1*3+1] = 1, which is set
+  auto [s2, c] = ng.extend_along_arc(Direction::Forward, s, 1);
+  CHECK(c == INF);
+}
+
+TEST_CASE(
+    "NgPathResource: self-loop allowed when v not in own ng-set") {
+  // 3 vertices, neighbors[1] = {0, 2} (v1 NOT in own ng-set), self-loop 1→1
+  int from[] = {0, 1, 1};
+  int to[] = {1, 1, 2};
+  std::vector<std::vector<int>> neighbors = {{0}, {0, 2}, {2}};
+  NgPathResource ng(3, 3, from, to, neighbors);
+
+  CHECK(ng.bit_map[1 * 3 + 1] == -1);  // v1 NOT in N(v1)
+  CHECK(ng.self_bit_[1] == 2);
+
+  auto [s, _] = ng.extend_to_vertex(Direction::Forward, 0ULL, 1);
+  CHECK(s == (1ULL << 2));  // only self bit
+
+  // Self-loop arc (index 1): fw_check_bit = -1 → no check → pass
+  auto [s2, c] = ng.extend_along_arc(Direction::Forward, s, 1);
+  CHECK(c == 0.0);
+}
+
+TEST_CASE(
+    "NgPathResource: backward self-loop blocked when v is in own ng-set") {
+  // Same graph as "self-loop blocked" test but backward direction
+  int from[] = {0, 1, 1};
+  int to[] = {1, 1, 2};
+  std::vector<std::vector<int>> neighbors = {{0, 1, 2}, {0, 1, 2}, {0, 1, 2}};
+  NgPathResource ng(3, 3, from, to, neighbors);
+
+  auto [s, _] = ng.extend_to_vertex(Direction::Backward, 0ULL, 1);
+  CHECK(s == ((1ULL << 3) | (1ULL << 1)));
+
+  // bw_check_bit for self-loop arc 1→1 = bit_map[1*3+1] = 1, which is set
+  auto [s2, c] = ng.extend_along_arc(Direction::Backward, s, 1);
+  CHECK(c == INF);
+}
+
+TEST_CASE("NgPathResource: to in N(from) but bit unset passes") {
+  auto ng = make_ng5();
+
+  // v1 ∈ N(v0) at pos 1. State at v0 after extend_to_vertex(0) only.
+  // v1's bit (pos 1) is NOT set → extend should pass.
+  auto [s0, _] = ng.extend_to_vertex(Direction::Forward, 0ULL, 0);
+
+  // Verify v1 is indeed a neighbor of v0
+  CHECK(ng.bit_map[0 * 5 + 1] >= 0);
+
+  // Verify v1's bit is not set
+  int8_t v1_pos = ng.bit_map[0 * 5 + 1];
+  CHECK((s0 & (1ULL << v1_pos)) == 0);
+
+  // Extend arc 0 (0→1): v1 is neighbor but not visited → pass
+  auto [s1, c] = ng.extend_along_arc(Direction::Forward, s0, 0);
+  CHECK(c == 0.0);
+}
+
+TEST_CASE("NgPathResource: backward extend, to not in N(from) — self-bit "
+          "lost") {
+  auto ng = make_ng5();
+
+  // Arc 4 (from=1, to=4). Backward: label at v4, extending to v1.
+  // bw_check_bit = bit_map[4*5+1] → v1 ∉ N(v4) → -1 → no check
+  CHECK(ng.bit_map[4 * 5 + 1] == -1);
+
+  auto [s0, _] = ng.extend_to_vertex(Direction::Backward, 0ULL, 4);
+
+  // v4's self bit and neighbor-self bit should be set
+  CHECK((s0 & (1ULL << ng.self_bit_[4])) != 0);
+
+  auto [s1, c] = ng.extend_along_arc(Direction::Backward, s0, 4);
+  CHECK(c == 0.0);
+
+  // v4 ∉ N(v1), so v4's self-bit shift pair wasn't added → state should be 0
+  // (only shared neighbors could survive, but v4's self bit is lost)
+  CHECK(s1 == 0ULL);
+}
+
+TEST_CASE("NgPathResource: asymmetric neighborhoods — from not in N(to) but "
+          "to in N(from)") {
+  // 3 vertices. neighbors[0] = {1} (just v1), neighbors[1] = {} (empty)
+  int from[] = {0, 1};
+  int to[] = {1, 2};
+  std::vector<std::vector<int>> neighbors = {{1}, {}, {}};
+  NgPathResource ng(3, 2, from, to, neighbors);
+
+  // v1 ∈ N(v0) at pos 0
+  CHECK(ng.bit_map[0 * 3 + 1] == 0);
+  // v0 ∉ N(v1) (N(v1) is empty)
+  CHECK(ng.bit_map[1 * 3 + 0] == -1);
+  CHECK(ng.self_bit_[0] == 1);  // 1 neighbor → self bit at 1
+
+  auto [s0, _] = ng.extend_to_vertex(Direction::Forward, 0ULL, 0);
+  // self_bit_[0]=1 set. v0∈N(v0)? bit_map[0*3+0]=-1 → no neighbor-self.
+  CHECK(s0 == (1ULL << 1));
+
+  // Extend arc 0 (0→1): check v1 at pos 0 → NOT set → pass
+  auto [s1, c] = ng.extend_along_arc(Direction::Forward, s0, 0);
+  CHECK(c == 0.0);
+
+  // No bits survive: v0's self-bit not remapped (v0∉N(v1)), no shared neighbors
+  CHECK(s1 == 0ULL);
+}
+
+TEST_CASE(
+    "NgPathResource: self-loop remap preserves other neighbor bits") {
+  // 3 vertices, all fully connected neighborhoods, arcs: 0→1, 1→1 (self-loop)
+  int from[] = {0, 1};
+  int to[] = {1, 1};
+  std::vector<std::vector<int>> neighbors = {{0, 1, 2}, {0, 1, 2}, {0, 1, 2}};
+  NgPathResource ng(3, 2, from, to, neighbors);
+
+  // bit_map[v*3+w] = w for all v (symmetric, same ordering)
+  CHECK(ng.bit_map[1 * 3 + 0] == 0);
+  CHECK(ng.bit_map[1 * 3 + 1] == 1);
+  CHECK(ng.bit_map[1 * 3 + 2] == 2);
+  CHECK(ng.self_bit_[1] == 3);
+
+  // Path: extend_to_vertex(0) → arc 0→1 → extend_to_vertex(1)
+  auto [s0, _0] = ng.extend_to_vertex(Direction::Forward, 0ULL, 0);
+  auto [s1_arc, c1] = ng.extend_along_arc(Direction::Forward, s0, 0);
+  REQUIRE(c1 == 0.0);
+  auto [s1, _1] = ng.extend_to_vertex(Direction::Forward, s1_arc, 1);
+
+  // v0 mapped at bit 0, v1 self bit at 3, v1 neighbor-self at 1
+  CHECK((s1 & (1ULL << 0)) != 0);  // v0
+  CHECK((s1 & (1ULL << 3)) != 0);  // v1 self
+  CHECK((s1 & (1ULL << 1)) != 0);  // v1 neighbor-self
+
+  // Self-loop should be blocked (v1 neighbor-self bit at pos 1 is set)
+  auto [s2, c2] = ng.extend_along_arc(Direction::Forward, s1, 1);
+  CHECK(c2 == INF);
+
+  // Now test: artificially clear the v1-as-neighbor bit (pos 1) but keep v0's
+  // bit. This simulates a state where we're at v1 but haven't marked v1 as
+  // neighbor-visited.
+  uint64_t artificial = (1ULL << 0) | (1ULL << 3);  // v0 at pos 0, self bit 3
+  auto [s3, c3] = ng.extend_along_arc(Direction::Forward, artificial, 1);
+  CHECK(c3 == 0.0);  // check bit 1 not set → pass
+
+  // After remap through self-loop (identity for neighbor bits, self-bit→pos 1):
+  // bit 0 (v0) → pair (0,0) → bit 0 survives
+  // bit 3 (self) → pair (3,1) → bit 1
+  CHECK((s3 & (1ULL << 0)) != 0);  // v0 survives
+  CHECK((s3 & (1ULL << 1)) != 0);  // self remapped to neighbor-self pos
+}
+
+TEST_CASE("NgPathResource: domination with v not in own ng-set") {
+  // neighbors[1] = {0, 2} (v1 NOT in N(v1)). self_bit_[1] = 2.
+  int from[] = {0};
+  int to[] = {1};
+  std::vector<std::vector<int>> neighbors = {{0}, {0, 2}, {2}};
+  NgPathResource ng(3, 1, from, to, neighbors);
+
+  CHECK(ng.self_bit_[1] == 2);
+  CHECK(ng.bit_map[1 * 3 + 1] == -1);  // v1 NOT in N(v1)
+
+  // Two labels at v1, both with self-bit set
+  uint64_t self_only = (1ULL << 2);                    // just self bit
+  uint64_t self_plus_v0 = (1ULL << 2) | (1ULL << 0);  // self + v0 visited
+
+  // Fewer bits dominates more bits
+  CHECK(ng.domination_cost(Direction::Forward, 1, self_only, self_plus_v0) ==
+        0.0);
+  // More bits cannot dominate fewer
+  CHECK(ng.domination_cost(Direction::Forward, 1, self_plus_v0, self_only) ==
+        INF);
+  // Equal → dominates
+  CHECK(ng.domination_cost(Direction::Forward, 1, self_only, self_only) == 0.0);
+}
+
+TEST_CASE("NgPathResource: concatenation trivially passes when fw state is "
+          "empty after remap") {
+  // N(0)={0,1}, N(1)={1}, N(2)={2}. Arcs: 0→1, 1→2.
+  // After extending 0→1→2, fw state becomes 0 (no shared neighbors).
+  int from[] = {0, 1};
+  int to[] = {1, 2};
+  std::vector<std::vector<int>> neighbors = {{0, 1}, {1}, {2}};
+  NgPathResource ng(3, 2, from, to, neighbors);
+
+  CHECK(ng.self_bit_[0] == 2);  // 2 neighbors
+  CHECK(ng.self_bit_[1] == 1);  // 1 neighbor
+  CHECK(ng.self_bit_[2] == 1);  // 1 neighbor
+
+  // fw path: source v0, extend to v1, extend to v2
+  auto [s0, _0] = ng.extend_to_vertex(Direction::Forward, 0ULL, 0);
+  auto [s1_arc, c1] = ng.extend_along_arc(Direction::Forward, s0, 0);
+  REQUIRE(c1 == 0.0);
+  auto [s1, _1] = ng.extend_to_vertex(Direction::Forward, s1_arc, 1);
+
+  // Extend arc 1 (1→2): v1∉N(v2), v2∉N(v1) → no check, no shared neighbors
+  auto [s2_arc, c2] = ng.extend_along_arc(Direction::Forward, s1, 1);
+  CHECK(c2 == 0.0);
+  CHECK(s2_arc == 0ULL);  // all bits lost — no overlap possible
+
+  // bw label at v2 with self bit set
+  auto [bw, _b] = ng.extend_to_vertex(Direction::Backward, 0ULL, 2);
+  CHECK(bw != 0ULL);
+
+  // Concatenation: 0 & bw = 0 → always feasible
+  CHECK(ng.concatenation_cost(Symmetry::Asymmetric, 2, s2_arc, bw) == 0.0);
 }
 
 // ════════════════════════════════════════════════════════════════
