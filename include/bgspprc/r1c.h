@@ -29,6 +29,23 @@ struct R1Cut {
 struct R1CResource {
   using State = uint64_t;
 
+  /// Set the active cuts. Rebuilds all lookup masks.
+  /// Asserts ≤ 64 cuts (single uint64_t state).
+  void set_cuts(std::span<const R1Cut> cuts, int n_vertices, int n_arcs) {
+    assert(cuts.size() <= 64 && "R1CResource supports at most 64 cuts");
+    n_vertices_ = n_vertices;
+    n_arcs_ = n_arcs;
+    cuts_.assign(cuts.begin(), cuts.end());
+    n_active_ = static_cast<int>(cuts_.size());
+
+    build_masks();
+    precompute_betas();
+  }
+
+  int n_active() const { return n_active_; }
+
+  // ── Resource concept interface ──
+
   bool symmetric() const { return true; }
 
   State init_state(Direction /*dir*/) const { return 0ULL; }
@@ -78,23 +95,6 @@ struct R1CResource {
                                 State /*s_bw*/) const {
     return 0.0;
   }
-
-  // ── Mutable configuration ──
-
-  /// Set the active cuts. Rebuilds all lookup masks.
-  /// Asserts ≤ 64 cuts (single uint64_t state).
-  void set_cuts(std::span<const R1Cut> cuts, int n_vertices, int n_arcs) {
-    assert(cuts.size() <= 64 && "R1CResource supports at most 64 cuts");
-    n_vertices_ = n_vertices;
-    n_arcs_ = n_arcs;
-    cuts_.assign(cuts.begin(), cuts.end());
-    n_active_ = static_cast<int>(cuts_.size());
-
-    build_masks();
-    precompute_betas();
-  }
-
-  int n_active() const { return n_active_; }
 
  private:
   void build_masks() {
