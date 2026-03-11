@@ -1516,6 +1516,7 @@ class BucketGraph {
     }
 
     auto* src = create_initial_label(Direction::Forward);
+    if (!src) return {};  // infeasible source state
     int src_bi = vertex_bucket_index(pv_.source, src->q);
     src->bucket = src_bi;
     fw_bucket_labels_[src_bi].push_back(src);
@@ -1601,6 +1602,7 @@ class BucketGraph {
       // Backward labeling (run first so bw labels exist for fw
       // exact completion bound pruning — BucketGraph 2021 §5)
       auto* snk = create_initial_label(Direction::Backward);
+      if (!snk) return {};  // infeasible sink state
       int snk_bi = vertex_bucket_index(pv_.sink, snk->q);
       snk->bucket = snk_bi;
       bw_bucket_labels_[snk_bi].push_back(snk);
@@ -1617,6 +1619,7 @@ class BucketGraph {
 
     // Forward labeling
     auto* src = create_initial_label(Direction::Forward);
+    if (!src) return {};  // infeasible source state
     int src_bi = vertex_bucket_index(pv_.source, src->q);
     src->bucket = src_bi;
     fw_bucket_labels_[src_bi].push_back(src);
