@@ -1,12 +1,10 @@
 #pragma once
 
 #include <algorithm>
-#include <span>
 #include <vector>
 
 #include "bucket_graph.h"
 #include "problem_view.h"
-#include "r1c.h"
 #include "resource.h"
 #include "types.h"
 
@@ -81,8 +79,11 @@ class Solver {
   void reset_midpoint() { bg_.reset_midpoint(); }
   double midpoint() const { return bg_.midpoint(); }
 
-  /// Set R1C cuts.
-  void set_r1c_cuts(std::span<const R1Cut> cuts) { bg_.set_r1c_cuts(cuts); }
+  /// Access a resource in the pack (for runtime reconfiguration).
+  template <typename R>
+  R& resource() {
+    return bg_.template resource<R>();
+  }
 
   /// Whether the last enumeration was complete (no caps hit).
   bool enumeration_complete() const { return bg_.enumeration_complete(); }

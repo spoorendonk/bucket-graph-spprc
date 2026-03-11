@@ -19,7 +19,6 @@
 #include "bucket.h"
 #include "label.h"
 #include "problem_view.h"
-#include "r1c.h"
 #include "resource.h"
 #include "types.h"
 
@@ -77,10 +76,10 @@ class BucketGraph {
     reduced_costs_ = reduced_costs;
   }
 
-  /// Set R1C cuts (rebuilds masks, resizes label R1C state).
-  void set_r1c_cuts(std::span<const R1Cut> cuts) {
-    r1c_.set_cuts(cuts, pv_.n_vertices, pv_.n_arcs);
-    pool_.set_r1c_words(r1c_.n_words());
+  /// Access a resource in the pack (for runtime reconfiguration).
+  template <typename R>
+  R& resource() {
+    return std::get<R>(pack_.resources);
   }
 
   struct Path {
@@ -657,16 +656,6 @@ class BucketGraph {
       L->cost += arc_cost + vtx_cost;
     }
 
-    // R1C extension
-    if (r1c_.has_cuts() && parent->r1c_states && L->r1c_states) {
-      double r1c_cost = r1c_.extend(
-          dir,
-          {parent->r1c_states, static_cast<std::size_t>(parent->n_r1c_words)},
-          {L->r1c_states, static_cast<std::size_t>(L->n_r1c_words)}, arc_id,
-          new_v);
-      L->cost += r1c_cost;
-    }
-
     // Compute correct target bucket
     L->bucket = vertex_bucket_index(new_v, L->q);
     return L;
@@ -699,13 +688,6 @@ class BucketGraph {
     if constexpr (Pack::size > 0) {
       dom_cost += pack_.domination_cost(dir, L1->vertex, L1->resource_states,
                                         L2->resource_states);
-    }
-
-    if (r1c_.has_cuts() && L1->r1c_states && L2->r1c_states) {
-      dom_cost += r1c_.domination_cost(
-          dir, L1->vertex,
-          {L1->r1c_states, static_cast<std::size_t>(L1->n_r1c_words)},
-          {L2->r1c_states, static_cast<std::size_t>(L2->n_r1c_words)});
     }
 
     return dom_cost <= L2->cost + EPS;
@@ -1123,21 +1105,6 @@ class BucketGraph {
       total_cost += cc;
     }
 
-    if (r1c_.has_cuts() && fw->r1c_states && bw->r1c_states) {
-      uint64_t r1c_buf[4];
-      auto nw = r1c_.n_words();
-      std::vector<uint64_t> r1c_heap;
-      uint64_t* r1c_ext = r1c_buf;
-      if (nw > 4) { r1c_heap.resize(nw); r1c_ext = r1c_heap.data(); }
-      total_cost += r1c_.extend_along_arc(
-          {fw->r1c_states, static_cast<std::size_t>(fw->n_r1c_words)},
-          {r1c_ext, static_cast<std::size_t>(nw)}, arc_id);
-      total_cost += r1c_.concatenation_cost(
-          Symmetry::Asymmetric, j,
-          {r1c_ext, static_cast<std::size_t>(nw)},
-          {bw->r1c_states, static_cast<std::size_t>(bw->n_r1c_words)});
-    }
-
     return total_cost < theta;
   }
 
@@ -1494,10 +1461,6 @@ class BucketGraph {
       L->resource_states = vtx_states;
       L->cost += vtx_cost;
     }
-    if (r1c_.has_cuts()) {
-      r1c_.init_state(
-          {L->r1c_states, static_cast<std::size_t>(L->n_r1c_words)});
-    }
     return L;
   }
 
@@ -1759,21 +1722,6 @@ class BucketGraph {
               total_cost += cc;
             }
 
-            if (r1c_.has_cuts() && fw->r1c_states && bw->r1c_states) {
-              uint64_t r1c_buf[4];
-              auto nw = r1c_.n_words();
-              std::vector<uint64_t> r1c_heap;
-              uint64_t* r1c_ext = r1c_buf;
-              if (nw > 4) { r1c_heap.resize(nw); r1c_ext = r1c_heap.data(); }
-              total_cost += r1c_.extend_along_arc(
-                  {fw->r1c_states, static_cast<std::size_t>(fw->n_r1c_words)},
-                  {r1c_ext, static_cast<std::size_t>(nw)}, a);
-              total_cost += r1c_.concatenation_cost(
-                  sym, j,
-                  {r1c_ext, static_cast<std::size_t>(nw)},
-                  {bw->r1c_states, static_cast<std::size_t>(bw->n_r1c_words)});
-            }
-
             if (total_cost < opts_.tolerance) {
               Path p;
               fw->get_path(p.vertices, p.arcs);
@@ -1921,7 +1869,6 @@ class BucketGraph {
     std::array<double, 2> q;
     int parent_arc;  // last arc (for path, not critical for warm start)
     typename Pack::StatesTuple resource_states;
-    std::vector<uint64_t> r1c_state;
   };
   std::vector<WarmLabel> warm_labels_;
 
@@ -1957,9 +1904,6 @@ class BucketGraph {
       wl.q = L->q;
       wl.parent_arc = L->parent_arc;
       wl.resource_states = L->resource_states;
-      if (L->r1c_states && L->n_r1c_words > 0) {
-        wl.r1c_state.assign(L->r1c_states, L->r1c_states + L->n_r1c_words);
-      }
       warm_labels_.push_back(std::move(wl));
     }
   }
@@ -1978,12 +1922,6 @@ class BucketGraph {
       L->parent = nullptr;  // warm labels have no parent chain
       L->parent_arc = wl.parent_arc;
       L->resource_states = wl.resource_states;
-
-      if (!wl.r1c_state.empty() && L->r1c_states) {
-        int words =
-            std::min(static_cast<int>(wl.r1c_state.size()), L->n_r1c_words);
-        std::copy_n(wl.r1c_state.data(), words, L->r1c_states);
-      }
 
       int bi = vertex_bucket_index(wl.vertex, wl.q);
       L->bucket = bi;
@@ -2007,7 +1945,6 @@ class BucketGraph {
   bool midpoint_initialized_ = false;
 
   LabelPool<Pack> pool_;
-  R1CManager r1c_;
 };
 
 }  // namespace bgspprc
