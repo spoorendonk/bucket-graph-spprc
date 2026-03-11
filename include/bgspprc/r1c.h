@@ -87,6 +87,17 @@ class R1CManager {
     return cost_delta;
   }
 
+  /// Extend R1C state along arc only (memory reset, no vertex toggle).
+  /// R1C equivalent of Resource::extend_along_arc for concatenation.
+  double extend_along_arc(std::span<const uint64_t> in,
+                          std::span<uint64_t> out, int arc_id) const {
+    if (n_active_ == 0) return 0.0;
+    for (int w = 0; w < n_words_; ++w) {
+      out[w] = in[w] & arc_keep_mask_[arc_id][w];
+    }
+    return 0.0;  // memory reset has no cost delta
+  }
+
   /// Domination cost: extra cost L1 pays relative to L2 due to R1C states.
   ///
   /// For 3-SRC: if s1[ℓ]=1/2 and s2[ℓ]=0, then L1 has accumulated more

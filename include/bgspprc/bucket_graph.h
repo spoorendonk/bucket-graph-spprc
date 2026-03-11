@@ -1124,9 +1124,17 @@ class BucketGraph {
     }
 
     if (r1c_.has_cuts() && fw->r1c_states && bw->r1c_states) {
+      uint64_t r1c_buf[4];
+      auto nw = r1c_.n_words();
+      std::vector<uint64_t> r1c_heap;
+      uint64_t* r1c_ext = r1c_buf;
+      if (nw > 4) { r1c_heap.resize(nw); r1c_ext = r1c_heap.data(); }
+      total_cost += r1c_.extend_along_arc(
+          {fw->r1c_states, static_cast<std::size_t>(fw->n_r1c_words)},
+          {r1c_ext, static_cast<std::size_t>(nw)}, arc_id);
       total_cost += r1c_.concatenation_cost(
           Symmetry::Asymmetric, j,
-          {fw->r1c_states, static_cast<std::size_t>(fw->n_r1c_words)},
+          {r1c_ext, static_cast<std::size_t>(nw)},
           {bw->r1c_states, static_cast<std::size_t>(bw->n_r1c_words)});
     }
 
@@ -1752,9 +1760,17 @@ class BucketGraph {
             }
 
             if (r1c_.has_cuts() && fw->r1c_states && bw->r1c_states) {
+              uint64_t r1c_buf[4];
+              auto nw = r1c_.n_words();
+              std::vector<uint64_t> r1c_heap;
+              uint64_t* r1c_ext = r1c_buf;
+              if (nw > 4) { r1c_heap.resize(nw); r1c_ext = r1c_heap.data(); }
+              total_cost += r1c_.extend_along_arc(
+                  {fw->r1c_states, static_cast<std::size_t>(fw->n_r1c_words)},
+                  {r1c_ext, static_cast<std::size_t>(nw)}, a);
               total_cost += r1c_.concatenation_cost(
                   sym, j,
-                  {fw->r1c_states, static_cast<std::size_t>(fw->n_r1c_words)},
+                  {r1c_ext, static_cast<std::size_t>(nw)},
                   {bw->r1c_states, static_cast<std::size_t>(bw->n_r1c_words)});
             }
 
