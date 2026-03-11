@@ -676,11 +676,11 @@ TEST_CASE("Bucket fixing: is_bucket_fixed query") {
   CHECK(bg.n_fixed_buckets() == 0);
 }
 
-// ── R1C engine ──
+// ── R1C Resource ──
 
 TEST_CASE("R1C: mask building and basic extend") {
   using namespace bgspprc;
-  R1CManager mgr;
+  R1CResource r1c;
 
   // Simple graph: 4 vertices, 4 arcs (0→1, 0→2, 1→3, 2→3)
   // One 3-SRC cut: C = {1, 2}, multiplier 1/2 each
@@ -692,36 +692,30 @@ TEST_CASE("R1C: mask building and basic extend") {
   cut.dual_value = -2.0;               // β = -(-2) = 2.0
 
   std::vector<R1Cut> cuts = {cut};
-  mgr.set_cuts(cuts, 4, 4);
+  r1c.set_cuts(cuts, 4, 4);
 
-  CHECK(mgr.n_active() == 1);
-  CHECK(mgr.n_words() == 1);
-  CHECK(mgr.has_cuts());
+  CHECK(r1c.n_active() == 1);
 
   // Init state: all zeros
-  uint64_t state[1] = {0};
-  mgr.init_state({state, 1});
-  CHECK(state[0] == 0ULL);
+  uint64_t state = r1c.init_state(Direction::Forward);
+  CHECK(state == 0ULL);
 
-  // Extend to vertex 1 (in C) via arc 0 (in AM)
-  // Keep mask keeps the bit (arc ∈ AM), toggle sets it (v1 ∈ C)
-  uint64_t out[1] = {0};
-  double cost1 = mgr.extend(Direction::Forward, {state, 1}, {out, 1}, 0, 1);
-  // State was 0, toggle → 1. No overflow (0→1). Cost delta = 0.
-  CHECK(cost1 == doctest::Approx(0.0));
-  CHECK(out[0] == 1ULL);  // bit 0 set (cut 0 has state 1/2)
+  // Extend along arc 0 (in AM) then to vertex 1 (in C)
+  auto [s_arc, c_arc] = r1c.extend_along_arc(Direction::Forward, state, 0);
+  auto [s1, c1] = r1c.extend_to_vertex(Direction::Forward, s_arc, 1);
+  CHECK(c_arc + c1 == doctest::Approx(0.0));
+  CHECK(s1 == 1ULL);  // bit 0 set (cut 0 has state 1/2)
 
-  // Extend to vertex 2 (in C) via arc 2 (NOT in AM)
-  // Keep mask resets bit (arc ∉ AM), then toggle
-  uint64_t out2[1] = {0};
-  double cost2 = mgr.extend(Direction::Forward, {out, 1}, {out2, 1}, 2, 2);
+  // Extend along arc 2 (NOT in AM) then to vertex 2 (in C)
+  auto [s_arc2, c_arc2] = r1c.extend_along_arc(Direction::Forward, s1, 2);
+  auto [s2, c2] = r1c.extend_to_vertex(Direction::Forward, s_arc2, 2);
   // State was 1, reset to 0 (arc 2 not in AM), toggle → 1. No overflow.
-  CHECK(out2[0] == 1ULL);
-  CHECK(cost2 == doctest::Approx(0.0));
+  CHECK(s2 == 1ULL);
+  CHECK(c_arc2 + c2 == doctest::Approx(0.0));
 }
 
 TEST_CASE("R1C: extend overflow applies cost") {
-  R1CManager mgr;
+  R1CResource r1c;
 
   // Cut with C = {1, 2}, AM = {arc 0, arc 2}
   R1Cut cut;
@@ -730,27 +724,23 @@ TEST_CASE("R1C: extend overflow applies cost") {
   cut.memory_arcs = {{0, 0}, {2, 0}};  // arc 0 and arc 2 in AM
   cut.dual_value = -3.0;               // β = 3.0
 
-  mgr.set_cuts({{cut}}, 4, 4);
+  r1c.set_cuts({{cut}}, 4, 4);
 
-  // Start with state = 0
-  uint64_t s0[1] = {0};
-
-  // Extend to v1 (in C) via arc 0 (in AM): 0 → toggle → 1
-  uint64_t s1[1] = {0};
-  double c1 = mgr.extend(Direction::Forward, {s0, 1}, {s1, 1}, 0, 1);
-  CHECK(s1[0] == 1ULL);
-  CHECK(c1 == doctest::Approx(0.0));
+  // Extend to v1 (in C) via arc 0 (in AM): 0 → keep → toggle → 1
+  auto [s_a0, ca0] = r1c.extend_along_arc(Direction::Forward, 0ULL, 0);
+  auto [s1, c1] = r1c.extend_to_vertex(Direction::Forward, s_a0, 1);
+  CHECK(s1 == 1ULL);
+  CHECK(ca0 + c1 == doctest::Approx(0.0));
 
   // Extend to v2 (in C) via arc 2 (in AM): 1 → keep(1) → toggle → overflow!
-  // Overflow: bit was 1, toggling to 0. Cost -= β = -3.0
-  uint64_t s2[1] = {0};
-  double c2 = mgr.extend(Direction::Forward, {s1, 1}, {s2, 1}, 2, 2);
-  CHECK(s2[0] == 0ULL);                // overflow resets to 0
-  CHECK(c2 == doctest::Approx(-3.0));  // -β applied
+  auto [s_a2, ca2] = r1c.extend_along_arc(Direction::Forward, s1, 2);
+  auto [s2, c2] = r1c.extend_to_vertex(Direction::Forward, s_a2, 2);
+  CHECK(s2 == 0ULL);                           // overflow resets to 0
+  CHECK(ca2 + c2 == doctest::Approx(-3.0));    // -β applied
 }
 
 TEST_CASE("R1C: domination cost") {
-  R1CManager mgr;
+  R1CResource r1c;
 
   R1Cut cut;
   cut.base_set = {1};
@@ -758,21 +748,19 @@ TEST_CASE("R1C: domination cost") {
   cut.memory_arcs = {{0, 0}};
   cut.dual_value = -4.0;  // β = 4.0
 
-  mgr.set_cuts({{cut}}, 3, 2);
+  r1c.set_cuts({{cut}}, 3, 2);
 
   // s1 has credit (1), s2 doesn't (0): s1 is better, no penalty
-  uint64_t s1[1] = {1ULL};
-  uint64_t s2[1] = {0ULL};
-  double dom = mgr.domination_cost(Direction::Forward, 1, {s1, 1}, {s2, 1});
+  double dom = r1c.domination_cost(Direction::Forward, 1, 1ULL, 0ULL);
   CHECK(dom == doctest::Approx(0.0));
 
   // s2 has credit (1), s1 doesn't (0): s1 is at disadvantage → penalty
-  double dom2 = mgr.domination_cost(Direction::Forward, 1, {s2, 1}, {s1, 1});
+  double dom2 = r1c.domination_cost(Direction::Forward, 1, 0ULL, 1ULL);
   CHECK(dom2 == doctest::Approx(-4.0));  // -β
 }
 
 TEST_CASE("R1C: concatenation cost") {
-  R1CManager mgr;
+  R1CResource r1c;
 
   R1Cut cut;
   cut.base_set = {1};
@@ -780,23 +768,19 @@ TEST_CASE("R1C: concatenation cost") {
   cut.memory_arcs = {{0, 0}};
   cut.dual_value = -5.0;  // β = 5.0
 
-  mgr.set_cuts({{cut}}, 3, 2);
+  r1c.set_cuts({{cut}}, 3, 2);
 
   // Both fw and bw have credit → cost -β
-  uint64_t fw[1] = {1ULL};
-  uint64_t bw[1] = {1ULL};
-  double c = mgr.concatenation_cost(Symmetry::Asymmetric, 1, {fw, 1}, {bw, 1});
+  double c = r1c.concatenation_cost(Symmetry::Asymmetric, 1, 1ULL, 1ULL);
   CHECK(c == doctest::Approx(-5.0));
 
   // Only one has credit → no cost
-  uint64_t zero[1] = {0ULL};
-  double c2 =
-      mgr.concatenation_cost(Symmetry::Asymmetric, 1, {fw, 1}, {zero, 1});
+  double c2 = r1c.concatenation_cost(Symmetry::Asymmetric, 1, 1ULL, 0ULL);
   CHECK(c2 == doctest::Approx(0.0));
 }
 
 TEST_CASE("R1C: extend_along_arc does memory reset without vertex toggle") {
-  R1CManager mgr;
+  R1CResource r1c;
 
   R1Cut cut;
   cut.base_set = {1};
@@ -804,25 +788,23 @@ TEST_CASE("R1C: extend_along_arc does memory reset without vertex toggle") {
   cut.memory_arcs = {{0, 0}};  // arc 0 is in AM
   cut.dual_value = -5.0;
 
-  mgr.set_cuts({{cut}}, 3, 2);
+  r1c.set_cuts({{cut}}, 3, 2);
 
-  uint64_t s[1] = {1ULL};  // bit set (visited vertex in C while in-memory)
+  uint64_t s = 1ULL;  // bit set (visited vertex in C while in-memory)
 
   // Arc 0 is in AM → bit should survive (no reset)
-  uint64_t out0[1] = {0};
-  double c0 = mgr.extend_along_arc({s, 1}, {out0, 1}, 0);
+  auto [out0, c0] = r1c.extend_along_arc(Direction::Forward, s, 0);
   CHECK(c0 == doctest::Approx(0.0));
-  CHECK(out0[0] == 1ULL);
+  CHECK(out0 == 1ULL);
 
   // Arc 1 is NOT in AM → bit should be cleared
-  uint64_t out1[1] = {0};
-  double c1 = mgr.extend_along_arc({s, 1}, {out1, 1}, 1);
+  auto [out1, c1] = r1c.extend_along_arc(Direction::Forward, s, 1);
   CHECK(c1 == doctest::Approx(0.0));
-  CHECK(out1[0] == 0ULL);
+  CHECK(out1 == 0ULL);
 }
 
 TEST_CASE("R1C: extend_along_arc clears concatenation overlap") {
-  R1CManager mgr;
+  R1CResource r1c;
 
   // Cut with C={1,2}, AM = {arc 0, arc 2}
   R1Cut cut;
@@ -831,30 +813,27 @@ TEST_CASE("R1C: extend_along_arc clears concatenation overlap") {
   cut.memory_arcs = {{0, 0}, {2, 0}};  // arcs 0 and 2 in AM
   cut.dual_value = -5.0;               // β = 5.0
 
-  mgr.set_cuts({{cut}}, 4, 4);
+  r1c.set_cuts({{cut}}, 4, 4);
 
-  uint64_t fw[1] = {1ULL};  // fw has bit set
-  uint64_t bw[1] = {1ULL};  // bw has bit set
+  uint64_t fw = 1ULL;  // fw has bit set
+  uint64_t bw = 1ULL;  // bw has bit set
 
   // Without extend_along_arc: s_fw & s_bw = 1 → -β = -5.0 (wrong if joining
   // arc not in AM)
-  double wrong =
-      mgr.concatenation_cost(Symmetry::Asymmetric, 1, {fw, 1}, {bw, 1});
+  double wrong = r1c.concatenation_cost(Symmetry::Asymmetric, 1, fw, bw);
   CHECK(wrong == doctest::Approx(-5.0));
 
   // Arc 1 is NOT in AM → memory reset clears fw bit
-  uint64_t ext[1] = {0};
-  mgr.extend_along_arc({fw, 1}, {ext, 1}, 1);
-  CHECK(ext[0] == 0ULL);
+  auto [ext, ce] = r1c.extend_along_arc(Direction::Forward, fw, 1);
+  CHECK(ext == 0ULL);
 
   // With extended state: s_ext & s_bw = 0 → 0 cost (correct)
-  double correct =
-      mgr.concatenation_cost(Symmetry::Asymmetric, 1, {ext, 1}, {bw, 1});
+  double correct = r1c.concatenation_cost(Symmetry::Asymmetric, 1, ext, bw);
   CHECK(correct == doctest::Approx(0.0));
 }
 
 TEST_CASE("R1C: extend_along_arc multiple cuts mixed memory") {
-  R1CManager mgr;
+  R1CResource r1c;
 
   // 3 cuts with different AM sets
   R1Cut cut0, cut1, cut2;
@@ -873,66 +852,62 @@ TEST_CASE("R1C: extend_along_arc multiple cuts mixed memory") {
   cut2.memory_arcs = {{2, 0}};  // arc 1 NOT in AM for cut2
   cut2.dual_value = -3.0;
 
-  mgr.set_cuts(std::vector<R1Cut>{cut0, cut1, cut2}, 4, 4);
+  r1c.set_cuts(std::vector<R1Cut>{cut0, cut1, cut2}, 4, 4);
 
   // All bits set
-  uint64_t fw[1] = {0b111ULL};
-  uint64_t bw[1] = {0b111ULL};
+  uint64_t fw = 0b111ULL;
+  uint64_t bw = 0b111ULL;
 
   // Extend along arc 1: only cut0 survives (arc 1 in AM for cut0 only)
-  uint64_t ext[1] = {0};
-  mgr.extend_along_arc({fw, 1}, {ext, 1}, 1);
-  CHECK((ext[0] & 1ULL) == 1ULL);  // cut0 survives
-  CHECK((ext[0] & 2ULL) == 0ULL);  // cut1 cleared
-  CHECK((ext[0] & 4ULL) == 0ULL);  // cut2 cleared
+  auto [ext, ce] = r1c.extend_along_arc(Direction::Forward, fw, 1);
+  CHECK((ext & 1ULL) == 1ULL);  // cut0 survives
+  CHECK((ext & 2ULL) == 0ULL);  // cut1 cleared
+  CHECK((ext & 4ULL) == 0ULL);  // cut2 cleared
 
   // Concatenation cost with extended state: only cut0 overlap → cost -= β₀ = -1.0
-  double c =
-      mgr.concatenation_cost(Symmetry::Asymmetric, 1, {ext, 1}, {bw, 1});
+  double c = r1c.concatenation_cost(Symmetry::Asymmetric, 1, ext, bw);
   CHECK(c == doctest::Approx(-1.0));  // only cut0's -β₀
 
   // Without fix (all bits): would be -1 + -2 + -3 = -6.0
-  double c_all =
-      mgr.concatenation_cost(Symmetry::Asymmetric, 1, {fw, 1}, {bw, 1});
+  double c_all = r1c.concatenation_cost(Symmetry::Asymmetric, 1, fw, bw);
   CHECK(c_all == doctest::Approx(-6.0));
 }
 
 TEST_CASE("R1C: bidir concatenation uses extended R1C state") {
   // End-to-end test: bidir solve with R1C should match mono solve.
   // Without the fix, bidir would report lower cost due to overcounted R1C.
+  using R1CPack = ResourcePack<R1CResource>;
   LargerGraph g;
 
   // LargerGraph: 6 vertices (0=src, 5=sink), 8 arcs
   // arcs: 0:(0,1) 1:(0,2) 2:(1,3) 3:(2,4) 4:(3,5) 5:(4,5) 6:(1,4) 7:(2,3)
 
   // Set up R1C cut where the bidir joining arc is NOT in AM.
-  // Cut C={3}, with AM = {arc 2:(1,3), arc 7:(2,3)} — arcs arriving at v3.
-  // The joining arc in bidir will likely be arc 4:(3,5) or arc 2:(1,3) etc.
-  // Key: if bidir joins on an arc NOT in AM, the fw R1C bit should be cleared.
   R1Cut cut;
   cut.base_set = {3};
   cut.multipliers = {0.5};
-  // Only arcs 2:(1,3) and 7:(2,3) are in AM — NOT arcs 4:(3,5) or 6:(1,4)
   cut.memory_arcs = {{2, 0}, {7, 0}};
-  cut.dual_value = -10.0;  // β = 10.0 — large enough to affect path ranking
+  cut.dual_value = -10.0;  // β = 10.0
 
   // Mono solve
-  BucketGraph<EmptyPack> bg_mono(
-      g.pv, EmptyPack{},
+  R1CResource r1c_mono;
+  BucketGraph<R1CPack> bg_mono(
+      g.pv, R1CPack{r1c_mono},
       {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+  bg_mono.resource<R1CResource>().set_cuts({{cut}}, g.pv.n_vertices, g.pv.n_arcs);
   bg_mono.build();
   bg_mono.set_stage(Stage::Exact);
-  bg_mono.set_r1c_cuts({{cut}});
   auto mono_paths = bg_mono.solve();
   REQUIRE(!mono_paths.empty());
 
   // Bidir solve
-  BucketGraph<EmptyPack> bg_bidir(
-      g.pv, EmptyPack{},
+  R1CResource r1c_bidir;
+  BucketGraph<R1CPack> bg_bidir(
+      g.pv, R1CPack{r1c_bidir},
       {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .bidirectional = true});
+  bg_bidir.resource<R1CResource>().set_cuts({{cut}}, g.pv.n_vertices, g.pv.n_arcs);
   bg_bidir.build();
   bg_bidir.set_stage(Stage::Exact);
-  bg_bidir.set_r1c_cuts({{cut}});
   auto bidir_paths = bg_bidir.solve();
   REQUIRE(!bidir_paths.empty());
 
@@ -942,7 +917,7 @@ TEST_CASE("R1C: bidir concatenation uses extended R1C state") {
 }
 
 TEST_CASE("R1C: multiple cuts packed in one word") {
-  R1CManager mgr;
+  R1CResource r1c;
 
   // 3 cuts
   R1Cut cut0, cut1, cut2;
@@ -961,21 +936,19 @@ TEST_CASE("R1C: multiple cuts packed in one word") {
   cut2.memory_arcs = {{0, 0}, {1, 0}};
   cut2.dual_value = -3.0;
 
-  mgr.set_cuts(std::vector<R1Cut>{cut0, cut1, cut2}, 4, 4);
-  CHECK(mgr.n_active() == 3);
-  CHECK(mgr.n_words() == 1);
+  r1c.set_cuts(std::vector<R1Cut>{cut0, cut1, cut2}, 4, 4);
+  CHECK(r1c.n_active() == 3);
 
-  uint64_t s[1] = {0};
-  mgr.init_state({s, 1});
+  uint64_t s = r1c.init_state(Direction::Forward);
 
   // Extend to v1 via arc 0 (in AM for cut0 and cut2)
-  uint64_t s1[1] = {0};
-  mgr.extend(Direction::Forward, {s, 1}, {s1, 1}, 0, 1);
-  // cut0: toggle(v1∈C) → 1
-  // cut1: reset(arc0∉AM), toggle(v1∉C for cut1) → 0
+  auto [sa, ca] = r1c.extend_along_arc(Direction::Forward, s, 0);
+  auto [s1, c1] = r1c.extend_to_vertex(Direction::Forward, sa, 1);
+  // cut0: keep(arc0∈AM), toggle(v1∈C) → 1
+  // cut1: reset(arc0∉AM for cut1), toggle(v1∉C for cut1) → 0
   // cut2: keep(arc0∈AM), toggle(v1∈C) → 1
-  CHECK((s1[0] & 1ULL) == 1ULL);  // cut 0 = 1
-  CHECK((s1[0] & 4ULL) == 4ULL);  // cut 2 = 1
+  CHECK((s1 & 1ULL) == 1ULL);  // cut 0 = 1
+  CHECK((s1 & 4ULL) == 4ULL);  // cut 2 = 1
 }
 
 // ── SCC computation ──
@@ -1439,7 +1412,7 @@ TEST_CASE("Resource::symmetric() interface") {
 // ── LabelPool ──
 
 TEST_CASE("LabelPool: allocation and counting") {
-  LabelPool<EmptyPack> pool(0, 16);
+  LabelPool<EmptyPack> pool(16);
 
   CHECK(pool.count() == 0);
 
@@ -1456,26 +1429,16 @@ TEST_CASE("LabelPool: allocation and counting") {
   CHECK(pool.count() == 0);
 }
 
-TEST_CASE("LabelPool: R1C inline allocation") {
-  LabelPool<EmptyPack> pool(2, 16);  // 2 R1C words per label
+TEST_CASE("R1CResource: conforms to Resource concept") {
+  using namespace bgspprc;
+  static_assert(Resource<R1CResource>, "R1CResource must satisfy Resource");
 
-  auto* l = pool.allocate();
-  CHECK(l != nullptr);
-  CHECK(l->n_r1c_words == 2);
-  CHECK(l->r1c_states != nullptr);
-
-  // R1C states should be zeroed
-  CHECK(l->r1c_states[0] == 0ULL);
-  CHECK(l->r1c_states[1] == 0ULL);
-
-  // Write to R1C states (shouldn't crash)
-  l->r1c_states[0] = 0xDEADBEEFULL;
-  l->r1c_states[1] = 0xCAFEBABEULL;
-
-  // Allocate another — should not overlap
-  auto* l2 = pool.allocate();
-  CHECK(l2->r1c_states[0] == 0ULL);
-  CHECK(l2->r1c_states[1] == 0ULL);
+  // Verify it works in a ResourcePack
+  R1CResource r1c;
+  ResourcePack<R1CResource> pack(r1c);
+  CHECK(pack.symmetric());
+  auto states = pack.init_states(Direction::Forward);
+  CHECK(std::get<0>(states) == 0ULL);
 }
 
 // ── Warm starting (Phase 7) ──

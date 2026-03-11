@@ -37,11 +37,6 @@ struct Label {
   // Compile-time resource states
   typename Pack::StatesTuple resource_states{};
 
-  // lm-R1C states: dynamically sized, allocated alongside label
-  // n_r1c_words is set by the solver based on active cuts
-  uint64_t* r1c_states = nullptr;
-  int n_r1c_words = 0;
-
   /// Reconstruct path from source to this label (forward labels).
   void get_path(std::vector<int>& vertices, std::vector<int>& arcs) const {
     vertices.clear();
@@ -71,12 +66,11 @@ struct Label {
 /// Arena-style pool allocator for labels.
 ///
 /// Allocates labels in large blocks for cache locality.
-/// Labels can carry extra R1C state words allocated inline.
 template <typename Pack>
 class LabelPool {
  public:
-  explicit LabelPool(int r1c_words = 0, std::size_t block_size = 4096)
-      : r1c_words_(r1c_words), block_size_(block_size) {}
+  explicit LabelPool(std::size_t block_size = 4096)
+      : block_size_(block_size) {}
 
   ~LabelPool() { clear(); }
 
@@ -85,24 +79,12 @@ class LabelPool {
   LabelPool(LabelPool&&) = default;
   LabelPool& operator=(LabelPool&&) = default;
 
-  void set_r1c_words(int n) { r1c_words_ = n; }
-  int r1c_words() const { return r1c_words_; }
-
   Label<Pack>* allocate() {
     if (free_pos_ >= current_block_end_) {
       allocate_block();
     }
     auto* label = reinterpret_cast<Label<Pack>*>(free_pos_);
     new (label) Label<Pack>{};
-
-    auto* r1c_ptr =
-        reinterpret_cast<uint64_t*>(free_pos_ + sizeof(Label<Pack>));
-
-    if (r1c_words_ > 0) {
-      std::memset(r1c_ptr, 0, r1c_words_ * sizeof(uint64_t));
-      label->r1c_states = r1c_ptr;
-      label->n_r1c_words = r1c_words_;
-    }
 
     free_pos_ += label_size();
     ++count_;
@@ -123,8 +105,8 @@ class LabelPool {
 
  private:
   std::size_t label_size() const {
-    // Label + inline R1C words, aligned to 8 bytes
-    std::size_t sz = sizeof(Label<Pack>) + r1c_words_ * sizeof(uint64_t);
+    // Align to 8 bytes
+    std::size_t sz = sizeof(Label<Pack>);
     return (sz + 7) & ~std::size_t{7};
   }
 
@@ -143,7 +125,6 @@ class LabelPool {
     current_block_end_ = block + bytes;
   }
 
-  int r1c_words_ = 0;
   std::size_t block_size_ = 4096;
   std::vector<char*> blocks_;
   char* free_pos_ = nullptr;
