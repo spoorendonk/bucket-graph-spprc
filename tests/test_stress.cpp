@@ -961,14 +961,15 @@ TEST_CASE("Stress: tolerance exactly at best cost excludes path") {
 // 16. Non-disposable resource (exact equality required for dominance)
 // ════════════════════════════════════════════════════════════════════
 
-TEST_CASE("Stress: non-disposable resource keeps both labels") {
-  // Diamond 0→1→3, 0→2→3. Same cost but different non-disposable resource.
-  // Neither dominates due to different resource values.
+TEST_CASE("Stress: non-disposable resource with equal values allows dominance") {
+  // Diamond 0→1→3, 0→2→3. Both paths have cost=2, time=5, cap=2.
+  // With nondisposable cap, dominance requires exact equality on cap.
+  // Both arrive at sink with identical (cost, time, cap) → one dominates.
   int from[] = {0, 0, 1, 2};
   int to[] = {1, 2, 3, 3};
   double cost[] = {1.0, 1.0, 1.0, 1.0};
-  double time_d[] = {3.0, 5.0, 2.0, 0.0};  // path1: t=5, path2: t=5
-  double cap_d[] = {1.0, 2.0, 1.0, 0.0};   // non-disp resource: path1=2, path2=2
+  double time_d[] = {3.0, 5.0, 2.0, 0.0};
+  double cap_d[] = {1.0, 2.0, 1.0, 0.0};  // path1: cap=1+1=2, path2: cap=2+0=2
   double tw_lb[] = {0.0, 0.0, 0.0, 0.0};
   double tw_ub[] = {10.0, 10.0, 10.0, 10.0};
   double cap_lb[] = {0.0, 0.0, 0.0, 0.0};
@@ -999,15 +1000,6 @@ TEST_CASE("Stress: non-disposable resource keeps both labels") {
                              .stage = Stage::Exact});
   bg.build();
   auto paths = bg.solve();
-  // Both paths have cost 2.0, but different non-disposable resource at sink:
-  // Path 0→1→3: cap = 0+1+1 = 2
-  // Path 0→2→3: cap = 0+2+0 = 2
-  // Actually same, so one dominates. Let's make them differ:
-  // They do differ at intermediate vertex 3: path1 arrives with cap=2, path2
-  // arrives with cap=2. Hmm, same again. Let me adjust...
-  // With nondisposable, q must be EQUAL for dominance. Both paths arrive at
-  // sink with same cost=2, time=5, cap=2 → one dominates the other.
-  // This actually tests that nondisposable equality check works.
   CHECK(!paths.empty());
   CHECK(paths[0].reduced_cost == doctest::Approx(2.0));
 }
