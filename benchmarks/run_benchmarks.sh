@@ -109,10 +109,13 @@ infer_ng() {
     echo "${NG_FLAG[1]}"
     return
   fi
-  # For .graph files, infer from grandparent dir name (e.g. ng16 → 16)
-  local grandparent
+  # Infer from parent or grandparent dir name matching ng[0-9]+
+  local parent grandparent
+  parent="$(basename "$(dirname "$1")")"
   grandparent="$(basename "$(dirname "$(dirname "$1")")")"
-  if [[ "$grandparent" =~ ^ng([0-9]+)$ ]]; then
+  if [[ "$parent" =~ ^ng([0-9]+)$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+  elif [[ "$grandparent" =~ ^ng([0-9]+)$ ]]; then
     echo "${BASH_REMATCH[1]}"
   else
     echo ""
