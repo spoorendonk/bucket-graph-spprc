@@ -504,14 +504,26 @@ class BucketGraph {
     }
 
     int nb = static_cast<int>(buckets_.size());
+    int na = pv_.n_arcs;
 
-    // Build per-bucket sorted arc_id sets for fast "has bucket arc?" queries
-    std::vector<std::vector<int>> existing(nb);
+    // CSR inverted index: arc_id → bucket indices that contain it
+    std::vector<int> arc_offset(na + 1, 0);
     for (int bi = 0; bi < nb; ++bi) {
       auto& arcs = (dir == Direction::Forward) ? buckets_[bi].bucket_arcs
                                                : buckets_[bi].bw_bucket_arcs;
-      for (const auto& ba : arcs) existing[bi].push_back(ba.arc_id);
-      std::sort(existing[bi].begin(), existing[bi].end());
+      for (const auto& ba : arcs) arc_offset[ba.arc_id + 1]++;
+    }
+    for (int a = 0; a < na; ++a) arc_offset[a + 1] += arc_offset[a];
+    std::vector<int> arc_bucket_data(arc_offset[na]);
+    {
+      std::vector<int> arc_pos(arc_offset.begin(), arc_offset.end() - 1);
+      for (int bi = 0; bi < nb; ++bi) {
+        auto& arcs = (dir == Direction::Forward) ? buckets_[bi].bucket_arcs
+                                                 : buckets_[bi].bw_bucket_arcs;
+        for (const auto& ba : arcs) {
+          arc_bucket_data[arc_pos[ba.arc_id]++] = bi;
+        }
+      }
     }
 
     // Group arcs by source vertex to avoid scanning all arcs for each bucket
@@ -529,26 +541,32 @@ class BucketGraph {
       int n_buckets_v = vend - vstart;
       if (n_buckets_v <= 1) continue;
 
+      struct Candidate {
+        int k0, k1, bi;
+      };
+      std::vector<Candidate> candidates;
+
       for (int bi = vstart; bi < vend; ++bi) {
         if (fixed_.test(bi)) continue;
         int k0 = (bi - vstart) / nb_v[1];
         int k1 = (bi - vstart) % nb_v[1];
 
         for (int a : arcs_by_vertex[v]) {
+          // CSR range of buckets that have arc a (sorted by bucket index)
+          const int* csr_begin = arc_bucket_data.data() + arc_offset[a];
+          const int* csr_end = arc_bucket_data.data() + arc_offset[a + 1];
+
           // Does bucket bi already have a bucket arc for arc a?
-          if (std::binary_search(existing[bi].begin(), existing[bi].end(), a))
-            continue;
+          if (std::binary_search(csr_begin, csr_end, bi)) continue;
 
           // Find B̄ = {b' at same vertex : b' ≻ b AND b' has arc a}
           // Forward: b' ≻ b means k' component-wise > k (jump UP)
           // Backward: b' ≻ b means k' component-wise < k (jump DOWN)
-          struct Candidate {
-            int k0, k1, bi;
-          };
-          std::vector<Candidate> candidates;
+          candidates.clear();
 
-          for (int bi2 = vstart; bi2 < vend; ++bi2) {
-            if (bi2 == bi) continue;
+          for (const int* p = csr_begin; p != csr_end; ++p) {
+            int bi2 = *p;
+            if (bi2 < vstart || bi2 >= vend || bi2 == bi) continue;
             int k0_2 = (bi2 - vstart) / nb_v[1];
             int k1_2 = (bi2 - vstart) % nb_v[1];
 
@@ -559,10 +577,6 @@ class BucketGraph {
               succeeds = (k0_2 <= k0 && k1_2 <= k1 && (k0_2 < k0 || k1_2 < k1));
             }
             if (!succeeds) continue;
-
-            if (!std::binary_search(existing[bi2].begin(), existing[bi2].end(),
-                                    a))
-              continue;
 
             candidates.push_back({k0_2, k1_2, bi2});
           }
