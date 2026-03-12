@@ -1642,26 +1642,6 @@ class BucketGraph {
   std::vector<Path> concatenate_and_extract() {
     std::vector<Path> paths;
 
-    // Pre-collect non-dominated labels by vertex (avoids repeated scans).
-    using LabelList = std::vector<const Label<Pack>*>;
-    std::vector<LabelList> fw_by_vertex(pv_.n_vertices);
-    std::vector<LabelList> bw_by_vertex(pv_.n_vertices);
-
-    for (int v = 0; v < pv_.n_vertices; ++v) {
-      if (v == pv_.source || v == pv_.sink) continue;
-      auto [start, end] = vertex_bucket_range(v);
-      for (int bi = start; bi < end; ++bi) {
-        for (const auto* L : fw_bucket_labels_[bi])
-          if (!L->dominated) fw_by_vertex[v].push_back(L);
-        if (!opts_.symmetric) {
-          for (const auto* L : bw_bucket_labels_[bi])
-            if (!L->dominated) bw_by_vertex[v].push_back(L);
-        }
-      }
-    }
-
-    // In symmetric mode, "bw" labels are fw labels reinterpreted
-    auto& bw_source = opts_.symmetric ? fw_by_vertex : bw_by_vertex;
     Symmetry sym = opts_.symmetric ? Symmetry::Symmetric : Symmetry::Asymmetric;
 
     auto append_bw_subpath = [](Path& p, const Label<Pack>* bw) {
@@ -1681,60 +1661,76 @@ class BucketGraph {
         int j = pv_.arc_to[a];
         if (i == pv_.source || i == pv_.sink) continue;
         if (j == pv_.source || j == pv_.sink) continue;
-        if (fw_by_vertex[i].empty() || bw_source[j].empty()) continue;
 
         double arc_cost =
             reduced_costs_ ? reduced_costs_[a] : pv_.arc_base_cost[a];
         double arc_real_cost = pv_.arc_base_cost[a];
 
-        for (const auto* fw : fw_by_vertex[i]) {
-          for (const auto* bw : bw_source[j]) {
-            bool feasible = true;
-            for (int r = 0; r < n_main_; ++r) {
-              double fw_after_arc = fw->q[r] + pv_.arc_resource[r][a];
-              fw_after_arc = std::max(fw_after_arc, pv_.vertex_lb[r][j]);
-              // In symmetric mode, bw->q is actually a forward q;
-              // the backward equivalent is l_r + u_r - q_fw_r
-              double q_bw =
-                  opts_.symmetric
-                      ? (pv_.vertex_lb[r][j] + pv_.vertex_ub[r][j] - bw->q[r])
-                      : bw->q[r];
-              if (fw_after_arc > q_bw + EPS) {
-                feasible = false;
-                break;
-              }
-            }
-            if (!feasible) continue;
+        auto [fw_start, fw_end] = vertex_bucket_range(i);
+        auto [bw_start, bw_end] = vertex_bucket_range(j);
 
-            double total_cost = fw->cost + bw->cost + arc_cost;
-            double total_real_cost =
-                fw->real_cost + bw->real_cost + arc_real_cost;
+        for (int fbi = fw_start; fbi < fw_end; ++fbi) {
+          for (const auto* fw : fw_bucket_labels_[fbi]) {
+            if (fw->dominated) continue;
 
-            if constexpr (Pack::size > 0) {
-              auto [ext_states, ext_cost] = pack_.extend_along_arc(
-                  Direction::Forward, fw->resource_states, a);
-              if (ext_cost >= INF) continue;
-              total_cost += ext_cost;
-
-              double cc = pack_.concatenation_cost(sym, j, ext_states,
-                                                   bw->resource_states);
-              if (cc >= INF) continue;
-              total_cost += cc;
+            // For EmptyPack, bw cost is non-negative so we can prune early.
+            if constexpr (Pack::size == 0) {
+              if (fw->cost + arc_cost >= opts_.tolerance) continue;
             }
 
-            if (total_cost < opts_.tolerance) {
-              Path p;
-              fw->get_path(p.vertices, p.arcs);
-              p.arcs.push_back(a);
-              p.vertices.push_back(j);
-              if (opts_.symmetric) {
-                append_symmetric_bw_subpath(p, bw);
-              } else {
-                append_bw_subpath(p, bw);
+            for (int bbi = bw_start; bbi < bw_end; ++bbi) {
+              auto& bw_labels = opts_.symmetric
+                  ? fw_bucket_labels_[bbi] : bw_bucket_labels_[bbi];
+              for (const auto* bw : bw_labels) {
+                if (bw->dominated) continue;
+                bool feasible = true;
+                for (int r = 0; r < n_main_; ++r) {
+                  double fw_after_arc = fw->q[r] + pv_.arc_resource[r][a];
+                  fw_after_arc =
+                      std::max(fw_after_arc, pv_.vertex_lb[r][j]);
+                  double q_bw =
+                      opts_.symmetric
+                          ? (pv_.vertex_lb[r][j] + pv_.vertex_ub[r][j] -
+                             bw->q[r])
+                          : bw->q[r];
+                  if (fw_after_arc > q_bw + EPS) {
+                    feasible = false;
+                    break;
+                  }
+                }
+                if (!feasible) continue;
+
+                double total_cost = fw->cost + bw->cost + arc_cost;
+                double total_real_cost =
+                    fw->real_cost + bw->real_cost + arc_real_cost;
+
+                if constexpr (Pack::size > 0) {
+                  auto [ext_states, ext_cost] = pack_.extend_along_arc(
+                      Direction::Forward, fw->resource_states, a);
+                  if (ext_cost >= INF) continue;
+                  total_cost += ext_cost;
+
+                  double cc = pack_.concatenation_cost(
+                      sym, j, ext_states, bw->resource_states);
+                  if (cc >= INF) continue;
+                  total_cost += cc;
+                }
+
+                if (total_cost < opts_.tolerance) {
+                  Path p;
+                  fw->get_path(p.vertices, p.arcs);
+                  p.arcs.push_back(a);
+                  p.vertices.push_back(j);
+                  if (opts_.symmetric) {
+                    append_symmetric_bw_subpath(p, bw);
+                  } else {
+                    append_bw_subpath(p, bw);
+                  }
+                  p.reduced_cost = total_cost;
+                  p.original_cost = total_real_cost;
+                  paths.push_back(std::move(p));
+                }
               }
-              p.reduced_cost = total_cost;
-              p.original_cost = total_real_cost;
-              paths.push_back(std::move(p));
             }
           }
         }
