@@ -1094,11 +1094,6 @@ class BucketGraph {
       if (ext_cost >= INF) return false;
       total_cost += ext_cost;
 
-      double acc = pack_.arc_concatenation_cost(
-          Symmetry::Asymmetric, arc_id, ext_states, bw->resource_states);
-      if (acc >= INF) return false;
-      total_cost += acc;
-
       double cc = pack_.concatenation_cost(Symmetry::Asymmetric, j, ext_states,
                                            bw->resource_states);
       if (cc >= INF) return false;
@@ -1710,11 +1705,6 @@ class BucketGraph {
                   Direction::Forward, fw->resource_states, a);
               if (ext_cost >= INF) continue;
               total_cost += ext_cost;
-
-              double acc = pack_.arc_concatenation_cost(sym, a, ext_states,
-                                                        bw->resource_states);
-              if (acc >= INF) continue;
-              total_cost += acc;
 
               double cc = pack_.concatenation_cost(sym, j, ext_states,
                                                    bw->resource_states);
