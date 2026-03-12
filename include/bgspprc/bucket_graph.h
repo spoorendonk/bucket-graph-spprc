@@ -1213,7 +1213,7 @@ class BucketGraph {
   /// vertex-local offset (bi - vstart), not global bucket index.
   void update_buckets_set(
       double theta, const Label<Pack>* L, int arc_id,
-      std::vector<uint64_t>&
+      std::span<uint64_t>
           b_bar,      // per opposite-bucket bitset: found compatible?
       int b_tilde,    // current opposite-sense bucket to check
       Direction dir,  // direction of L (fw → checking bw buckets)
@@ -1282,7 +1282,7 @@ class BucketGraph {
   }
 
   /// Check if a bucket arc should be eliminated (no θ-compatible pair found).
-  bool should_eliminate_arc(int arr_bi, const std::vector<uint64_t>& b_bar,
+  bool should_eliminate_arc(int arr_bi, std::span<const uint64_t> b_bar,
                             Direction dir) const {
     int arr_v = buckets_[arr_bi].vertex;
     auto [arr_vstart, arr_vend] = vertex_bucket_range(arr_v);
@@ -1305,7 +1305,7 @@ class BucketGraph {
   }
 
   /// Process a single bucket during label-based elimination.
-  /// GetBBar: callable(int arc_id) → std::vector<uint64_t>&
+  /// GetBBar: callable(int arc_id) → std::span<uint64_t>
   template <typename GetBBar>
   void process_bucket_elimination(int bi, Direction dir, double theta,
                                   GetBBar&& get_bbar) {
@@ -1381,6 +1381,18 @@ class BucketGraph {
       arcs_by_vertex[src].push_back(a);
     }
 
+    // Reusable flat buffer for B̄ bitsets — sized to max across all vertices
+    int max_flat_size = 0;
+    for (int v = 0; v < pv_.n_vertices; ++v) {
+      auto& arcs_v = arcs_by_vertex[v];
+      if (arcs_v.empty()) continue;
+      auto [vs, ve] = vertex_bucket_range(v);
+      int n_bv = ve - vs;
+      int entries = static_cast<int>(arcs_v.size()) * n_bv;
+      max_flat_size = std::max(max_flat_size, entries * n_words);
+    }
+    std::vector<uint64_t> b_bar_flat(max_flat_size, 0);
+
     for (int v = 0; v < pv_.n_vertices; ++v) {
       auto& arcs_from_v = arcs_by_vertex[v];
       if (arcs_from_v.empty()) continue;
@@ -1389,11 +1401,15 @@ class BucketGraph {
       auto& nb_v = vertex_n_buckets_[v];
       int n_bv = vend - vstart;
 
-      // Per-(local_arc, local_bucket) B̄ bitsets
+      // Per-(local_arc, local_bucket) B̄ bitsets — flat, reused
       int n_arcs_v = static_cast<int>(arcs_from_v.size());
       int n_entries = n_arcs_v * n_bv;
-      std::vector<std::vector<uint64_t>> b_bar_local(
-          n_entries, std::vector<uint64_t>(n_words, 0));
+      int flat_size = n_entries * n_words;
+      std::fill_n(b_bar_flat.data(), flat_size, uint64_t(0));
+      auto b_bar = [&](int idx) -> std::span<uint64_t> {
+        return {b_bar_flat.data() + idx * n_words,
+                static_cast<size_t>(n_words)};
+      };
 
       // Process a single bucket: propagate Φ, then run elimination
       auto process = [&](int k0, int k1) {
@@ -1403,31 +1419,31 @@ class BucketGraph {
 
         // Propagate B̄ from Φ_b predecessors (source-sense)
         for (int lai = 0; lai < n_arcs_v; ++lai) {
-          auto& cur = b_bar_local[lai * n_bv + local_bi];
+          auto cur = b_bar(lai * n_bv + local_bi);
           if (dir == Direction::Forward) {
             if (k0 > 0) {
-              auto& pred = b_bar_local[lai * n_bv + ((k0 - 1) * nb_v[1] + k1)];
+              auto pred = b_bar(lai * n_bv + ((k0 - 1) * nb_v[1] + k1));
               for (int w = 0; w < n_words; ++w) cur[w] |= pred[w];
             }
             if (k1 > 0) {
-              auto& pred = b_bar_local[lai * n_bv + (k0 * nb_v[1] + (k1 - 1))];
+              auto pred = b_bar(lai * n_bv + (k0 * nb_v[1] + (k1 - 1)));
               for (int w = 0; w < n_words; ++w) cur[w] |= pred[w];
             }
           } else {
             if (k0 + 1 < nb_v[0]) {
-              auto& pred = b_bar_local[lai * n_bv + ((k0 + 1) * nb_v[1] + k1)];
+              auto pred = b_bar(lai * n_bv + ((k0 + 1) * nb_v[1] + k1));
               for (int w = 0; w < n_words; ++w) cur[w] |= pred[w];
             }
             if (k1 + 1 < nb_v[1]) {
-              auto& pred = b_bar_local[lai * n_bv + (k0 * nb_v[1] + (k1 + 1))];
+              auto pred = b_bar(lai * n_bv + (k0 * nb_v[1] + (k1 + 1)));
               for (int w = 0; w < n_words; ++w) cur[w] |= pred[w];
             }
           }
         }
 
         // Process arcs at this bucket using per-bucket B̄
-        auto get_bbar = [&](int arc_id) -> std::vector<uint64_t>& {
-          return b_bar_local[arc_local[arc_id] * n_bv + local_bi];
+        auto get_bbar = [&](int arc_id) -> std::span<uint64_t> {
+          return b_bar(arc_local[arc_id] * n_bv + local_bi);
         };
         process_bucket_elimination(bi, dir, theta, get_bbar);
       };
