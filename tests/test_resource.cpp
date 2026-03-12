@@ -51,19 +51,6 @@ TEST_CASE("StandardResource extend_to_vertex is no-op") {
   CHECK(c == 0.0);
 }
 
-// ── arc_concatenation_cost ──
-
-TEST_CASE("StandardResource arc_concatenation_cost is no-op") {
-  double consumption[] = {1.0};
-  double lb[] = {0.0, 0.0};
-  double ub[] = {100.0, 100.0};
-
-  StandardResource res(consumption, lb, ub, 0, 1, 1);
-
-  CHECK(res.arc_concatenation_cost(Symmetry::Asymmetric, 0, 5.0, 10.0) == 0.0);
-  CHECK(res.arc_concatenation_cost(Symmetry::Symmetric, 0, 5.0, 10.0) == 0.0);
-}
-
 // ── ResourcePack ──
 
 TEST_CASE("EmptyPack operations") {
@@ -105,29 +92,6 @@ TEST_CASE("ResourcePack with StandardResource") {
   CHECK(pack.symmetric() == false);
 }
 
-TEST_CASE("ResourcePack arc_concatenation_cost composes correctly") {
-  double consumption[] = {2.0, 3.0};
-  double lb[] = {0.0, 0.0, 0.0};
-  double ub[] = {100.0, 100.0, 100.0};
-
-  auto pack =
-      make_resource_pack(StandardResource(consumption, lb, ub, 0, 2, 2));
-
-  auto s1 = pack.init_states(Direction::Forward);
-  auto s2 = pack.init_states(Direction::Backward);
-
-  CHECK(pack.arc_concatenation_cost(Symmetry::Asymmetric, 0, s1, s2) == 0.0);
-  CHECK(pack.arc_concatenation_cost(Symmetry::Symmetric, 1, s1, s2) == 0.0);
-}
-
-TEST_CASE("EmptyPack arc_concatenation_cost returns 0") {
-  EmptyPack pack;
-  auto states = pack.init_states(Direction::Forward);
-
-  CHECK(pack.arc_concatenation_cost(Symmetry::Asymmetric, 0, states, states) ==
-        0.0);
-}
-
 // ════════════════════════════════════════════════════════════════
 // NgPathResource — local bit mapping tests (DESTINATION MARKING)
 // ════════════════════════════════════════════════════════════════
@@ -155,14 +119,6 @@ static NgPathResource make_ng5() {
       {4, 3, 2},  // v4: {4, 3, 2}
   };
   return NgPathResource(5, 10, from, to, neighbors);
-}
-
-TEST_CASE("NgPathResource arc_concatenation_cost is no-op") {
-  auto ng = make_ng5();
-
-  CHECK(ng.arc_concatenation_cost(Symmetry::Asymmetric, 0, 0ULL, 0ULL) == 0.0);
-  CHECK(ng.arc_concatenation_cost(Symmetry::Symmetric, 0, 0b1111ULL,
-                                  0b1010ULL) == 0.0);
 }
 
 TEST_CASE("NgPathResource: bit_map assigns local positions") {
@@ -1501,15 +1457,6 @@ TEST_CASE("CumulativeCostResource: concatenation_cost") {
                                {0.0, 3.0}) == doctest::Approx(12.0));
   CHECK(res.concatenation_cost(Symmetry::Asymmetric, 0, {0.0, 0.0},
                                {0.0, 5.0}) == doctest::Approx(0.0));
-}
-
-TEST_CASE("CumulativeCostResource: arc_concatenation_cost is zero") {
-  double travel[] = {1.0};
-  double wt[] = {2.0};
-  CumulativeCostResource res(travel, wt, 10.0, 20.0, 1);
-
-  CHECK(res.arc_concatenation_cost(Symmetry::Asymmetric, 0, {5.0, 3.0},
-                                   {2.0, 1.0}) == 0.0);
 }
 
 TEST_CASE("ResourcePack<CumulativeCostResource> extend + domination") {

@@ -90,12 +90,6 @@ struct R1CResource {
     return 0.0;
   }
 
-  /// No arc-level concatenation cost for R1C.
-  double arc_concatenation_cost(Symmetry /*sym*/, int /*arc_id*/, State /*s_fw*/,
-                                State /*s_bw*/) const {
-    return 0.0;
-  }
-
  private:
   void build_masks() {
     arc_keep_mask_.assign(n_arcs_, 0ULL);
