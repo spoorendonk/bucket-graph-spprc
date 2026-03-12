@@ -8,7 +8,7 @@
 
 namespace bgspprc {
 
-/// Concept for a Meta-Solver resource type (§4.1 functions 1-7).
+/// Concept for a Meta-Solver resource type (§4.1 functions 1-5).
 ///
 /// Each resource carries per-label state and defines:
 ///  - symmetric: whether this resource supports symmetric labeling (§4.1)
@@ -16,8 +16,6 @@ namespace bgspprc {
 ///  - extend_to_vertex: how state changes at a vertex (destination marking)
 ///  - domination_cost: extra cost penalty when L1's state is "worse" than L2's
 ///  - concatenation_cost: cost adjustment when joining fw/bw labels at a vertex
-///  - arc_concatenation_cost: cost adjustment on the arc between extend and
-///  concat
 template <typename R>
 concept Resource =
     requires(const R& r, Direction dir, Symmetry sym, typename R::State s,
@@ -33,7 +31,6 @@ concept Resource =
       } -> std::same_as<std::pair<typename R::State, double>>;
       { r.domination_cost(dir, vertex, s, s2) } -> std::same_as<double>;
       { r.concatenation_cost(sym, vertex, s, s2) } -> std::same_as<double>;
-      { r.arc_concatenation_cost(sym, arc_id, s, s2) } -> std::same_as<double>;
     };
 
 /// Compile-time pack of resources. Labels carry a tuple of all states.
@@ -151,31 +148,6 @@ struct ResourcePack {
        ...);
     };
     do_cat(std::index_sequence_for<Rs...>{});
-    if (!feasible) return INF;
-    return total;
-  }
-
-  /// Compute arc-level concatenation cost (Meta-Solver 2026 §4.1 function 7).
-  /// If any resource returns INF, the concatenation is infeasible.
-  double arc_concatenation_cost(Symmetry sym, int arc_id,
-                                const StatesTuple& s_fw,
-                                const StatesTuple& s_bw) const {
-    double total = 0.0;
-    bool feasible = true;
-    auto do_acc = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-      (([&] {
-         if (!feasible) return;
-         double c = std::get<Is>(resources).arc_concatenation_cost(
-             sym, arc_id, std::get<Is>(s_fw), std::get<Is>(s_bw));
-         if (c >= INF) {
-           feasible = false;
-           return;
-         }
-         total += c;
-       }()),
-       ...);
-    };
-    do_acc(std::index_sequence_for<Rs...>{});
     if (!feasible) return INF;
     return total;
   }

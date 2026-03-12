@@ -87,11 +87,6 @@ struct StandardResource {
                             State /*s_bw*/) const {
     return 0.0;
   }
-
-  double arc_concatenation_cost(Symmetry /*sym*/, int /*arc_id*/,
-                                State /*s_fw*/, State /*s_bw*/) const {
-    return 0.0;
-  }
 };
 
 }  // namespace bgspprc

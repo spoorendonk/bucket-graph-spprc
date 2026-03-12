@@ -79,11 +79,6 @@ struct CumulativeCostResource {
                             State s_bw) const {
     return s_fw.T_or_W * s_bw.T_or_W;
   }
-
-  double arc_concatenation_cost(Symmetry /*sym*/, int /*arc_id*/,
-                                State /*s_fw*/, State /*s_bw*/) const {
-    return 0.0;
-  }
 };
 
 }  // namespace bgspprc
