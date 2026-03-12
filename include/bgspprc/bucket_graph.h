@@ -567,36 +567,34 @@ class BucketGraph {
             candidates.push_back({k0_2, k1_2, bi2});
           }
 
-          // Filter to component-wise minimal (fw) / maximal (bw)
-          std::vector<Candidate> minimal;
-          for (auto& c : candidates) {
-            bool dominated = false;
-            for (auto& m : candidates) {
-              if (&c == &m) continue;
-              if (dir == Direction::Forward) {
-                // m dominates c if m is component-wise ≤ c
-                if (m.k0 <= c.k0 && m.k1 <= c.k1 &&
-                    (m.k0 < c.k0 || m.k1 < c.k1)) {
-                  dominated = true;
-                  break;
-                }
-              } else {
-                // m dominates c if m is component-wise ≥ c
-                if (m.k0 >= c.k0 && m.k1 >= c.k1 &&
-                    (m.k0 > c.k0 || m.k1 > c.k1)) {
-                  dominated = true;
-                  break;
-                }
+          // Filter to Pareto front: component-wise minimal (fw) / maximal (bw)
+          // O(n log n) sort+sweep instead of O(n²) pairwise check
+          if (dir == Direction::Forward) {
+            std::sort(candidates.begin(), candidates.end(),
+                      [](const auto& lhs, const auto& rhs) {
+                        return lhs.k0 < rhs.k0 ||
+                               (lhs.k0 == rhs.k0 && lhs.k1 < rhs.k1);
+                      });
+            int min_k1 = std::numeric_limits<int>::max();
+            for (auto& c : candidates) {
+              if (c.k1 < min_k1) {
+                buckets_[bi].jump_arcs.push_back({c.bi, a});
+                min_k1 = c.k1;
               }
             }
-            if (!dominated) minimal.push_back(c);
-          }
-
-          for (auto& m : minimal) {
-            if (dir == Direction::Forward)
-              buckets_[bi].jump_arcs.push_back({m.bi, a});
-            else
-              buckets_[bi].bw_jump_arcs.push_back({m.bi, a});
+          } else {
+            std::sort(candidates.begin(), candidates.end(),
+                      [](const auto& lhs, const auto& rhs) {
+                        return lhs.k0 > rhs.k0 ||
+                               (lhs.k0 == rhs.k0 && lhs.k1 > rhs.k1);
+                      });
+            int max_k1 = std::numeric_limits<int>::min();
+            for (auto& c : candidates) {
+              if (c.k1 > max_k1) {
+                buckets_[bi].bw_jump_arcs.push_back({c.bi, a});
+                max_k1 = c.k1;
+              }
+            }
           }
         }
       }
