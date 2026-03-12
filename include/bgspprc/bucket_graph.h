@@ -683,6 +683,10 @@ class BucketGraph {
       return L1->cost <= L2->cost + EPS;
     }
 
+    if constexpr (Pack::size == 0) {
+      return L1->cost <= L2->cost + EPS;
+    }
+
     double dom_cost = L1->cost;
 
     if constexpr (Pack::size > 0) {
@@ -719,6 +723,9 @@ class BucketGraph {
         for (int i1 = 0; i1 <= k1; ++i1) {
           int other = start + i0 * nb[1] + i1;
           if (other == bi) continue;
+          if constexpr (Pack::size == 0) {
+            if (buckets_[other].c_best > L->cost + EPS) continue;
+          }
           for (const auto* existing : labels[other]) {
             if (existing->dominated) continue;
             if (dominates(existing, L, dir)) return true;
@@ -731,6 +738,9 @@ class BucketGraph {
         for (int i1 = k1; i1 < nb[1]; ++i1) {
           int other = start + i0 * nb[1] + i1;
           if (other == bi) continue;
+          if constexpr (Pack::size == 0) {
+            if (buckets_[other].bw_c_best > L->cost + EPS) continue;
+          }
           for (const auto* existing : labels[other]) {
             if (existing->dominated) continue;
             if (dominates(existing, L, dir)) return true;
