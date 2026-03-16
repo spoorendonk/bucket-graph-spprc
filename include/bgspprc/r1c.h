@@ -81,6 +81,18 @@ struct R1CResource {
     return 0.0;
   }
 
+  /// Lower bound on domination_cost: sum of all negative beta contributions.
+  /// domination_cost sums -beta[c] for cuts where s2 has credit but s1 doesn't,
+  /// so worst case is all cuts contributing their negative beta.
+  double min_domination_cost() const {
+    double total = 0.0;
+    for (int c = 0; c < n_active_; ++c) {
+      double contrib = -betas_[c];
+      if (contrib < 0.0) total += contrib;
+    }
+    return total;
+  }
+
   /// Cost when joining fw/bw labels: if both have credit, overflow.
   double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State s_fw,
                             State s_bw) const {

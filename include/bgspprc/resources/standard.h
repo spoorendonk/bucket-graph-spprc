@@ -83,6 +83,9 @@ struct StandardResource {
     return 0.0;  // pure feasibility resource
   }
 
+  /// Lower bound on domination_cost: always 0.
+  double min_domination_cost() const { return 0.0; }
+
   double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State /*s_fw*/,
                             State /*s_bw*/) const {
     return 0.0;

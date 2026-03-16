@@ -74,6 +74,10 @@ struct CumulativeCostResource {
     }
   }
 
+  /// Lower bound on domination_cost: 0 (cost_gap and time/weight gaps are >= 0
+  /// when dominator has lower cost and resources).
+  double min_domination_cost() const { return 0.0; }
+
   /// Cross-product: T_fw * W_bw.
   double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State s_fw,
                             State s_bw) const {

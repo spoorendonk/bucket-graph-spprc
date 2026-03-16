@@ -203,6 +203,9 @@ struct NgPathResource {
     return 0.0;
   }
 
+  /// Lower bound on domination_cost: 0 (subset check returns 0 or INF).
+  double min_domination_cost() const { return 0.0; }
+
   /// Concatenation: across-arc (i,j) produces fw state at j via
   /// extend_along_arc only (no self bit for j), while bw state at j has j's
   /// self bit set. Any common bit means a vertex visited in both directions →

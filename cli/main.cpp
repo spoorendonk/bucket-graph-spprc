@@ -37,8 +37,9 @@ using NgPack = ResourcePack<NgPathResource>;
 struct Options {
   bool bidir = true;
   Stage stage = Stage::Exact;
-  int ng = -1;  // -1 = use file default or 8, 0 = disable ng-path
+  int ng = -1;      // -1 = use file default or 8, 0 = disable ng-path
   double step1 = 0, step2 = 0;  // 0 = per-type default
+  bool auto_steps = false;       // use per-vertex auto-computed steps
 };
 
 struct Result {
@@ -51,6 +52,14 @@ struct Result {
   double ms = 0;
   std::vector<int> best_path;
 };
+
+// ── Helpers ──
+
+template <typename P>
+void apply_auto_steps(Solver<P>& solver) {
+  auto steps = solver.compute_min_inbound_arc_resource();
+  solver.set_vertex_bucket_steps(std::move(steps));
+}
 
 // ── Per-type runners ──
 
@@ -79,6 +88,7 @@ static Result run_sppcc(const std::string& path, const Options& opts) {
                            .bidirectional = opts.bidir,
                            .max_paths = 100,
                            .tolerance = 1e9});
+    if (opts.auto_steps) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
     auto paths = solver.solve();
@@ -101,6 +111,7 @@ static Result run_sppcc(const std::string& path, const Options& opts) {
                               .bidirectional = opts.bidir,
                               .max_paths = 100,
                               .tolerance = 1e9});
+    if (opts.auto_steps) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
     auto paths = solver.solve();
@@ -141,6 +152,7 @@ static Result run_vrp(const std::string& path, const Options& opts) {
                            .bidirectional = opts.bidir,
                            .max_paths = 100,
                            .tolerance = 1e9});
+    if (opts.auto_steps) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
     auto paths = solver.solve();
@@ -163,6 +175,7 @@ static Result run_vrp(const std::string& path, const Options& opts) {
                               .bidirectional = opts.bidir,
                               .max_paths = 100,
                               .tolerance = 1e9});
+    if (opts.auto_steps) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
     auto paths = solver.solve();
@@ -181,8 +194,10 @@ static Result run_vrp(const std::string& path, const Options& opts) {
 static Result run_graph(const std::string& path, const Options& opts) {
   auto inst = io::load_rcspp_graph(path);
 
+  // Default steps used as fallback; auto-compute overrides when no --steps
   double s1 = opts.step1 > 0 ? opts.step1 : 20.0;
   double s2 = opts.step2 > 0 ? opts.step2 : 50.0;
+  bool use_auto = (opts.step1 == 0 && opts.step2 == 0);
 
   Result r;
   r.name = inst.name.empty() ? fs::path(path).stem().string() : inst.name;
@@ -200,6 +215,7 @@ static Result run_graph(const std::string& path, const Options& opts) {
                               .bidirectional = opts.bidir,
                               .max_paths = 100,
                               .tolerance = 0.0});
+    if (use_auto) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
     auto paths = solver.solve();
@@ -231,6 +247,7 @@ static Result run_graph(const std::string& path, const Options& opts) {
                            .bidirectional = opts.bidir,
                            .max_paths = 100,
                            .tolerance = 0.0});
+    if (use_auto) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
     auto paths = solver.solve();
@@ -318,6 +335,8 @@ int main(int argc, char** argv) {
       opts.ng = std::atoi(argv[++i]);
     } else if (std::strcmp(argv[i], "--steps") == 0 && i + 1 < argc) {
       parse_steps(argv[++i], opts.step1, opts.step2);
+    } else if (std::strcmp(argv[i], "--auto-steps") == 0) {
+      opts.auto_steps = true;
     } else if (argv[i][0] == '-') {
       std::fprintf(stderr, "Unknown option: %s\n", argv[i]);
       return 1;

@@ -31,6 +31,7 @@ concept Resource =
       } -> std::same_as<std::pair<typename R::State, double>>;
       { r.domination_cost(dir, vertex, s, s2) } -> std::same_as<double>;
       { r.concatenation_cost(sym, vertex, s, s2) } -> std::same_as<double>;
+      { r.min_domination_cost() } -> std::same_as<double>;
     };
 
 /// Compile-time pack of resources. Labels carry a tuple of all states.
@@ -125,6 +126,17 @@ struct ResourcePack {
        ...);
     };
     do_dom(std::index_sequence_for<Rs...>{});
+    return total;
+  }
+
+  /// Lower bound on domination_cost across all possible state pairs.
+  /// Used for c_best pruning: if c_best + min_dom_cost > L->cost, skip bucket.
+  double min_domination_cost() const {
+    double total = 0.0;
+    auto do_min = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+      ((total += std::get<Is>(resources).min_domination_cost()), ...);
+    };
+    do_min(std::index_sequence_for<Rs...>{});
     return total;
   }
 

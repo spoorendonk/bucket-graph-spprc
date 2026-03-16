@@ -51,6 +51,9 @@ class BucketGraph {
     }
     adj_.build(pv_);
     n_main_ = std::min(pv_.n_main_resources, 2);
+    if constexpr (Pack::size > 0) {
+      min_dom_cost_ = pack_.min_domination_cost();
+    }
     for (int r = 0; r < n_main_; ++r)
       main_nondisposable_[r] =
           pv_.resource_nondisposable && pv_.resource_nondisposable[r];
@@ -121,17 +124,32 @@ class BucketGraph {
   /// step was changed (requiring rebuild).
   bool adapt_bucket_steps(double threshold = 20.0) {
     bool changed = false;
-    for (int r = 0; r < n_main_; ++r) {
-      double max_ratio = 0.0;
+    if (!vertex_bucket_steps_.empty()) {
+      // Per-vertex mode: halve steps for vertices exceeding threshold
       for (int v = 0; v < pv_.n_vertices; ++v) {
-        double range = pv_.vertex_ub[r][v] - pv_.vertex_lb[r][v];
-        if (range > 0) {
-          max_ratio = std::max(max_ratio, range / opts_.bucket_steps[r]);
+        for (int r = 0; r < n_main_; ++r) {
+          double range = pv_.vertex_ub[r][v] - pv_.vertex_lb[r][v];
+          if (range > 0 &&
+              range / vertex_bucket_steps_[v][r] > threshold) {
+            vertex_bucket_steps_[v][r] *= 0.5;
+            changed = true;
+          }
         }
       }
-      if (max_ratio > threshold) {
-        opts_.bucket_steps[r] *= 0.5;
-        changed = true;
+    } else {
+      // Uniform mode
+      for (int r = 0; r < n_main_; ++r) {
+        double max_ratio = 0.0;
+        for (int v = 0; v < pv_.n_vertices; ++v) {
+          double range = pv_.vertex_ub[r][v] - pv_.vertex_lb[r][v];
+          if (range > 0) {
+            max_ratio = std::max(max_ratio, range / opts_.bucket_steps[r]);
+          }
+        }
+        if (max_ratio > threshold) {
+          opts_.bucket_steps[r] *= 0.5;
+          changed = true;
+        }
       }
     }
     return changed;
@@ -140,6 +158,41 @@ class BucketGraph {
   /// Get current bucket steps (for inspection).
   const std::array<double, 2>& bucket_steps() const {
     return opts_.bucket_steps;
+  }
+
+  /// Set per-vertex bucket step sizes. Overrides uniform opts_.bucket_steps
+  /// during build. Size must equal n_vertices.
+  void set_vertex_bucket_steps(
+      std::vector<std::array<double, 2>> steps) {
+    vertex_bucket_steps_ = std::move(steps);
+  }
+
+  /// Compute per-vertex bucket steps from minimum positive inbound arc resource.
+  /// Vertices get finer steps where arcs have small resource consumption,
+  /// capped at max_buckets_per_vertex buckets per resource dimension.
+  std::vector<std::array<double, 2>> compute_min_inbound_arc_resource(
+      int max_buckets_per_vertex = 200) const {
+    std::vector<std::array<double, 2>> steps(pv_.n_vertices, {INF, INF});
+    for (int a = 0; a < pv_.n_arcs; ++a) {
+      int to = pv_.arc_to[a];
+      for (int r = 0; r < n_main_; ++r) {
+        double d = pv_.arc_resource[r][a];
+        if (d > EPS) steps[to][r] = std::min(steps[to][r], d);
+      }
+    }
+    for (int v = 0; v < pv_.n_vertices; ++v) {
+      for (int r = 0; r < n_main_; ++r) {
+        double range = pv_.vertex_ub[r][v] - pv_.vertex_lb[r][v];
+        if (range < EPS) {
+          steps[v][r] = 1.0;  // single bucket
+          continue;
+        }
+        double min_step = range / max_buckets_per_vertex;
+        steps[v][r] = std::max(steps[v][r], min_step);
+        if (steps[v][r] >= INF) steps[v][r] = range;  // fallback: 1 bucket
+      }
+    }
+    return steps;
   }
 
   /// Arc elimination: remove bucket arcs incompatible with gap theta.
@@ -273,6 +326,12 @@ class BucketGraph {
  private:
   // ── Bucket construction ──
 
+  const std::array<double, 2>& step_for_vertex(int v) const {
+    if (!vertex_bucket_steps_.empty())
+      return vertex_bucket_steps_[v];
+    return opts_.bucket_steps;
+  }
+
   void build_buckets() {
     buckets_.clear();
     vertex_bucket_start_.assign(pv_.n_vertices, -1);
@@ -282,11 +341,12 @@ class BucketGraph {
     for (int v = 0; v < pv_.n_vertices; ++v) {
       vertex_bucket_start_[v] = total;
 
+      auto& vstep = step_for_vertex(v);
       std::array<int, 2> nb = {1, 1};
       for (int r = 0; r < n_main_; ++r) {
         double range = pv_.vertex_ub[r][v] - pv_.vertex_lb[r][v];
         nb[r] = std::max(
-            1, static_cast<int>(std::ceil(range / opts_.bucket_steps[r])));
+            1, static_cast<int>(std::ceil(range / vstep[r])));
       }
       vertex_n_buckets_[v] = nb;
 
@@ -297,9 +357,9 @@ class BucketGraph {
 
           for (int r = 0; r < n_main_; ++r) {
             int k = (r == 0) ? k1 : k2;
-            b.lb[r] = pv_.vertex_lb[r][v] + k * opts_.bucket_steps[r];
+            b.lb[r] = pv_.vertex_lb[r][v] + k * vstep[r];
             b.ub[r] =
-                std::min(b.lb[r] + opts_.bucket_steps[r], pv_.vertex_ub[r][v]);
+                std::min(b.lb[r] + vstep[r], pv_.vertex_ub[r][v]);
           }
           for (int r = n_main_; r < 2; ++r) {
             b.lb[r] = 0.0;
@@ -328,12 +388,13 @@ class BucketGraph {
   int vertex_bucket_index(int vertex, const std::array<double, 2>& q) const {
     int start = vertex_bucket_start_[vertex];
     auto& nb = vertex_n_buckets_[vertex];
+    auto& vstep = step_for_vertex(vertex);
 
     std::array<int, 2> k = {0, 0};
     for (int r = 0; r < n_main_; ++r) {
       double offset = q[r] - pv_.vertex_lb[r][vertex];
       k[r] =
-          std::min(static_cast<int>(offset / opts_.bucket_steps[r]), nb[r] - 1);
+          std::min(static_cast<int>(offset / vstep[r]), nb[r] - 1);
       k[r] = std::max(k[r], 0);
     }
 
@@ -725,7 +786,6 @@ class BucketGraph {
       const Label<Pack>* L, int bi, Direction dir,
       std::vector<std::vector<Label<Pack>*>>& labels) const {
     for (const auto* existing : labels[bi]) {
-      if (existing->dominated) continue;
       if (dominates(existing, L, dir)) return true;
     }
     return false;
@@ -747,11 +807,8 @@ class BucketGraph {
         for (int i1 = 0; i1 <= k1; ++i1) {
           int other = start + i0 * nb[1] + i1;
           if (other == bi) continue;
-          if constexpr (Pack::size == 0) {
-            if (buckets_[other].c_best > L->cost + EPS) continue;
-          }
+          if (buckets_[other].c_best + min_dom_cost_ > L->cost + EPS) continue;
           for (const auto* existing : labels[other]) {
-            if (existing->dominated) continue;
             if (dominates(existing, L, dir)) return true;
           }
         }
@@ -762,11 +819,9 @@ class BucketGraph {
         for (int i1 = k1; i1 < nb[1]; ++i1) {
           int other = start + i0 * nb[1] + i1;
           if (other == bi) continue;
-          if constexpr (Pack::size == 0) {
-            if (buckets_[other].bw_c_best > L->cost + EPS) continue;
-          }
+          if (buckets_[other].bw_c_best + min_dom_cost_ > L->cost + EPS)
+            continue;
           for (const auto* existing : labels[other]) {
-            if (existing->dominated) continue;
             if (dominates(existing, L, dir)) return true;
           }
         }
@@ -777,12 +832,14 @@ class BucketGraph {
 
   void remove_dominated(const Label<Pack>* new_label, int bi, Direction dir,
                         std::vector<std::vector<Label<Pack>*>>& labels) {
-    for (auto* existing : labels[bi]) {
-      if (existing->dominated) continue;
+    std::erase_if(labels[bi], [&](Label<Pack>* existing) {
+      if (existing->dominated) return true;  // clean up any stale flags
       if (dominates(new_label, existing, dir)) {
         existing->dominated = true;
+        return true;
       }
-    }
+      return false;
+    });
   }
 
   // ── SCC processing (unified for both directions) ──
@@ -1719,10 +1776,11 @@ class BucketGraph {
           for (const auto* fw : fw_bucket_labels_[fbi]) {
             if (fw->dominated) continue;
 
-            // For EmptyPack, bw cost is non-negative so we can prune early.
-            if constexpr (Pack::size == 0) {
-              if (fw->cost + arc_cost >= opts_.tolerance) continue;
-            }
+            // Prune if fw cost + arc cost already exceeds tolerance
+            // (bw labels have cost >= bw_c_best, and min_dom_cost_ bounds
+            // any additional resource penalty).
+            if (fw->cost + arc_cost + min_dom_cost_ >= opts_.tolerance)
+              continue;
 
             for (int bbi = bw_start; bbi < bw_end; ++bbi) {
               auto& bw_labels = opts_.symmetric
@@ -1880,6 +1938,7 @@ class BucketGraph {
   const double* reduced_costs_ = nullptr;
 
   std::vector<Bucket> buckets_;
+  std::vector<std::array<double, 2>> vertex_bucket_steps_;  // per-vertex steps (optional)
   BucketFixBitmap fixed_;
   std::vector<double> fw_completion_;  // forward cost-to-go (b → sink)
   std::vector<double> bw_completion_;  // backward cost-to-go (b → source)
@@ -1988,6 +2047,8 @@ class BucketGraph {
   int bw_labels_pruned_ = 0;
   double midpoint_ = 0.0;
   bool midpoint_initialized_ = false;
+
+  double min_dom_cost_ = 0.0;  // cached pack_.min_domination_cost()
 
   LabelPool<Pack> pool_;
 
