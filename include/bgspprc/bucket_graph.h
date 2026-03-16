@@ -515,21 +515,21 @@ class BucketGraph {
     int na = pv_.n_arcs;
 
     // CSR inverted index: arc_id → bucket indices that contain it
-    std::vector<int> arc_offset(na + 1, 0);
+    scratch_arc_offset_.assign(na + 1, 0);
     for (int bi = 0; bi < nb; ++bi) {
       auto& arcs = (dir == Direction::Forward) ? buckets_[bi].bucket_arcs
                                                : buckets_[bi].bw_bucket_arcs;
-      for (const auto& ba : arcs) arc_offset[ba.arc_id + 1]++;
+      for (const auto& ba : arcs) scratch_arc_offset_[ba.arc_id + 1]++;
     }
-    for (int a = 0; a < na; ++a) arc_offset[a + 1] += arc_offset[a];
-    std::vector<int> arc_bucket_data(arc_offset[na]);
+    for (int a = 0; a < na; ++a) scratch_arc_offset_[a + 1] += scratch_arc_offset_[a];
+    scratch_arc_bucket_data_.resize(scratch_arc_offset_[na]);
     {
-      std::vector<int> arc_pos(arc_offset.begin(), arc_offset.end() - 1);
+      std::vector<int> arc_pos(scratch_arc_offset_.begin(), scratch_arc_offset_.end() - 1);
       for (int bi = 0; bi < nb; ++bi) {
         auto& arcs = (dir == Direction::Forward) ? buckets_[bi].bucket_arcs
                                                  : buckets_[bi].bw_bucket_arcs;
         for (const auto& ba : arcs) {
-          arc_bucket_data[arc_pos[ba.arc_id]++] = bi;
+          scratch_arc_bucket_data_[arc_pos[ba.arc_id]++] = bi;
         }
       }
     }
@@ -558,8 +558,8 @@ class BucketGraph {
 
         for (int a : arcs_by_vertex[v]) {
           // CSR range of buckets that have arc a (sorted by bucket index)
-          const int* csr_begin = arc_bucket_data.data() + arc_offset[a];
-          const int* csr_end = arc_bucket_data.data() + arc_offset[a + 1];
+          const int* csr_begin = scratch_arc_bucket_data_.data() + scratch_arc_offset_[a];
+          const int* csr_end = scratch_arc_bucket_data_.data() + scratch_arc_offset_[a + 1];
 
           // Does bucket bi already have a bucket arc for arc a?
           if (std::binary_search(csr_begin, csr_end, bi)) continue;
@@ -1474,8 +1474,8 @@ class BucketGraph {
   // ── Label storage management ──
 
   void reset_label_storage(std::vector<std::vector<Label<Pack>*>>& labels) {
-    labels.clear();
     labels.resize(buckets_.size());
+    for (auto& v : labels) v.clear();
   }
 
   void reset_c_best() {
@@ -1689,12 +1689,13 @@ class BucketGraph {
 
     Symmetry sym = opts_.symmetric ? Symmetry::Symmetric : Symmetry::Asymmetric;
 
-    auto append_bw_subpath = [](Path& p, const Label<Pack>* bw) {
-      std::vector<int> bw_verts, bw_arcs;
-      bw->get_backward_subpath(bw_verts, bw_arcs);
-      for (std::size_t k = 1; k < bw_verts.size(); ++k)
-        p.vertices.push_back(bw_verts[k]);
-      p.arcs.insert(p.arcs.end(), bw_arcs.begin(), bw_arcs.end());
+    auto append_bw_subpath = [this](Path& p, const Label<Pack>* bw) {
+      scratch_path_verts_.clear();
+      scratch_path_arcs_.clear();
+      bw->get_backward_subpath(scratch_path_verts_, scratch_path_arcs_);
+      for (std::size_t k = 1; k < scratch_path_verts_.size(); ++k)
+        p.vertices.push_back(scratch_path_verts_[k]);
+      p.arcs.insert(p.arcs.end(), scratch_path_arcs_.begin(), scratch_path_arcs_.end());
     };
 
     // Across-arc concatenation: for each arc a = (i,j), join fw labels at i
@@ -1853,14 +1854,15 @@ class BucketGraph {
   /// Append the reversed forward path of a symmetric "bw" label.
   /// The bw label is actually a forward label; we reverse its path
   /// and look up opposite arcs.
-  void append_symmetric_bw_subpath(Path& p, const Label<Pack>* bw) const {
-    std::vector<int> bw_verts, bw_arcs;
-    bw->get_path(bw_verts, bw_arcs);
-    // bw_verts = [source, ..., j], we need j→...→source reversed
+  void append_symmetric_bw_subpath(Path& p, const Label<Pack>* bw) {
+    scratch_path_verts_.clear();
+    scratch_path_arcs_.clear();
+    bw->get_path(scratch_path_verts_, scratch_path_arcs_);
+    // scratch_path_verts_ = [source, ..., j], we need j→...→source reversed
     // j is already appended, so start from index size()-2
-    for (int k = static_cast<int>(bw_verts.size()) - 2; k >= 0; --k) {
-      p.vertices.push_back(bw_verts[k]);
-      int opp = find_arc(bw_verts[k + 1], bw_verts[k]);
+    for (int k = static_cast<int>(scratch_path_verts_.size()) - 2; k >= 0; --k) {
+      p.vertices.push_back(scratch_path_verts_[k]);
+      int opp = find_arc(scratch_path_verts_[k + 1], scratch_path_verts_[k]);
       assert(opp >= 0 && "symmetric mode requires opposite arc for every arc");
       p.arcs.push_back(opp);
     }
@@ -1989,10 +1991,14 @@ class BucketGraph {
 
   LabelPool<Pack> pool_;
 
-  // Scratch buffers — reused across elimination calls
+  // Scratch buffers — reused across calls
   std::vector<uint8_t> scratch_visited_;
   std::vector<uint64_t> scratch_b_bar_;
   std::vector<int> scratch_arc_local_;
+  std::vector<int> scratch_arc_offset_;        // obtain_jump_arcs CSR
+  std::vector<int> scratch_arc_bucket_data_;   // obtain_jump_arcs CSR
+  std::vector<int> scratch_path_verts_;        // path reconstruction
+  std::vector<int> scratch_path_arcs_;         // path reconstruction
 };
 
 }  // namespace bgspprc
