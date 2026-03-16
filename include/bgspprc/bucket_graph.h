@@ -315,6 +315,14 @@ class BucketGraph {
     fw_bucket_labels_.resize(buckets_.size());
     bw_bucket_labels_.resize(buckets_.size());
     fixed_.resize(static_cast<int>(buckets_.size()));
+
+    // Size scratch_visited_ to max buckets per vertex
+    int max_bv = 0;
+    for (int v = 0; v < pv_.n_vertices; ++v) {
+      auto [vs, ve] = vertex_bucket_range(v);
+      max_bv = std::max(max_bv, ve - vs);
+    }
+    scratch_visited_.resize(max_bv);
   }
 
   int vertex_bucket_index(int vertex, const std::array<double, 2>& q) const {
@@ -504,22 +512,36 @@ class BucketGraph {
     }
 
     int nb = static_cast<int>(buckets_.size());
+    int na = pv_.n_arcs;
 
-    // Build per-bucket sorted arc_id sets for fast "has bucket arc?" queries
-    std::vector<std::vector<int>> existing(nb);
+    // CSR inverted index: arc_id → bucket indices that contain it
+    scratch_arc_offset_.assign(na + 1, 0);
     for (int bi = 0; bi < nb; ++bi) {
       auto& arcs = (dir == Direction::Forward) ? buckets_[bi].bucket_arcs
                                                : buckets_[bi].bw_bucket_arcs;
-      for (const auto& ba : arcs) existing[bi].push_back(ba.arc_id);
-      std::sort(existing[bi].begin(), existing[bi].end());
+      for (const auto& ba : arcs) scratch_arc_offset_[ba.arc_id + 1]++;
+    }
+    for (int a = 0; a < na; ++a) scratch_arc_offset_[a + 1] += scratch_arc_offset_[a];
+    scratch_arc_bucket_data_.resize(scratch_arc_offset_[na]);
+    {
+      std::vector<int> arc_pos(scratch_arc_offset_.begin(), scratch_arc_offset_.end() - 1);
+      for (int bi = 0; bi < nb; ++bi) {
+        auto& arcs = (dir == Direction::Forward) ? buckets_[bi].bucket_arcs
+                                                 : buckets_[bi].bw_bucket_arcs;
+        for (const auto& ba : arcs) {
+          scratch_arc_bucket_data_[arc_pos[ba.arc_id]++] = bi;
+        }
+      }
     }
 
-    // Group arcs by source vertex to avoid scanning all arcs for each bucket
-    std::vector<std::vector<int>> arcs_by_vertex(pv_.n_vertices);
-    for (int a = 0; a < pv_.n_arcs; ++a) {
-      int src_v = (dir == Direction::Forward) ? pv_.arc_from[a] : pv_.arc_to[a];
-      arcs_by_vertex[src_v].push_back(a);
-    }
+    // Use precomputed adjacency lists
+    const auto& arcs_by_vertex =
+        (dir == Direction::Forward) ? adj_.outgoing : adj_.incoming;
+
+    struct Candidate {
+      int k0, k1, bi;
+    };
+    std::vector<Candidate> candidates;
 
     for (int v = 0; v < pv_.n_vertices; ++v) {
       if (arcs_by_vertex[v].empty()) continue;
@@ -535,20 +557,21 @@ class BucketGraph {
         int k1 = (bi - vstart) % nb_v[1];
 
         for (int a : arcs_by_vertex[v]) {
+          // CSR range of buckets that have arc a (sorted by bucket index)
+          const int* csr_begin = scratch_arc_bucket_data_.data() + scratch_arc_offset_[a];
+          const int* csr_end = scratch_arc_bucket_data_.data() + scratch_arc_offset_[a + 1];
+
           // Does bucket bi already have a bucket arc for arc a?
-          if (std::binary_search(existing[bi].begin(), existing[bi].end(), a))
-            continue;
+          if (std::binary_search(csr_begin, csr_end, bi)) continue;
 
           // Find B̄ = {b' at same vertex : b' ≻ b AND b' has arc a}
           // Forward: b' ≻ b means k' component-wise > k (jump UP)
           // Backward: b' ≻ b means k' component-wise < k (jump DOWN)
-          struct Candidate {
-            int k0, k1, bi;
-          };
-          std::vector<Candidate> candidates;
+          candidates.clear();
 
-          for (int bi2 = vstart; bi2 < vend; ++bi2) {
-            if (bi2 == bi) continue;
+          for (const int* p = csr_begin; p != csr_end; ++p) {
+            int bi2 = *p;
+            if (bi2 < vstart || bi2 >= vend || bi2 == bi) continue;
             int k0_2 = (bi2 - vstart) / nb_v[1];
             int k1_2 = (bi2 - vstart) % nb_v[1];
 
@@ -560,43 +583,37 @@ class BucketGraph {
             }
             if (!succeeds) continue;
 
-            if (!std::binary_search(existing[bi2].begin(), existing[bi2].end(),
-                                    a))
-              continue;
-
             candidates.push_back({k0_2, k1_2, bi2});
           }
 
-          // Filter to component-wise minimal (fw) / maximal (bw)
-          std::vector<Candidate> minimal;
-          for (auto& c : candidates) {
-            bool dominated = false;
-            for (auto& m : candidates) {
-              if (&c == &m) continue;
-              if (dir == Direction::Forward) {
-                // m dominates c if m is component-wise ≤ c
-                if (m.k0 <= c.k0 && m.k1 <= c.k1 &&
-                    (m.k0 < c.k0 || m.k1 < c.k1)) {
-                  dominated = true;
-                  break;
-                }
-              } else {
-                // m dominates c if m is component-wise ≥ c
-                if (m.k0 >= c.k0 && m.k1 >= c.k1 &&
-                    (m.k0 > c.k0 || m.k1 > c.k1)) {
-                  dominated = true;
-                  break;
-                }
+          // Filter to Pareto front: component-wise minimal (fw) / maximal (bw)
+          // O(n log n) sort+sweep instead of O(n²) pairwise check
+          if (dir == Direction::Forward) {
+            std::sort(candidates.begin(), candidates.end(),
+                      [](const auto& lhs, const auto& rhs) {
+                        return lhs.k0 < rhs.k0 ||
+                               (lhs.k0 == rhs.k0 && lhs.k1 < rhs.k1);
+                      });
+            int min_k1 = std::numeric_limits<int>::max();
+            for (auto& c : candidates) {
+              if (c.k1 < min_k1) {
+                buckets_[bi].jump_arcs.push_back({c.bi, a});
+                min_k1 = c.k1;
               }
             }
-            if (!dominated) minimal.push_back(c);
-          }
-
-          for (auto& m : minimal) {
-            if (dir == Direction::Forward)
-              buckets_[bi].jump_arcs.push_back({m.bi, a});
-            else
-              buckets_[bi].bw_jump_arcs.push_back({m.bi, a});
+          } else {
+            std::sort(candidates.begin(), candidates.end(),
+                      [](const auto& lhs, const auto& rhs) {
+                        return lhs.k0 > rhs.k0 ||
+                               (lhs.k0 == rhs.k0 && lhs.k1 > rhs.k1);
+                      });
+            int max_k1 = std::numeric_limits<int>::min();
+            for (auto& c : candidates) {
+              if (c.k1 > max_k1) {
+                buckets_[bi].bw_jump_arcs.push_back({c.bi, a});
+                max_k1 = c.k1;
+              }
+            }
           }
         }
       }
@@ -611,21 +628,14 @@ class BucketGraph {
     int new_v =
         (dir == Direction::Forward) ? pv_.arc_to[arc_id] : pv_.arc_from[arc_id];
 
-    auto* L = pool_.allocate();
-    L->vertex = new_v;
-    L->dir = dir;
-    L->parent = const_cast<Label<Pack>*>(parent);
-    L->parent_arc = arc_id;
-
-    // Cost
-    double arc_cost =
+    // Cost — compute on stack before allocating
+    double extra_arc_cost =
         reduced_costs_ ? reduced_costs_[arc_id] : pv_.arc_base_cost[arc_id];
-    L->cost = parent->cost + arc_cost;
-    L->real_cost = parent->real_cost + pv_.arc_base_cost[arc_id];
+    double new_cost = parent->cost + extra_arc_cost;
+    double new_real_cost = parent->real_cost + pv_.arc_base_cost[arc_id];
 
     // Main resource update — modified for jump arcs (paper §4.1)
-    // For jump arcs: q^L ← max{q^{L'}, l̃_{b^jump}} (fw)
-    //            or: q^L ← min{q^{L'}, ũ_{b^jump}} (bw)
+    std::array<double, 2> new_q{};
     for (int r = 0; r < n_main_; ++r) {
       double d = pv_.arc_resource[r][arc_id];
       double q_base = parent->q[r];
@@ -636,15 +646,16 @@ class BucketGraph {
           q_base = std::min(q_base, (*q_boost)[r]);
       }
       if (dir == Direction::Forward) {
-        L->q[r] = std::max(q_base + d, pv_.vertex_lb[r][new_v]);
-        if (L->q[r] > pv_.vertex_ub[r][new_v]) return nullptr;
+        new_q[r] = std::max(q_base + d, pv_.vertex_lb[r][new_v]);
+        if (new_q[r] > pv_.vertex_ub[r][new_v]) return nullptr;
       } else {
-        L->q[r] = std::min(q_base - d, pv_.vertex_ub[r][new_v]);
-        if (L->q[r] < pv_.vertex_lb[r][new_v]) return nullptr;
+        new_q[r] = std::min(q_base - d, pv_.vertex_ub[r][new_v]);
+        if (new_q[r] < pv_.vertex_lb[r][new_v]) return nullptr;
       }
     }
 
     // Meta-Solver resource extension: extendAlongArc + extendToVertex
+    typename Pack::StatesTuple new_resource_states{};
     if constexpr (Pack::size > 0) {
       auto [arc_states, arc_cost] =
           pack_.extend_along_arc(dir, parent->resource_states, arc_id);
@@ -652,12 +663,25 @@ class BucketGraph {
       auto [vtx_states, vtx_cost] =
           pack_.extend_to_vertex(dir, arc_states, new_v);
       if (vtx_cost >= INF) return nullptr;
-      L->resource_states = vtx_states;
-      L->cost += arc_cost + vtx_cost;
+      new_resource_states = vtx_states;
+      new_cost += arc_cost + vtx_cost;
     }
 
-    // Compute correct target bucket
-    L->bucket = vertex_bucket_index(new_v, L->q);
+    // All checks passed — allocate and fill
+    auto* L = pool_.allocate();
+    L->vertex = new_v;
+    L->dir = dir;
+    L->parent = const_cast<Label<Pack>*>(parent);
+    L->parent_arc = arc_id;
+    L->cost = new_cost;
+    L->real_cost = new_real_cost;
+    L->q = new_q;
+    L->extended = false;
+    L->dominated = false;
+    if constexpr (Pack::size > 0) {
+      L->resource_states = new_resource_states;
+    }
+    L->bucket = vertex_bucket_index(new_v, new_q);
     return L;
   }
 
@@ -680,6 +704,10 @@ class BucketGraph {
 
     // Heuristic stages: cost-only dominance (ignore ng/R1C states)
     if (opts_.stage == Stage::Heuristic1 || opts_.stage == Stage::Heuristic2) {
+      return L1->cost <= L2->cost + EPS;
+    }
+
+    if constexpr (Pack::size == 0) {
       return L1->cost <= L2->cost + EPS;
     }
 
@@ -719,6 +747,9 @@ class BucketGraph {
         for (int i1 = 0; i1 <= k1; ++i1) {
           int other = start + i0 * nb[1] + i1;
           if (other == bi) continue;
+          if constexpr (Pack::size == 0) {
+            if (buckets_[other].c_best > L->cost + EPS) continue;
+          }
           for (const auto* existing : labels[other]) {
             if (existing->dominated) continue;
             if (dominates(existing, L, dir)) return true;
@@ -731,6 +762,9 @@ class BucketGraph {
         for (int i1 = k1; i1 < nb[1]; ++i1) {
           int other = start + i0 * nb[1] + i1;
           if (other == bi) continue;
+          if constexpr (Pack::size == 0) {
+            if (buckets_[other].bw_c_best > L->cost + EPS) continue;
+          }
           for (const auto* existing : labels[other]) {
             if (existing->dominated) continue;
             if (dominates(existing, L, dir)) return true;
@@ -1191,14 +1225,14 @@ class BucketGraph {
   /// vertex-local offset (bi - vstart), not global bucket index.
   void update_buckets_set(
       double theta, const Label<Pack>* L, int arc_id,
-      std::vector<uint64_t>&
+      std::span<uint64_t>
           b_bar,      // per opposite-bucket bitset: found compatible?
       int b_tilde,    // current opposite-sense bucket to check
       Direction dir,  // direction of L (fw → checking bw buckets)
-      int vstart, int n_buckets_v, std::vector<bool>& visited) const {
+      int vstart, int n_buckets_v, uint8_t* visited) const {
     int local = b_tilde - vstart;
     if (visited[local]) return;
-    visited[local] = true;
+    visited[local] = 1;
 
     // Cost bound prune: c̄^L + c̄_{arc} + c̃^best_{b̃} ≥ θ
     double arc_cost =
@@ -1260,7 +1294,7 @@ class BucketGraph {
   }
 
   /// Check if a bucket arc should be eliminated (no θ-compatible pair found).
-  bool should_eliminate_arc(int arr_bi, const std::vector<uint64_t>& b_bar,
+  bool should_eliminate_arc(int arr_bi, std::span<const uint64_t> b_bar,
                             Direction dir) const {
     int arr_v = buckets_[arr_bi].vertex;
     auto [arr_vstart, arr_vend] = vertex_bucket_range(arr_v);
@@ -1283,7 +1317,7 @@ class BucketGraph {
   }
 
   /// Process a single bucket during label-based elimination.
-  /// GetBBar: callable(int arc_id) → std::vector<uint64_t>&
+  /// GetBBar: callable(int arc_id) → std::span<uint64_t>
   template <typename GetBBar>
   void process_bucket_elimination(int bi, Direction dir, double theta,
                                   GetBBar&& get_bbar) {
@@ -1298,9 +1332,9 @@ class BucketGraph {
       int arr_v = buckets_[arr_bi].vertex;
       auto [vs, ve] = vertex_bucket_range(arr_v);
       int nbv = ve - vs;
-      std::vector<bool> visited(nbv, false);
+      std::fill_n(scratch_visited_.data(), nbv, uint8_t(0));
       update_buckets_set(theta, L, arc_id, get_bbar(arc_id), arr_bi, dir, vs,
-                         nbv, visited);
+                         nbv, scratch_visited_.data());
     };
 
     // Process jump arcs: UpdateBucketsSet for each (L, ψ)
@@ -1350,28 +1384,45 @@ class BucketGraph {
     int nb = static_cast<int>(buckets_.size());
     int n_words = (nb + 63) / 64;
 
-    // Precompute per-vertex arc lists and arc_id → local index mapping
-    std::vector<std::vector<int>> arcs_by_vertex(pv_.n_vertices);
-    std::vector<int> arc_local(pv_.n_arcs, -1);
-    for (int a = 0; a < pv_.n_arcs; ++a) {
-      int src = (dir == Direction::Forward) ? pv_.arc_from[a] : pv_.arc_to[a];
-      arc_local[a] = static_cast<int>(arcs_by_vertex[src].size());
-      arcs_by_vertex[src].push_back(a);
+    // Use adjacency lists and compute arc_id → local index mapping
+    const auto& arcs_by_vertex =
+        (dir == Direction::Forward) ? adj_.outgoing : adj_.incoming;
+    scratch_arc_local_.resize(pv_.n_arcs);
+    for (int v = 0; v < pv_.n_vertices; ++v) {
+      for (int i = 0; i < static_cast<int>(arcs_by_vertex[v].size()); ++i)
+        scratch_arc_local_[arcs_by_vertex[v][i]] = i;
     }
 
+    // Reusable flat buffer for B̄ bitsets — sized to max across all vertices
+    int max_flat_size = 0;
     for (int v = 0; v < pv_.n_vertices; ++v) {
-      auto& arcs_from_v = arcs_by_vertex[v];
+      const auto& arcs_v = arcs_by_vertex[v];
+      if (arcs_v.empty()) continue;
+      auto [vs, ve] = vertex_bucket_range(v);
+      int n_bv = ve - vs;
+      int entries = static_cast<int>(arcs_v.size()) * n_bv;
+      max_flat_size = std::max(max_flat_size, entries * n_words);
+    }
+    if (static_cast<int>(scratch_b_bar_.size()) < max_flat_size)
+      scratch_b_bar_.resize(max_flat_size);
+
+    for (int v = 0; v < pv_.n_vertices; ++v) {
+      const auto& arcs_from_v = arcs_by_vertex[v];
       if (arcs_from_v.empty()) continue;
 
       auto [vstart, vend] = vertex_bucket_range(v);
       auto& nb_v = vertex_n_buckets_[v];
       int n_bv = vend - vstart;
 
-      // Per-(local_arc, local_bucket) B̄ bitsets
+      // Per-(local_arc, local_bucket) B̄ bitsets — flat, reused
       int n_arcs_v = static_cast<int>(arcs_from_v.size());
       int n_entries = n_arcs_v * n_bv;
-      std::vector<std::vector<uint64_t>> b_bar_local(
-          n_entries, std::vector<uint64_t>(n_words, 0));
+      int flat_size = n_entries * n_words;
+      std::fill_n(scratch_b_bar_.data(), flat_size, uint64_t(0));
+      auto b_bar = [&](int idx) -> std::span<uint64_t> {
+        return {scratch_b_bar_.data() + idx * n_words,
+                static_cast<size_t>(n_words)};
+      };
 
       // Process a single bucket: propagate Φ, then run elimination
       auto process = [&](int k0, int k1) {
@@ -1381,31 +1432,31 @@ class BucketGraph {
 
         // Propagate B̄ from Φ_b predecessors (source-sense)
         for (int lai = 0; lai < n_arcs_v; ++lai) {
-          auto& cur = b_bar_local[lai * n_bv + local_bi];
+          auto cur = b_bar(lai * n_bv + local_bi);
           if (dir == Direction::Forward) {
             if (k0 > 0) {
-              auto& pred = b_bar_local[lai * n_bv + ((k0 - 1) * nb_v[1] + k1)];
+              auto pred = b_bar(lai * n_bv + ((k0 - 1) * nb_v[1] + k1));
               for (int w = 0; w < n_words; ++w) cur[w] |= pred[w];
             }
             if (k1 > 0) {
-              auto& pred = b_bar_local[lai * n_bv + (k0 * nb_v[1] + (k1 - 1))];
+              auto pred = b_bar(lai * n_bv + (k0 * nb_v[1] + (k1 - 1)));
               for (int w = 0; w < n_words; ++w) cur[w] |= pred[w];
             }
           } else {
             if (k0 + 1 < nb_v[0]) {
-              auto& pred = b_bar_local[lai * n_bv + ((k0 + 1) * nb_v[1] + k1)];
+              auto pred = b_bar(lai * n_bv + ((k0 + 1) * nb_v[1] + k1));
               for (int w = 0; w < n_words; ++w) cur[w] |= pred[w];
             }
             if (k1 + 1 < nb_v[1]) {
-              auto& pred = b_bar_local[lai * n_bv + (k0 * nb_v[1] + (k1 + 1))];
+              auto pred = b_bar(lai * n_bv + (k0 * nb_v[1] + (k1 + 1)));
               for (int w = 0; w < n_words; ++w) cur[w] |= pred[w];
             }
           }
         }
 
         // Process arcs at this bucket using per-bucket B̄
-        auto get_bbar = [&](int arc_id) -> std::vector<uint64_t>& {
-          return b_bar_local[arc_local[arc_id] * n_bv + local_bi];
+        auto get_bbar = [&](int arc_id) -> std::span<uint64_t> {
+          return b_bar(scratch_arc_local_[arc_id] * n_bv + local_bi);
         };
         process_bucket_elimination(bi, dir, theta, get_bbar);
       };
@@ -1423,8 +1474,8 @@ class BucketGraph {
   // ── Label storage management ──
 
   void reset_label_storage(std::vector<std::vector<Label<Pack>*>>& labels) {
-    labels.clear();
     labels.resize(buckets_.size());
+    for (auto& v : labels) v.clear();
   }
 
   void reset_c_best() {
@@ -1439,6 +1490,10 @@ class BucketGraph {
     L->dir = dir;
     L->cost = 0.0;
     L->real_cost = 0.0;
+    L->parent = nullptr;
+    L->parent_arc = -1;
+    L->extended = false;
+    L->dominated = false;
 
     if (dir == Direction::Forward) {
       L->vertex = pv_.source;
@@ -1632,34 +1687,15 @@ class BucketGraph {
   std::vector<Path> concatenate_and_extract() {
     std::vector<Path> paths;
 
-    // Pre-collect non-dominated labels by vertex (avoids repeated scans).
-    using LabelList = std::vector<const Label<Pack>*>;
-    std::vector<LabelList> fw_by_vertex(pv_.n_vertices);
-    std::vector<LabelList> bw_by_vertex(pv_.n_vertices);
-
-    for (int v = 0; v < pv_.n_vertices; ++v) {
-      if (v == pv_.source || v == pv_.sink) continue;
-      auto [start, end] = vertex_bucket_range(v);
-      for (int bi = start; bi < end; ++bi) {
-        for (const auto* L : fw_bucket_labels_[bi])
-          if (!L->dominated) fw_by_vertex[v].push_back(L);
-        if (!opts_.symmetric) {
-          for (const auto* L : bw_bucket_labels_[bi])
-            if (!L->dominated) bw_by_vertex[v].push_back(L);
-        }
-      }
-    }
-
-    // In symmetric mode, "bw" labels are fw labels reinterpreted
-    auto& bw_source = opts_.symmetric ? fw_by_vertex : bw_by_vertex;
     Symmetry sym = opts_.symmetric ? Symmetry::Symmetric : Symmetry::Asymmetric;
 
-    auto append_bw_subpath = [](Path& p, const Label<Pack>* bw) {
-      std::vector<int> bw_verts, bw_arcs;
-      bw->get_backward_subpath(bw_verts, bw_arcs);
-      for (std::size_t k = 1; k < bw_verts.size(); ++k)
-        p.vertices.push_back(bw_verts[k]);
-      p.arcs.insert(p.arcs.end(), bw_arcs.begin(), bw_arcs.end());
+    auto append_bw_subpath = [this](Path& p, const Label<Pack>* bw) {
+      scratch_path_verts_.clear();
+      scratch_path_arcs_.clear();
+      bw->get_backward_subpath(scratch_path_verts_, scratch_path_arcs_);
+      for (std::size_t k = 1; k < scratch_path_verts_.size(); ++k)
+        p.vertices.push_back(scratch_path_verts_[k]);
+      p.arcs.insert(p.arcs.end(), scratch_path_arcs_.begin(), scratch_path_arcs_.end());
     };
 
     // Across-arc concatenation: for each arc a = (i,j), join fw labels at i
@@ -1671,60 +1707,76 @@ class BucketGraph {
         int j = pv_.arc_to[a];
         if (i == pv_.source || i == pv_.sink) continue;
         if (j == pv_.source || j == pv_.sink) continue;
-        if (fw_by_vertex[i].empty() || bw_source[j].empty()) continue;
 
         double arc_cost =
             reduced_costs_ ? reduced_costs_[a] : pv_.arc_base_cost[a];
         double arc_real_cost = pv_.arc_base_cost[a];
 
-        for (const auto* fw : fw_by_vertex[i]) {
-          for (const auto* bw : bw_source[j]) {
-            bool feasible = true;
-            for (int r = 0; r < n_main_; ++r) {
-              double fw_after_arc = fw->q[r] + pv_.arc_resource[r][a];
-              fw_after_arc = std::max(fw_after_arc, pv_.vertex_lb[r][j]);
-              // In symmetric mode, bw->q is actually a forward q;
-              // the backward equivalent is l_r + u_r - q_fw_r
-              double q_bw =
-                  opts_.symmetric
-                      ? (pv_.vertex_lb[r][j] + pv_.vertex_ub[r][j] - bw->q[r])
-                      : bw->q[r];
-              if (fw_after_arc > q_bw + EPS) {
-                feasible = false;
-                break;
-              }
-            }
-            if (!feasible) continue;
+        auto [fw_start, fw_end] = vertex_bucket_range(i);
+        auto [bw_start, bw_end] = vertex_bucket_range(j);
 
-            double total_cost = fw->cost + bw->cost + arc_cost;
-            double total_real_cost =
-                fw->real_cost + bw->real_cost + arc_real_cost;
+        for (int fbi = fw_start; fbi < fw_end; ++fbi) {
+          for (const auto* fw : fw_bucket_labels_[fbi]) {
+            if (fw->dominated) continue;
 
-            if constexpr (Pack::size > 0) {
-              auto [ext_states, ext_cost] = pack_.extend_along_arc(
-                  Direction::Forward, fw->resource_states, a);
-              if (ext_cost >= INF) continue;
-              total_cost += ext_cost;
-
-              double cc = pack_.concatenation_cost(sym, j, ext_states,
-                                                   bw->resource_states);
-              if (cc >= INF) continue;
-              total_cost += cc;
+            // For EmptyPack, bw cost is non-negative so we can prune early.
+            if constexpr (Pack::size == 0) {
+              if (fw->cost + arc_cost >= opts_.tolerance) continue;
             }
 
-            if (total_cost < opts_.tolerance) {
-              Path p;
-              fw->get_path(p.vertices, p.arcs);
-              p.arcs.push_back(a);
-              p.vertices.push_back(j);
-              if (opts_.symmetric) {
-                append_symmetric_bw_subpath(p, bw);
-              } else {
-                append_bw_subpath(p, bw);
+            for (int bbi = bw_start; bbi < bw_end; ++bbi) {
+              auto& bw_labels = opts_.symmetric
+                  ? fw_bucket_labels_[bbi] : bw_bucket_labels_[bbi];
+              for (const auto* bw : bw_labels) {
+                if (bw->dominated) continue;
+                bool feasible = true;
+                for (int r = 0; r < n_main_; ++r) {
+                  double fw_after_arc = fw->q[r] + pv_.arc_resource[r][a];
+                  fw_after_arc =
+                      std::max(fw_after_arc, pv_.vertex_lb[r][j]);
+                  double q_bw =
+                      opts_.symmetric
+                          ? (pv_.vertex_lb[r][j] + pv_.vertex_ub[r][j] -
+                             bw->q[r])
+                          : bw->q[r];
+                  if (fw_after_arc > q_bw + EPS) {
+                    feasible = false;
+                    break;
+                  }
+                }
+                if (!feasible) continue;
+
+                double total_cost = fw->cost + bw->cost + arc_cost;
+                double total_real_cost =
+                    fw->real_cost + bw->real_cost + arc_real_cost;
+
+                if constexpr (Pack::size > 0) {
+                  auto [ext_states, ext_cost] = pack_.extend_along_arc(
+                      Direction::Forward, fw->resource_states, a);
+                  if (ext_cost >= INF) continue;
+                  total_cost += ext_cost;
+
+                  double cc = pack_.concatenation_cost(
+                      sym, j, ext_states, bw->resource_states);
+                  if (cc >= INF) continue;
+                  total_cost += cc;
+                }
+
+                if (total_cost < opts_.tolerance) {
+                  Path p;
+                  fw->get_path(p.vertices, p.arcs);
+                  p.arcs.push_back(a);
+                  p.vertices.push_back(j);
+                  if (opts_.symmetric) {
+                    append_symmetric_bw_subpath(p, bw);
+                  } else {
+                    append_bw_subpath(p, bw);
+                  }
+                  p.reduced_cost = total_cost;
+                  p.original_cost = total_real_cost;
+                  paths.push_back(std::move(p));
+                }
               }
-              p.reduced_cost = total_cost;
-              p.original_cost = total_real_cost;
-              paths.push_back(std::move(p));
             }
           }
         }
@@ -1802,14 +1854,15 @@ class BucketGraph {
   /// Append the reversed forward path of a symmetric "bw" label.
   /// The bw label is actually a forward label; we reverse its path
   /// and look up opposite arcs.
-  void append_symmetric_bw_subpath(Path& p, const Label<Pack>* bw) const {
-    std::vector<int> bw_verts, bw_arcs;
-    bw->get_path(bw_verts, bw_arcs);
-    // bw_verts = [source, ..., j], we need j→...→source reversed
+  void append_symmetric_bw_subpath(Path& p, const Label<Pack>* bw) {
+    scratch_path_verts_.clear();
+    scratch_path_arcs_.clear();
+    bw->get_path(scratch_path_verts_, scratch_path_arcs_);
+    // scratch_path_verts_ = [source, ..., j], we need j→...→source reversed
     // j is already appended, so start from index size()-2
-    for (int k = static_cast<int>(bw_verts.size()) - 2; k >= 0; --k) {
-      p.vertices.push_back(bw_verts[k]);
-      int opp = find_arc(bw_verts[k + 1], bw_verts[k]);
+    for (int k = static_cast<int>(scratch_path_verts_.size()) - 2; k >= 0; --k) {
+      p.vertices.push_back(scratch_path_verts_[k]);
+      int opp = find_arc(scratch_path_verts_[k + 1], scratch_path_verts_[k]);
       assert(opp >= 0 && "symmetric mode requires opposite arc for every arc");
       p.arcs.push_back(opp);
     }
@@ -1911,6 +1964,8 @@ class BucketGraph {
       L->q = wl.q;
       L->parent = nullptr;  // warm labels have no parent chain
       L->parent_arc = wl.parent_arc;
+      L->extended = false;
+      L->dominated = false;
       L->resource_states = wl.resource_states;
 
       int bi = vertex_bucket_index(wl.vertex, wl.q);
@@ -1935,6 +1990,15 @@ class BucketGraph {
   bool midpoint_initialized_ = false;
 
   LabelPool<Pack> pool_;
+
+  // Scratch buffers — reused across calls
+  std::vector<uint8_t> scratch_visited_;
+  std::vector<uint64_t> scratch_b_bar_;
+  std::vector<int> scratch_arc_local_;
+  std::vector<int> scratch_arc_offset_;        // obtain_jump_arcs CSR
+  std::vector<int> scratch_arc_bucket_data_;   // obtain_jump_arcs CSR
+  std::vector<int> scratch_path_verts_;        // path reconstruction
+  std::vector<int> scratch_path_arcs_;         // path reconstruction
 };
 
 }  // namespace bgspprc
