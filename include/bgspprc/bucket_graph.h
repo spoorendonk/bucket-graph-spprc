@@ -538,6 +538,11 @@ class BucketGraph {
     const auto& arcs_by_vertex =
         (dir == Direction::Forward) ? adj_.outgoing : adj_.incoming;
 
+    struct Candidate {
+      int k0, k1, bi;
+    };
+    std::vector<Candidate> candidates;
+
     for (int v = 0; v < pv_.n_vertices; ++v) {
       if (arcs_by_vertex[v].empty()) continue;
 
@@ -545,11 +550,6 @@ class BucketGraph {
       auto& nb_v = vertex_n_buckets_[v];
       int n_buckets_v = vend - vstart;
       if (n_buckets_v <= 1) continue;
-
-      struct Candidate {
-        int k0, k1, bi;
-      };
-      std::vector<Candidate> candidates;
 
       for (int bi = vstart; bi < vend; ++bi) {
         if (fixed_.test(bi)) continue;
