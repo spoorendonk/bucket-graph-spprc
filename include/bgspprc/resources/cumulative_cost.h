@@ -74,6 +74,11 @@ struct CumulativeCostResource {
     }
   }
 
+  /// Conservative lower bound on domination_cost across all state pairs.
+  /// The actual minimum can be negative (e.g. s1.S < s2.S), but 0 is a safe
+  /// bound for c_best pruning.
+  double min_domination_cost() const { return 0.0; }
+
   /// Cross-product: T_fw * W_bw.
   double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State s_fw,
                             State s_bw) const {
