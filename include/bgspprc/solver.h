@@ -119,6 +119,17 @@ class Solver {
     return bg_.bucket_steps();
   }
 
+  /// Set per-vertex bucket step sizes.
+  void set_vertex_bucket_steps(std::vector<std::array<double, 2>> steps) {
+    bg_.set_vertex_bucket_steps(std::move(steps));
+  }
+
+  /// Compute per-vertex steps from minimum inbound arc resource consumption.
+  std::vector<std::array<double, 2>> compute_min_inbound_arc_resource(
+      int max_buckets = 200) const {
+    return bg_.compute_min_inbound_arc_resource(max_buckets);
+  }
+
  private:
   void update_stage(const std::vector<Path>& paths) {
     ++iteration_;

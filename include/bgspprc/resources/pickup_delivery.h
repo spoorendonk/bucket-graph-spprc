@@ -84,6 +84,9 @@ struct PickupDeliveryResource {
     }
   }
 
+  /// Lower bound on domination_cost: 0 (returns 0 or INF).
+  double min_domination_cost() const { return 0.0; }
+
   /// Concatenation: INF if P_fw > P_bar_bw or D_bar_bw > D_fw, else 0.
   double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State s_fw,
                             State s_bw) const {
