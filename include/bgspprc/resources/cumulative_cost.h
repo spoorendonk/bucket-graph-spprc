@@ -74,8 +74,9 @@ struct CumulativeCostResource {
     }
   }
 
-  /// Lower bound on domination_cost: 0 (cost_gap and time/weight gaps are >= 0
-  /// when dominator has lower cost and resources).
+  /// Conservative lower bound on domination_cost across all state pairs.
+  /// The actual minimum can be negative (e.g. s1.S < s2.S), but 0 is a safe
+  /// bound for c_best pruning.
   double min_domination_cost() const { return 0.0; }
 
   /// Cross-product: T_fw * W_bw.
