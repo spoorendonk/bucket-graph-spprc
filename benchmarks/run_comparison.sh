@@ -82,7 +82,7 @@ for ng in "${NG_GROUPS[@]}"; do
     # Run solver
     status="OK"
     time_s=""
-    if output=$(timeout "${TIMEOUT}s" "$SOLVE" "$file" 2>&1); then
+    if output=$(timeout "${TIMEOUT}s" "$SOLVE" --ng "$ng" "$file" 2>&1); then
       # Parse time from "...X.Xms" on first line
       line="$(echo "$output" | head -1)"
       if [[ "$line" =~ ([0-9.]+)ms ]]; then

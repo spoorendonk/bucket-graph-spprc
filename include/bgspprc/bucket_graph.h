@@ -164,6 +164,7 @@ class BucketGraph {
   /// during build. Size must equal n_vertices.
   void set_vertex_bucket_steps(
       std::vector<std::array<double, 2>> steps) {
+    assert(static_cast<int>(steps.size()) == pv_.n_vertices);
     vertex_bucket_steps_ = std::move(steps);
   }
 
@@ -1577,6 +1578,8 @@ class BucketGraph {
     pool_.clear();
     reset_label_storage(fw_bucket_labels_);
     reset_c_best();
+    if constexpr (Pack::size > 0)
+      min_dom_cost_ = pack_.min_domination_cost();
 
     total_enum_labels_ = 0;
     enum_complete_ = true;
@@ -1655,6 +1658,8 @@ class BucketGraph {
     reset_label_storage(fw_bucket_labels_);
     reset_label_storage(bw_bucket_labels_);
     reset_c_best();
+    if constexpr (Pack::size > 0)
+      min_dom_cost_ = pack_.min_domination_cost();
 
     fw_label_count_ = 0;
     bw_label_count_ = 0;
@@ -1776,11 +1781,11 @@ class BucketGraph {
           for (const auto* fw : fw_bucket_labels_[fbi]) {
             if (fw->dominated) continue;
 
-            // Prune if fw cost + arc cost already exceeds tolerance
-            // (bw labels have cost >= bw_c_best, and min_dom_cost_ bounds
-            // any additional resource penalty).
-            if (fw->cost + arc_cost + min_dom_cost_ >= opts_.tolerance)
-              continue;
+            // For EmptyPack, bw costs and resource adjustments are
+            // non-negative, so fw + arc alone exceeding tolerance is sufficient.
+            if constexpr (Pack::size == 0) {
+              if (fw->cost + arc_cost >= opts_.tolerance) continue;
+            }
 
             for (int bbi = bw_start; bbi < bw_end; ++bbi) {
               auto& bw_labels = opts_.symmetric
