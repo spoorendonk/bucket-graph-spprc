@@ -33,7 +33,12 @@ if(BGSPPRC_BUILD_TESTS)
     enable_testing()
 
     # Compiler flags for project targets only (not propagated to consumers)
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag(-march=native BGSPPRC_HAS_MARCH_NATIVE)
     add_compile_options(-Wall -Wextra -Wpedantic -O2)
+    if(BGSPPRC_HAS_MARCH_NATIVE)
+        add_compile_options(-march=native)
+    endif()
 
     add_executable(test_runner
         tests/test_main.cpp
