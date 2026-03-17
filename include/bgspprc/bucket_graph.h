@@ -15,6 +15,11 @@
 #include <unordered_map>
 #include <vector>
 
+#if defined(__AVX2__) && __has_include(<experimental/simd>)
+#include <experimental/simd>
+#define BGSPPRC_HAS_SIMD 1
+#endif
+
 #include "arc.h"
 #include "bucket.h"
 #include "label.h"
@@ -783,13 +788,69 @@ class BucketGraph {
     return dom_cost <= L2->cost + EPS;
   }
 
-  bool dominated_in_bucket(
+  static void insert_sorted(std::vector<Label<Pack>*>& bucket,
+                             Label<Pack>* L) {
+    auto pos = std::lower_bound(
+        bucket.begin(), bucket.end(), L,
+        [](const Label<Pack>* a, const Label<Pack>* b) {
+          return a->cost < b->cost;
+        });
+    bucket.insert(pos, L);
+  }
+
+#ifdef BGSPPRC_HAS_SIMD
+  bool dominated_in_bucket_simd(
       const Label<Pack>* L, int bi, Direction dir,
       std::vector<std::vector<Label<Pack>*>>& labels) const {
-    for (const auto* existing : labels[bi]) {
+    namespace stdx = std::experimental;
+    using simd_d = stdx::native_simd<double>;
+    constexpr std::size_t W = simd_d::size();
+
+    auto& bucket = labels[bi];
+    const std::size_t n = bucket.size();
+    const double threshold = L->cost + EPS;
+
+    std::size_t i = 0;
+    for (; i + W <= n; i += W) {
+      alignas(64) std::array<double, W> costs;
+      for (std::size_t j = 0; j < W; ++j) costs[j] = bucket[i + j]->cost;
+
+      simd_d cost_vec(costs.data(), stdx::overaligned_tag<64>{});
+      auto mask = (cost_vec + min_dom_cost_) <= threshold;
+      if (!stdx::any_of(mask)) return false;  // sorted: all remaining fail too
+
+      for (std::size_t j = 0; j < W; ++j) {
+        if (!mask[j]) continue;
+        auto* existing = bucket[i + j];
+        if (existing->dominated) continue;
+        if (dominates(existing, L, dir)) return true;
+      }
+    }
+
+    for (; i < n; ++i) {
+      auto* existing = bucket[i];
+      if (existing->dominated) continue;
+      if (existing->cost + min_dom_cost_ > threshold) break;
       if (dominates(existing, L, dir)) return true;
     }
     return false;
+  }
+#endif
+
+  bool dominated_in_bucket(
+      const Label<Pack>* L, int bi, Direction dir,
+      std::vector<std::vector<Label<Pack>*>>& labels) const {
+#ifdef BGSPPRC_HAS_SIMD
+    return dominated_in_bucket_simd(L, bi, dir, labels);
+#else
+    const double threshold = L->cost + EPS;
+    for (const auto* existing : labels[bi]) {
+      if (existing->dominated) continue;
+      if (existing->cost + min_dom_cost_ > threshold) break;  // sorted
+      if (dominates(existing, L, dir)) return true;
+    }
+    return false;
+#endif
   }
 
   bool dominated_in_adjacent_buckets(
@@ -801,6 +862,7 @@ class BucketGraph {
 
     int k0 = (bi - start) / nb[1];
     int k1 = (bi - start) % nb[1];
+    const double threshold = L->cost + EPS;
 
     if (dir == Direction::Forward) {
       // Check component-wise smaller buckets (lower q = better)
@@ -808,8 +870,10 @@ class BucketGraph {
         for (int i1 = 0; i1 <= k1; ++i1) {
           int other = start + i0 * nb[1] + i1;
           if (other == bi) continue;
-          if (buckets_[other].c_best + min_dom_cost_ > L->cost + EPS) continue;
+          if (buckets_[other].c_best + min_dom_cost_ > threshold) continue;
           for (const auto* existing : labels[other]) {
+            if (existing->dominated) continue;
+            if (existing->cost + min_dom_cost_ > threshold) break;  // sorted
             if (dominates(existing, L, dir)) return true;
           }
         }
@@ -820,9 +884,11 @@ class BucketGraph {
         for (int i1 = k1; i1 < nb[1]; ++i1) {
           int other = start + i0 * nb[1] + i1;
           if (other == bi) continue;
-          if (buckets_[other].bw_c_best + min_dom_cost_ > L->cost + EPS)
+          if (buckets_[other].bw_c_best + min_dom_cost_ > threshold)
             continue;
           for (const auto* existing : labels[other]) {
+            if (existing->dominated) continue;
+            if (existing->cost + min_dom_cost_ > threshold) break;  // sorted
             if (dominates(existing, L, dir)) return true;
           }
         }
@@ -833,14 +899,11 @@ class BucketGraph {
 
   void remove_dominated(const Label<Pack>* new_label, int bi, Direction dir,
                         std::vector<std::vector<Label<Pack>*>>& labels) {
-    std::erase_if(labels[bi], [&](Label<Pack>* existing) {
-      if (existing->dominated) return true;  // clean up any stale flags
-      if (dominates(new_label, existing, dir)) {
+    for (auto* existing : labels[bi]) {
+      if (!existing->dominated && dominates(new_label, existing, dir)) {
         existing->dominated = true;
-        return true;
       }
-      return false;
-    });
+    }
   }
 
   // ── SCC processing (unified for both directions) ──
@@ -858,7 +921,7 @@ class BucketGraph {
       if (!completion.empty() && completion[actual_bi] < INF &&
           new_label->cost + completion[actual_bi] >= opts_.tolerance)
         return false;
-      labels[actual_bi].push_back(new_label);
+      labels[actual_bi].push_back(new_label);  // unsorted: no dominance in Enumerate
       ++label_count;
       ++total_enum_labels_;
       // Conservative sink count: may overcount vs extracted paths
@@ -872,7 +935,7 @@ class BucketGraph {
     // Normal: dominance check
     if (!dominated_in_bucket(new_label, actual_bi, dir, labels)) {
       remove_dominated(new_label, actual_bi, dir, labels);
-      labels[actual_bi].push_back(new_label);
+      insert_sorted(labels[actual_bi], new_label);
       ++label_count;
       if (dir == Direction::Forward)
         ++fw_label_count_;
@@ -989,6 +1052,12 @@ class BucketGraph {
         }
       }
       if (at_label_cap()) break;
+    }
+
+    // Batch compaction: physically remove dominated labels at SCC boundary
+    for (int bi : scc_bs) {
+      std::erase_if(labels[bi],
+                     [](const Label<Pack>* L) { return L->dominated; });
     }
 
     update_c_best(scc_id, dir, scc_buckets, labels);
@@ -2036,7 +2105,7 @@ class BucketGraph {
       L->bucket = bi;
 
       if (!dominated_in_bucket(L, bi, dir, labels)) {
-        labels[bi].push_back(L);
+        insert_sorted(labels[bi], L);
       }
     }
   }
