@@ -29,6 +29,33 @@
 
 namespace bgspprc {
 
+namespace detail {
+
+// Detect a resource with compress_state(uint32_t, int) → uint32_t
+template <typename R>
+concept HasCompressState = requires(const R& r, typename R::State s, int v) {
+  { r.compress_state(s, v) } -> std::same_as<uint32_t>;
+};
+
+// Find the index of the first resource with compress_state in a ResourcePack.
+// Returns sizeof...(Rs) if none found.
+template <typename Pack>
+struct NgResourceIndex;
+
+template <Resource... Rs>
+struct NgResourceIndex<ResourcePack<Rs...>> {
+  static constexpr std::size_t find() {
+    std::size_t idx = 0;
+    bool found = false;
+    ((found || (HasCompressState<Rs> ? (found = true, true) : (++idx, false))), ...);
+    return found ? idx : sizeof...(Rs);
+  }
+  static constexpr std::size_t value = find();
+  static constexpr bool has_ng = value < sizeof...(Rs);
+};
+
+}  // namespace detail
+
 /// Core bucket graph engine for SPPRC labeling.
 ///
 /// Template parameter Pack is a ResourcePack<Rs...>.
@@ -121,7 +148,7 @@ class BucketGraph {
   /// Keeps the top `fraction` of non-dominated labels by cost.
   void save_warm_labels(double fraction = 0.7) {
     warm_labels_.clear();
-    collect_warm_labels(fw_bucket_labels_, Direction::Forward, fraction);
+    collect_warm_labels(fw_labels_, Direction::Forward, fraction);
   }
 
   /// Adaptive bucket step size: halve steps for vertices where the ratio
@@ -330,6 +357,29 @@ class BucketGraph {
   }
 
  private:
+  // ── SoA label storage ──
+
+  static constexpr bool has_ng_ = detail::NgResourceIndex<Pack>::has_ng;
+  static constexpr std::size_t ng_idx_ = detail::NgResourceIndex<Pack>::value;
+
+  struct BucketLabels {
+    std::vector<std::vector<Label<Pack>*>> labels;
+    std::vector<std::vector<double>> costs;
+    std::vector<std::vector<double>> q0;
+    std::vector<std::vector<double>> q1;
+    std::vector<std::vector<uint32_t>> ng_bits;  // self-bit-stripped ng states
+
+    void resize(std::size_t n) {
+      labels.resize(n);
+      costs.resize(n);
+      q0.resize(n);
+      q1.resize(n);
+      if constexpr (has_ng_) ng_bits.resize(n);
+    }
+
+    std::size_t size() const { return labels.size(); }
+  };
+
   // ── Bucket construction ──
 
   const std::array<double, 2>& step_for_vertex(int v) const {
@@ -378,8 +428,8 @@ class BucketGraph {
       total = static_cast<int>(buckets_.size());
     }
 
-    fw_bucket_labels_.resize(buckets_.size());
-    bw_bucket_labels_.resize(buckets_.size());
+    fw_labels_.resize(buckets_.size());
+    bw_labels_.resize(buckets_.size());
     fixed_.resize(static_cast<int>(buckets_.size()));
 
     // Size scratch_visited_ to max buckets per vertex
@@ -788,49 +838,102 @@ class BucketGraph {
     return dom_cost <= L2->cost + EPS;
   }
 
-  static void insert_sorted(std::vector<Label<Pack>*>& bucket,
-                             Label<Pack>* L) {
-    auto pos = std::lower_bound(
-        bucket.begin(), bucket.end(), L,
-        [](const Label<Pack>* a, const Label<Pack>* b) {
-          return a->cost < b->cost;
-        });
-    bucket.insert(pos, L);
+  /// Extract compressed ng bits from a label (self bit stripped).
+  uint32_t label_ng_bits(const Label<Pack>* L) const {
+    if constexpr (has_ng_) {
+      auto& ng_res = std::get<ng_idx_>(pack_.resources);
+      auto state = std::get<ng_idx_>(L->resource_states);
+      return ng_res.compress_state(state, L->vertex);
+    } else {
+      return 0;
+    }
+  }
+
+  void insert_sorted(BucketLabels& bl, int bi, Label<Pack>* L) const {
+    auto& bucket_costs = bl.costs[bi];
+    auto pos = std::lower_bound(bucket_costs.begin(), bucket_costs.end(), L->cost);
+    auto idx = pos - bucket_costs.begin();
+    bucket_costs.insert(pos, L->cost);
+    bl.labels[bi].insert(bl.labels[bi].begin() + idx, L);
+    bl.q0[bi].insert(bl.q0[bi].begin() + idx, L->q[0]);
+    bl.q1[bi].insert(bl.q1[bi].begin() + idx, L->q[1]);
+    if constexpr (has_ng_) {
+      bl.ng_bits[bi].insert(bl.ng_bits[bi].begin() + idx, label_ng_bits(L));
+    }
   }
 
 #ifdef BGSPPRC_HAS_SIMD
   bool dominated_in_bucket_simd(
       const Label<Pack>* L, int bi, Direction dir,
-      std::vector<std::vector<Label<Pack>*>>& labels) const {
+      const BucketLabels& bl) const {
     namespace stdx = std::experimental;
     using simd_d = stdx::native_simd<double>;
     constexpr std::size_t W = simd_d::size();
 
-    auto& bucket = labels[bi];
+    auto& bucket = bl.labels[bi];
+    auto& bucket_costs = bl.costs[bi];
+    auto& bucket_q0 = bl.q0[bi];
+    auto& bucket_q1 = bl.q1[bi];
     const std::size_t n = bucket.size();
     const double threshold = L->cost + EPS;
 
+    // Precompute new label's compressed ng bits for subset check
+    [[maybe_unused]] uint32_t new_ng = 0;
+    [[maybe_unused]] const uint32_t* ng_data = nullptr;
+    if constexpr (has_ng_) {
+      new_ng = label_ng_bits(L);
+      ng_data = bl.ng_bits[bi].data();
+    }
+
+    // In heuristic stages, ng check is skipped (cost-only dominance)
+    [[maybe_unused]] const bool check_ng =
+        has_ng_ && opts_.stage != Stage::Heuristic1 &&
+        opts_.stage != Stage::Heuristic2;
+
     std::size_t i = 0;
     for (; i + W <= n; i += W) {
-      alignas(64) std::array<double, W> costs;
-      for (std::size_t j = 0; j < W; ++j) costs[j] = bucket[i + j]->cost;
-
-      simd_d cost_vec(costs.data(), stdx::overaligned_tag<64>{});
+      // Direct SIMD load from contiguous cost array — no gather needed
+      simd_d cost_vec(bucket_costs.data() + i, stdx::element_aligned);
       auto mask = (cost_vec + min_dom_cost_) <= threshold;
       if (!stdx::any_of(mask)) return false;  // sorted: all remaining fail too
+
+      // SIMD resource pre-filter on q[0]
+      if (n_main_ >= 1) {
+        simd_d q0_vec(bucket_q0.data() + i, stdx::element_aligned);
+        if (dir == Direction::Forward) {
+          mask = mask & (q0_vec <= simd_d(L->q[0] + EPS));
+        } else {
+          mask = mask & (q0_vec >= simd_d(L->q[0] - EPS));
+        }
+        if (!stdx::any_of(mask)) continue;
+      }
+
+      // SIMD resource pre-filter on q[1]
+      if (n_main_ >= 2) {
+        simd_d q1_vec(bucket_q1.data() + i, stdx::element_aligned);
+        if (dir == Direction::Forward) {
+          mask = mask & (q1_vec <= simd_d(L->q[1] + EPS));
+        } else {
+          mask = mask & (q1_vec >= simd_d(L->q[1] - EPS));
+        }
+        if (!stdx::any_of(mask)) continue;
+      }
 
       for (std::size_t j = 0; j < W; ++j) {
         if (!mask[j]) continue;
         auto* existing = bucket[i + j];
         if (existing->dominated) continue;
+        // Scalar ng subset check from SoA — avoids chasing label pointer
+        if (check_ng && (ng_data[i + j] & ~new_ng)) continue;
         if (dominates(existing, L, dir)) return true;
       }
     }
 
     for (; i < n; ++i) {
+      if (bucket_costs[i] + min_dom_cost_ > threshold) break;
       auto* existing = bucket[i];
       if (existing->dominated) continue;
-      if (existing->cost + min_dom_cost_ > threshold) break;
+      if (check_ng && (ng_data[i] & ~new_ng)) continue;
       if (dominates(existing, L, dir)) return true;
     }
     return false;
@@ -839,14 +942,29 @@ class BucketGraph {
 
   bool dominated_in_bucket(
       const Label<Pack>* L, int bi, Direction dir,
-      std::vector<std::vector<Label<Pack>*>>& labels) const {
+      const BucketLabels& bl) const {
 #ifdef BGSPPRC_HAS_SIMD
-    return dominated_in_bucket_simd(L, bi, dir, labels);
+    return dominated_in_bucket_simd(L, bi, dir, bl);
 #else
     const double threshold = L->cost + EPS;
-    for (const auto* existing : labels[bi]) {
+    auto& bucket_costs = bl.costs[bi];
+    auto& bucket = bl.labels[bi];
+
+    [[maybe_unused]] uint32_t new_ng = 0;
+    [[maybe_unused]] const uint32_t* ng_data = nullptr;
+    if constexpr (has_ng_) {
+      new_ng = label_ng_bits(L);
+      ng_data = bl.ng_bits[bi].data();
+    }
+    [[maybe_unused]] const bool check_ng =
+        has_ng_ && opts_.stage != Stage::Heuristic1 &&
+        opts_.stage != Stage::Heuristic2;
+
+    for (std::size_t i = 0; i < bucket.size(); ++i) {
+      if (bucket_costs[i] + min_dom_cost_ > threshold) break;  // sorted
+      auto* existing = bucket[i];
       if (existing->dominated) continue;
-      if (existing->cost + min_dom_cost_ > threshold) break;  // sorted
+      if (check_ng && (ng_data[i] & ~new_ng)) continue;
       if (dominates(existing, L, dir)) return true;
     }
     return false;
@@ -855,7 +973,7 @@ class BucketGraph {
 
   bool dominated_in_adjacent_buckets(
       const Label<Pack>* L, int bi, Direction dir,
-      std::vector<std::vector<Label<Pack>*>>& labels) const {
+      const BucketLabels& bl) const {
     int v = L->vertex;
     auto [start, end] = vertex_bucket_range(v);
     auto& nb = vertex_n_buckets_[v];
@@ -865,30 +983,34 @@ class BucketGraph {
     const double threshold = L->cost + EPS;
 
     if (dir == Direction::Forward) {
-      // Check component-wise smaller buckets (lower q = better)
       for (int i0 = 0; i0 <= k0; ++i0) {
         for (int i1 = 0; i1 <= k1; ++i1) {
           int other = start + i0 * nb[1] + i1;
           if (other == bi) continue;
           if (buckets_[other].c_best + min_dom_cost_ > threshold) continue;
-          for (const auto* existing : labels[other]) {
+          auto& ocosts = bl.costs[other];
+          auto& obucket = bl.labels[other];
+          for (std::size_t idx = 0; idx < obucket.size(); ++idx) {
+            if (ocosts[idx] + min_dom_cost_ > threshold) break;
+            auto* existing = obucket[idx];
             if (existing->dominated) continue;
-            if (existing->cost + min_dom_cost_ > threshold) break;  // sorted
             if (dominates(existing, L, dir)) return true;
           }
         }
       }
     } else {
-      // Check component-wise larger buckets (higher q = better)
       for (int i0 = k0; i0 < nb[0]; ++i0) {
         for (int i1 = k1; i1 < nb[1]; ++i1) {
           int other = start + i0 * nb[1] + i1;
           if (other == bi) continue;
           if (buckets_[other].bw_c_best + min_dom_cost_ > threshold)
             continue;
-          for (const auto* existing : labels[other]) {
+          auto& ocosts = bl.costs[other];
+          auto& obucket = bl.labels[other];
+          for (std::size_t idx = 0; idx < obucket.size(); ++idx) {
+            if (ocosts[idx] + min_dom_cost_ > threshold) break;
+            auto* existing = obucket[idx];
             if (existing->dominated) continue;
-            if (existing->cost + min_dom_cost_ > threshold) break;  // sorted
             if (dominates(existing, L, dir)) return true;
           }
         }
@@ -898,8 +1020,8 @@ class BucketGraph {
   }
 
   void remove_dominated(const Label<Pack>* new_label, int bi, Direction dir,
-                        std::vector<std::vector<Label<Pack>*>>& labels) {
-    for (auto* existing : labels[bi]) {
+                        BucketLabels& bl) {
+    for (auto* existing : bl.labels[bi]) {
       if (!existing->dominated && dominates(new_label, existing, dir)) {
         existing->dominated = true;
       }
@@ -911,7 +1033,7 @@ class BucketGraph {
   /// Try to insert a label into its bucket. In Enumerate stage, uses
   /// completion-bound pruning instead of dominance.
   bool try_insert_label(Label<Pack>* new_label, int actual_bi, Direction dir,
-                        std::vector<std::vector<Label<Pack>*>>& labels,
+                        BucketLabels& bl,
                         int& label_count) {
     if (fixed_.test(actual_bi)) return false;
 
@@ -921,21 +1043,23 @@ class BucketGraph {
       if (!completion.empty() && completion[actual_bi] < INF &&
           new_label->cost + completion[actual_bi] >= opts_.tolerance)
         return false;
-      labels[actual_bi].push_back(new_label);  // unsorted: no dominance in Enumerate
+      bl.labels[actual_bi].push_back(new_label);
+      bl.costs[actual_bi].push_back(new_label->cost);
+      bl.q0[actual_bi].push_back(new_label->q[0]);
+      bl.q1[actual_bi].push_back(new_label->q[1]);
+      if constexpr (has_ng_) {
+        bl.ng_bits[actual_bi].push_back(label_ng_bits(new_label));
+      }
       ++label_count;
       ++total_enum_labels_;
-      // Conservative sink count: may overcount vs extracted paths
-      // (extract_paths still applies tolerance filter). Also doesn't
-      // include concatenation paths. Both are safe — we just exit
-      // labeling early and let final truncation handle the rest.
       if (buckets_[actual_bi].vertex == pv_.sink) ++enum_sink_labels_;
       return true;
     }
 
     // Normal: dominance check
-    if (!dominated_in_bucket(new_label, actual_bi, dir, labels)) {
-      remove_dominated(new_label, actual_bi, dir, labels);
-      insert_sorted(labels[actual_bi], new_label);
+    if (!dominated_in_bucket(new_label, actual_bi, dir, bl)) {
+      remove_dominated(new_label, actual_bi, dir, bl);
+      insert_sorted(bl, actual_bi, new_label);
       ++label_count;
       if (dir == Direction::Forward)
         ++fw_label_count_;
@@ -948,7 +1072,7 @@ class BucketGraph {
 
   void process_scc(int scc_id, Direction dir,
                    const std::vector<std::vector<int>>& scc_buckets,
-                   std::vector<std::vector<Label<Pack>*>>& labels,
+                   BucketLabels& bl,
                    double midpoint) {
     auto& scc_bs = scc_buckets[scc_id];
     if (scc_bs.empty()) return;
@@ -982,7 +1106,7 @@ class BucketGraph {
         if (fixed_.test(bi)) continue;
         if (at_label_cap()) break;
 
-        auto& bucket_labels = labels[bi];
+        auto& bucket_labels = bl.labels[bi];
         int n_labels = static_cast<int>(bucket_labels.size());
         for (int li = 0; li < n_labels; ++li) {
           auto* label = bucket_labels[li];
@@ -1006,7 +1130,7 @@ class BucketGraph {
               continue;
             }
           } else {
-            if (dominated_in_adjacent_buckets(label, bi, dir, labels)) {
+            if (dominated_in_adjacent_buckets(label, bi, dir, bl)) {
               label->dominated = true;
               continue;
             }
@@ -1020,9 +1144,9 @@ class BucketGraph {
             if (!new_label) return;
             if (prune_past_mid && new_label->q[0] > midpoint &&
                 !has_compatible_opposite(new_label, opts_.tolerance,
-                                         bw_bucket_labels_))
+                                         bw_labels_))
               return;
-            if (try_insert_label(new_label, new_label->bucket, dir, labels,
+            if (try_insert_label(new_label, new_label->bucket, dir, bl,
                                  label_count))
               changed = true;
           };
@@ -1056,24 +1180,44 @@ class BucketGraph {
 
     // Batch compaction: physically remove dominated labels at SCC boundary
     for (int bi : scc_bs) {
-      std::erase_if(labels[bi],
+      std::erase_if(bl.labels[bi],
                      [](const Label<Pack>* L) { return L->dominated; });
+      // Rebuild SoA arrays from surviving labels
+      auto& surviving = bl.labels[bi];
+      auto& c = bl.costs[bi];
+      auto& q0 = bl.q0[bi];
+      auto& q1 = bl.q1[bi];
+      c.resize(surviving.size());
+      q0.resize(surviving.size());
+      q1.resize(surviving.size());
+      for (std::size_t i = 0; i < surviving.size(); ++i) {
+        c[i] = surviving[i]->cost;
+        q0[i] = surviving[i]->q[0];
+        q1[i] = surviving[i]->q[1];
+      }
+      if constexpr (has_ng_) {
+        auto& ng = bl.ng_bits[bi];
+        ng.resize(surviving.size());
+        for (std::size_t i = 0; i < surviving.size(); ++i) {
+          ng[i] = label_ng_bits(surviving[i]);
+        }
+      }
     }
 
-    update_c_best(scc_id, dir, scc_buckets, labels);
+    update_c_best(scc_id, dir, scc_buckets, bl);
   }
 
   // ── c_best update ──
 
   void update_c_best(int scc_id, Direction dir,
                      const std::vector<std::vector<int>>& scc_buckets,
-                     const std::vector<std::vector<Label<Pack>*>>& labels) {
+                     const BucketLabels& bl) {
     auto& scc_bs = scc_buckets[scc_id];
 
     // First pass: c_best from labels in bucket
     for (int bi : scc_bs) {
       double best = INF;
-      for (const auto* L : labels[bi]) {
+      for (const auto* L : bl.labels[bi]) {
         if (!L->dominated && L->cost < best) {
           best = L->cost;
         }
@@ -1235,19 +1379,21 @@ class BucketGraph {
   /// θ-compatible pair when joined through arc a.
   bool is_theta_compatible(const Label<Pack>* fw, const Label<Pack>* bw,
                            int arc_id, double theta) const {
-    int j = pv_.arc_to[arc_id];
+    // Cheapest check first: pure cost bound (no resource/pack ops).
+    // Account for min_dom_cost_ as lower bound on pack concatenation_cost
+    // (can be negative for R1C with negative duals; 0 for ng-path).
+    double arc_cost =
+        reduced_costs_ ? reduced_costs_[arc_id] : pv_.arc_base_cost[arc_id];
+    double total_cost = fw->cost + bw->cost + arc_cost;
+    if (total_cost + min_dom_cost_ >= theta) return false;
 
     // Resource feasibility
+    int j = pv_.arc_to[arc_id];
     for (int r = 0; r < n_main_; ++r) {
       double fw_after = fw->q[r] + pv_.arc_resource[r][arc_id];
       fw_after = std::max(fw_after, pv_.vertex_lb[r][j]);
       if (fw_after > bw->q[r] + EPS) return false;
     }
-
-    double total_cost = fw->cost + bw->cost;
-    double arc_cost =
-        reduced_costs_ ? reduced_costs_[arc_id] : pv_.arc_base_cost[arc_id];
-    total_cost += arc_cost;
 
     if constexpr (Pack::size > 0) {
       auto [ext_states, ext_cost] = pack_.extend_along_arc(
@@ -1272,16 +1418,27 @@ class BucketGraph {
       if (v == pv_.source || v == pv_.sink) continue;
       auto [start, end] = vertex_bucket_range(v);
       for (int bi = start; bi < end; ++bi) {
-        for (auto* bw : bw_bucket_labels_[bi]) {
+        for (auto* bw : bw_labels_.labels[bi]) {
           if (bw->dominated || bw->q[0] >= mu) continue;
           bool found = false;
           for (int arc_id : adj_.incoming[v]) {
+            double arc_cost = reduced_costs_ ? reduced_costs_[arc_id]
+                                             : pv_.arc_base_cost[arc_id];
+            double bw_base = bw->cost + arc_cost;
             int i = pv_.arc_from[arc_id];
             auto [istart, iend] = vertex_bucket_range(i);
             for (int fbi = istart; fbi < iend && !found; ++fbi) {
-              for (const auto* fw : fw_bucket_labels_[fbi]) {
-                if (fw->dominated) continue;
-                if (is_theta_compatible(fw, bw, arc_id, theta)) {
+              // Bucket-level c_best skip
+              if (buckets_[fbi].c_best + bw_base + min_dom_cost_ >= theta)
+                continue;
+              // Cost-sorted early break within bucket
+              auto& fw_costs = fw_labels_.costs[fbi];
+              auto& fw_labs = fw_labels_.labels[fbi];
+              for (std::size_t idx = 0; idx < fw_labs.size(); ++idx) {
+                if (fw_costs[idx] + bw_base + min_dom_cost_ >= theta)
+                  break;  // sorted
+                if (fw_labs[idx]->dominated) continue;
+                if (is_theta_compatible(fw_labs[idx], bw, arc_id, theta)) {
                   found = true;
                   break;
                 }
@@ -1303,17 +1460,27 @@ class BucketGraph {
   /// bounds). Iterates outgoing arcs (v,j), checks bw labels at j.
   bool has_compatible_opposite(
       const Label<Pack>* L, double theta,
-      const std::vector<std::vector<Label<Pack>*>>& bw_labels) const {
+      const BucketLabels& bw_bl) const {
     int v = L->vertex;
     if (v == pv_.source || v == pv_.sink) return true;
 
     for (int arc_id : adj_.outgoing[v]) {
+      double arc_cost = reduced_costs_ ? reduced_costs_[arc_id]
+                                       : pv_.arc_base_cost[arc_id];
+      double base = L->cost + arc_cost;
       int j = pv_.arc_to[arc_id];
       auto [jstart, jend] = vertex_bucket_range(j);
       for (int bi = jstart; bi < jend; ++bi) {
-        for (const auto* bw : bw_labels[bi]) {
-          if (bw->dominated) continue;
-          if (is_theta_compatible(L, bw, arc_id, theta)) return true;
+        // Bucket-level c_best skip
+        if (base + buckets_[bi].bw_c_best + min_dom_cost_ >= theta) continue;
+        // Cost-sorted early break within bucket
+        auto& bw_costs = bw_bl.costs[bi];
+        auto& bw_labels = bw_bl.labels[bi];
+        for (std::size_t idx = 0; idx < bw_labels.size(); ++idx) {
+          if (base + bw_costs[idx] + min_dom_cost_ >= theta) break;  // sorted
+          if (bw_labels[idx]->dominated) continue;
+          if (is_theta_compatible(L, bw_labels[idx], arc_id, theta))
+            return true;
         }
       }
     }
@@ -1367,18 +1534,23 @@ class BucketGraph {
     double opp_c_best = (dir == Direction::Forward)
                             ? buckets_[b_tilde].bw_c_best
                             : buckets_[b_tilde].c_best;
-    if (L->cost + arc_cost + opp_c_best >= theta) return;
+    if (L->cost + arc_cost + opp_c_best + min_dom_cost_ >= theta) return;
 
     // Check labels at b_tilde for θ-compatibility
     if (!((b_bar[b_tilde / 64] >> (b_tilde % 64)) & 1)) {
       auto& opp_labels = (dir == Direction::Forward)
-                             ? bw_bucket_labels_[b_tilde]
-                             : fw_bucket_labels_[b_tilde];
-      for (const auto* L_tilde : opp_labels) {
-        if (L_tilde->dominated) continue;
+                             ? bw_labels_.labels[b_tilde]
+                             : fw_labels_.labels[b_tilde];
+      auto& opp_costs = (dir == Direction::Forward)
+                             ? bw_labels_.costs[b_tilde]
+                             : fw_labels_.costs[b_tilde];
+      double base = L->cost + arc_cost;
+      for (std::size_t idx = 0; idx < opp_labels.size(); ++idx) {
+        if (base + opp_costs[idx] + min_dom_cost_ >= theta) break;  // sorted
+        if (opp_labels[idx]->dominated) continue;
         bool compat = (dir == Direction::Forward)
-                          ? is_theta_compatible(L, L_tilde, arc_id, theta)
-                          : is_theta_compatible(L_tilde, L, arc_id, theta);
+                          ? is_theta_compatible(L, opp_labels[idx], arc_id, theta)
+                          : is_theta_compatible(opp_labels[idx], L, arc_id, theta);
         if (compat) {
           b_bar[b_tilde / 64] |= (1ULL << (b_tilde % 64));
           break;
@@ -1451,8 +1623,8 @@ class BucketGraph {
     if (fixed_.test(bi)) return;
 
     // Get labels at bucket b
-    auto& labels_b = (dir == Direction::Forward) ? fw_bucket_labels_[bi]
-                                                 : bw_bucket_labels_[bi];
+    auto& labels_b = (dir == Direction::Forward) ? fw_labels_.labels[bi]
+                                                 : bw_labels_.labels[bi];
 
     // Helper: call update_buckets_set with vertex-local visited
     auto do_update = [&](const Label<Pack>* L, int arc_id, int arr_bi) {
@@ -1600,9 +1772,15 @@ class BucketGraph {
 
   // ── Label storage management ──
 
-  void reset_label_storage(std::vector<std::vector<Label<Pack>*>>& labels) {
-    labels.resize(buckets_.size());
-    for (auto& v : labels) v.clear();
+  void reset_label_storage(BucketLabels& bl) {
+    bl.resize(buckets_.size());
+    for (std::size_t i = 0; i < bl.size(); ++i) {
+      bl.labels[i].clear();
+      bl.costs[i].clear();
+      bl.q0[i].clear();
+      bl.q1[i].clear();
+      if constexpr (has_ng_) bl.ng_bits[i].clear();
+    }
   }
 
   void reset_c_best() {
@@ -1645,7 +1823,7 @@ class BucketGraph {
 
   std::vector<Path> solve_mono() {
     pool_.clear();
-    reset_label_storage(fw_bucket_labels_);
+    reset_label_storage(fw_labels_);
     reset_c_best();
     if constexpr (Pack::size > 0)
       min_dom_cost_ = pack_.min_domination_cost();
@@ -1669,20 +1847,24 @@ class BucketGraph {
     if (!src) return {};  // infeasible source state
     int src_bi = vertex_bucket_index(pv_.source, src->q);
     src->bucket = src_bi;
-    fw_bucket_labels_[src_bi].push_back(src);
+    fw_labels_.labels[src_bi].push_back(src);
+    fw_labels_.costs[src_bi].push_back(src->cost);
+    fw_labels_.q0[src_bi].push_back(src->q[0]);
+    fw_labels_.q1[src_bi].push_back(src->q[1]);
+    if constexpr (has_ng_) fw_labels_.ng_bits[src_bi].push_back(label_ng_bits(src));
     if (opts_.stage == Stage::Enumerate) ++total_enum_labels_;
 
     // Inject warm labels from previous solve
     if (!warm_labels_.empty()) {
-      inject_warm_labels(fw_bucket_labels_, Direction::Forward);
+      inject_warm_labels(fw_labels_, Direction::Forward);
     }
 
     for (int scc : fw_scc_topo_order_) {
-      process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_bucket_labels_,
+      process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_labels_,
                   INF);
     }
 
-    auto paths = extract_paths(fw_bucket_labels_);
+    auto paths = extract_paths(fw_labels_);
     std::sort(paths.begin(), paths.end(), [](const Path& a, const Path& b) {
       return a.reduced_cost < b.reduced_cost;
     });
@@ -1724,8 +1906,8 @@ class BucketGraph {
 
   std::vector<Path> solve_bidirectional() {
     pool_.clear();
-    reset_label_storage(fw_bucket_labels_);
-    reset_label_storage(bw_bucket_labels_);
+    reset_label_storage(fw_labels_);
+    reset_label_storage(bw_labels_);
     reset_c_best();
     if constexpr (Pack::size > 0)
       min_dom_cost_ = pack_.min_domination_cost();
@@ -1757,7 +1939,11 @@ class BucketGraph {
       if (!snk) return {};  // infeasible sink state
       int snk_bi = vertex_bucket_index(pv_.sink, snk->q);
       snk->bucket = snk_bi;
-      bw_bucket_labels_[snk_bi].push_back(snk);
+      bw_labels_.labels[snk_bi].push_back(snk);
+      bw_labels_.costs[snk_bi].push_back(snk->cost);
+      bw_labels_.q0[snk_bi].push_back(snk->q[0]);
+      bw_labels_.q1[snk_bi].push_back(snk->q[1]);
+      if constexpr (has_ng_) bw_labels_.ng_bits[snk_bi].push_back(label_ng_bits(snk));
       if (opts_.stage == Stage::Enumerate) {
         ++total_enum_labels_;
         ++enum_sink_labels_;  // seed label is at sink
@@ -1765,7 +1951,7 @@ class BucketGraph {
 
       for (int scc : bw_scc_topo_order_) {
         process_scc(scc, Direction::Backward, bw_scc_buckets_,
-                    bw_bucket_labels_, mu);
+                    bw_labels_, mu);
       }
     }
 
@@ -1774,15 +1960,19 @@ class BucketGraph {
     if (!src) return {};  // infeasible source state
     int src_bi = vertex_bucket_index(pv_.source, src->q);
     src->bucket = src_bi;
-    fw_bucket_labels_[src_bi].push_back(src);
+    fw_labels_.labels[src_bi].push_back(src);
+    fw_labels_.costs[src_bi].push_back(src->cost);
+    fw_labels_.q0[src_bi].push_back(src->q[0]);
+    fw_labels_.q1[src_bi].push_back(src->q[1]);
+    if constexpr (has_ng_) fw_labels_.ng_bits[src_bi].push_back(label_ng_bits(src));
     if (opts_.stage == Stage::Enumerate) ++total_enum_labels_;
 
     if (!warm_labels_.empty()) {
-      inject_warm_labels(fw_bucket_labels_, Direction::Forward);
+      inject_warm_labels(fw_labels_, Direction::Forward);
     }
 
     for (int scc : fw_scc_topo_order_) {
-      process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_bucket_labels_,
+      process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_labels_,
                   mu);
     }
 
@@ -1798,7 +1988,7 @@ class BucketGraph {
     if (opts_.stage == Stage::Exact && !opts_.symmetric) adjust_midpoint();
 
     // Collect paths: forward labels that reached sink + concatenations
-    auto paths = extract_paths(fw_bucket_labels_);
+    auto paths = extract_paths(fw_labels_);
     auto concat_paths = concatenate_and_extract();
     paths.insert(paths.end(), concat_paths.begin(), concat_paths.end());
 
@@ -1847,7 +2037,7 @@ class BucketGraph {
         auto [bw_start, bw_end] = vertex_bucket_range(j);
 
         for (int fbi = fw_start; fbi < fw_end; ++fbi) {
-          for (const auto* fw : fw_bucket_labels_[fbi]) {
+          for (const auto* fw : fw_labels_.labels[fbi]) {
             if (fw->dominated) continue;
 
             // For EmptyPack, bw costs and resource adjustments are
@@ -1858,7 +2048,7 @@ class BucketGraph {
 
             for (int bbi = bw_start; bbi < bw_end; ++bbi) {
               auto& bw_labels = opts_.symmetric
-                  ? fw_bucket_labels_[bbi] : bw_bucket_labels_[bbi];
+                  ? fw_labels_.labels[bbi] : bw_labels_.labels[bbi];
               for (const auto* bw : bw_labels) {
                 if (bw->dominated) continue;
                 bool feasible = true;
@@ -1921,12 +2111,12 @@ class BucketGraph {
   // ── Path extraction ──
 
   std::vector<Path> extract_paths(
-      const std::vector<std::vector<Label<Pack>*>>& labels) {
+      const BucketLabels& bl) {
     std::vector<Path> paths;
 
     auto [start, end] = vertex_bucket_range(pv_.sink);
     for (int bi = start; bi < end; ++bi) {
-      for (const auto* L : labels[bi]) {
+      for (const auto* L : bl.labels[bi]) {
         if (L->dominated) continue;
         if (L->cost < opts_.tolerance) {
           Path p;
@@ -2033,8 +2223,8 @@ class BucketGraph {
   std::vector<int> bw_bucket_scc_id_;
 
   // Label storage (forward and backward)
-  std::vector<std::vector<Label<Pack>*>> fw_bucket_labels_;
-  std::vector<std::vector<Label<Pack>*>> bw_bucket_labels_;
+  BucketLabels fw_labels_;
+  BucketLabels bw_labels_;
 
   // Warm label storage: saved state from previous solve
   struct WarmLabel {
@@ -2048,11 +2238,11 @@ class BucketGraph {
   };
   std::vector<WarmLabel> warm_labels_;
 
-  void collect_warm_labels(const std::vector<std::vector<Label<Pack>*>>& labels,
+  void collect_warm_labels(const BucketLabels& bl,
                            Direction dir, double fraction) {
     // Gather all non-dominated labels
     std::vector<const Label<Pack>*> all_labels;
-    for (const auto& bucket : labels) {
+    for (const auto& bucket : bl.labels) {
       for (const auto* L : bucket) {
         if (!L->dominated) {
           all_labels.push_back(L);
@@ -2084,8 +2274,7 @@ class BucketGraph {
     }
   }
 
-  void inject_warm_labels(std::vector<std::vector<Label<Pack>*>>& labels,
-                          Direction dir) {
+  void inject_warm_labels(BucketLabels& bl, Direction dir) {
     for (const auto& wl : warm_labels_) {
       if (wl.dir != dir) continue;
 
@@ -2104,8 +2293,8 @@ class BucketGraph {
       int bi = vertex_bucket_index(wl.vertex, wl.q);
       L->bucket = bi;
 
-      if (!dominated_in_bucket(L, bi, dir, labels)) {
-        insert_sorted(labels[bi], L);
+      if (!dominated_in_bucket(L, bi, dir, bl)) {
+        insert_sorted(bl, bi, L);
       }
     }
   }
