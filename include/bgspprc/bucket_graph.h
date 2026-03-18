@@ -949,10 +949,22 @@ class BucketGraph {
     const double threshold = L->cost + EPS;
     auto& bucket_costs = bl.costs[bi];
     auto& bucket = bl.labels[bi];
+
+    [[maybe_unused]] uint32_t new_ng = 0;
+    [[maybe_unused]] const uint32_t* ng_data = nullptr;
+    if constexpr (has_ng_) {
+      new_ng = label_ng_bits(L);
+      ng_data = bl.ng_bits[bi].data();
+    }
+    [[maybe_unused]] const bool check_ng =
+        has_ng_ && opts_.stage != Stage::Heuristic1 &&
+        opts_.stage != Stage::Heuristic2;
+
     for (std::size_t i = 0; i < bucket.size(); ++i) {
       if (bucket_costs[i] + min_dom_cost_ > threshold) break;  // sorted
       auto* existing = bucket[i];
       if (existing->dominated) continue;
+      if (check_ng && (ng_data[i] & ~new_ng)) continue;
       if (dominates(existing, L, dir)) return true;
     }
     return false;
