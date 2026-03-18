@@ -1379,11 +1379,13 @@ class BucketGraph {
   /// θ-compatible pair when joined through arc a.
   bool is_theta_compatible(const Label<Pack>* fw, const Label<Pack>* bw,
                            int arc_id, double theta) const {
-    // Cheapest check first: pure cost bound (no resource/pack ops)
+    // Cheapest check first: pure cost bound (no resource/pack ops).
+    // Account for min_dom_cost_ as lower bound on pack concatenation_cost
+    // (can be negative for R1C with negative duals; 0 for ng-path).
     double arc_cost =
         reduced_costs_ ? reduced_costs_[arc_id] : pv_.arc_base_cost[arc_id];
     double total_cost = fw->cost + bw->cost + arc_cost;
-    if (total_cost >= theta) return false;
+    if (total_cost + min_dom_cost_ >= theta) return false;
 
     // Resource feasibility
     int j = pv_.arc_to[arc_id];
@@ -1427,12 +1429,14 @@ class BucketGraph {
             auto [istart, iend] = vertex_bucket_range(i);
             for (int fbi = istart; fbi < iend && !found; ++fbi) {
               // Bucket-level c_best skip
-              if (buckets_[fbi].c_best + bw_base >= theta) continue;
+              if (buckets_[fbi].c_best + bw_base + min_dom_cost_ >= theta)
+                continue;
               // Cost-sorted early break within bucket
               auto& fw_costs = fw_labels_.costs[fbi];
               auto& fw_labs = fw_labels_.labels[fbi];
               for (std::size_t idx = 0; idx < fw_labs.size(); ++idx) {
-                if (fw_costs[idx] + bw_base >= theta) break;  // sorted
+                if (fw_costs[idx] + bw_base + min_dom_cost_ >= theta)
+                  break;  // sorted
                 if (fw_labs[idx]->dominated) continue;
                 if (is_theta_compatible(fw_labs[idx], bw, arc_id, theta)) {
                   found = true;
@@ -1468,12 +1472,12 @@ class BucketGraph {
       auto [jstart, jend] = vertex_bucket_range(j);
       for (int bi = jstart; bi < jend; ++bi) {
         // Bucket-level c_best skip
-        if (base + buckets_[bi].bw_c_best >= theta) continue;
+        if (base + buckets_[bi].bw_c_best + min_dom_cost_ >= theta) continue;
         // Cost-sorted early break within bucket
         auto& bw_costs = bw_bl.costs[bi];
         auto& bw_labels = bw_bl.labels[bi];
         for (std::size_t idx = 0; idx < bw_labels.size(); ++idx) {
-          if (base + bw_costs[idx] >= theta) break;  // sorted
+          if (base + bw_costs[idx] + min_dom_cost_ >= theta) break;  // sorted
           if (bw_labels[idx]->dominated) continue;
           if (is_theta_compatible(L, bw_labels[idx], arc_id, theta))
             return true;
@@ -1530,7 +1534,7 @@ class BucketGraph {
     double opp_c_best = (dir == Direction::Forward)
                             ? buckets_[b_tilde].bw_c_best
                             : buckets_[b_tilde].c_best;
-    if (L->cost + arc_cost + opp_c_best >= theta) return;
+    if (L->cost + arc_cost + opp_c_best + min_dom_cost_ >= theta) return;
 
     // Check labels at b_tilde for θ-compatibility
     if (!((b_bar[b_tilde / 64] >> (b_tilde % 64)) & 1)) {
@@ -1542,7 +1546,7 @@ class BucketGraph {
                              : fw_labels_.costs[b_tilde];
       double base = L->cost + arc_cost;
       for (std::size_t idx = 0; idx < opp_labels.size(); ++idx) {
-        if (base + opp_costs[idx] >= theta) break;  // sorted
+        if (base + opp_costs[idx] + min_dom_cost_ >= theta) break;  // sorted
         if (opp_labels[idx]->dominated) continue;
         bool compat = (dir == Direction::Forward)
                           ? is_theta_compatible(L, opp_labels[idx], arc_id, theta)
