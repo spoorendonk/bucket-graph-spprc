@@ -13,7 +13,8 @@ namespace bgspprc {
 /// Ng-path resource for elementarity relaxation using LOCAL bit positions.
 ///
 /// Each vertex v assigns local bit positions 0..k-1 to its k ng-neighbors,
-/// plus bit k = **self bit** representing v itself. State is a uint64_t.
+/// plus bit k = **self bit** representing v itself. State is a uint32_t
+/// (max 31 neighbors, covers ng=8/16/24).
 ///
 /// Destination marking (Meta-Solver 2026 §4.2.2):
 ///   init_state()       → 0 (BucketGraph calls extend_to_vertex to mark
@@ -32,7 +33,7 @@ namespace bgspprc {
 /// j's self bit set). Since fw doesn't have j's self bit, j isn't
 /// double-counted.
 struct NgPathResource {
-  using State = uint64_t;
+  using State = uint32_t;
 
   /// Ng-path resource is always symmetric (Meta-Solver 2026 §4.2.2).
   bool symmetric() const { return true; }
@@ -41,12 +42,12 @@ struct NgPathResource {
   struct ArcInfo {
     // Forward: extending from→to
     int8_t fw_check_bit;  // bit pos of to in from's ng-set (-1 if not neighbor)
-    std::array<std::pair<int8_t, int8_t>, 64> fw_shift_pairs;
+    std::array<std::pair<int8_t, int8_t>, 32> fw_shift_pairs;
     int fw_n_pairs;
 
     // Backward: extending to→from (traversing arc in reverse)
     int8_t bw_check_bit;  // bit pos of from in to's ng-set (-1 if not neighbor)
-    std::array<std::pair<int8_t, int8_t>, 64> bw_shift_pairs;
+    std::array<std::pair<int8_t, int8_t>, 32> bw_shift_pairs;
     int bw_n_pairs;
   };
 
@@ -82,7 +83,7 @@ struct NgPathResource {
     for (int v = 0; v < n_vertices; ++v) {
       int8_t pos = 0;
       for (int w : neighbors_[v]) {
-        if (w >= 0 && w < n_vertices && pos < 63) {
+        if (w >= 0 && w < n_vertices && pos < 31) {
           bit_map[static_cast<size_t>(v) * n_vertices + w] = pos++;
         }
       }
@@ -106,7 +107,7 @@ struct NgPathResource {
         if (w < 0 || w >= n_vertices) continue;
         int8_t from_pos = bit_map[static_cast<size_t>(from) * n_vertices + w];
         int8_t to_pos = bit_map[static_cast<size_t>(to) * n_vertices + w];
-        if (from_pos >= 0 && to_pos >= 0 && ai.fw_n_pairs < 64) {
+        if (from_pos >= 0 && to_pos >= 0 && ai.fw_n_pairs < 32) {
           ai.fw_shift_pairs[ai.fw_n_pairs++] = {from_pos, to_pos};
         }
       }
@@ -115,7 +116,7 @@ struct NgPathResource {
       // This maps "I was at from" to "from is visited" in to's bit layout
       int8_t from_pos_in_to =
           bit_map[static_cast<size_t>(to) * n_vertices + from];
-      if (from_pos_in_to >= 0 && ai.fw_n_pairs < 64) {
+      if (from_pos_in_to >= 0 && ai.fw_n_pairs < 32) {
         ai.fw_shift_pairs[ai.fw_n_pairs++] = {self_bit_[from], from_pos_in_to};
       }
 
@@ -129,7 +130,7 @@ struct NgPathResource {
         if (w < 0 || w >= n_vertices) continue;
         int8_t to_pos = bit_map[static_cast<size_t>(to) * n_vertices + w];
         int8_t from_pos = bit_map[static_cast<size_t>(from) * n_vertices + w];
-        if (to_pos >= 0 && from_pos >= 0 && ai.bw_n_pairs < 64) {
+        if (to_pos >= 0 && from_pos >= 0 && ai.bw_n_pairs < 32) {
           ai.bw_shift_pairs[ai.bw_n_pairs++] = {to_pos, from_pos};
         }
       }
@@ -137,7 +138,7 @@ struct NgPathResource {
       // Self-bit shift pair: to's self bit → to's position in from's ordering
       int8_t to_pos_in_from =
           bit_map[static_cast<size_t>(from) * n_vertices + to];
-      if (to_pos_in_from >= 0 && ai.bw_n_pairs < 64) {
+      if (to_pos_in_from >= 0 && ai.bw_n_pairs < 32) {
         ai.bw_shift_pairs[ai.bw_n_pairs++] = {self_bit_[to], to_pos_in_from};
       }
     }
@@ -145,7 +146,7 @@ struct NgPathResource {
 
   /// Initialize state: empty (BucketGraph calls extend_to_vertex to mark
   /// source/sink).
-  State init_state(Direction /*dir*/) const { return 0ULL; }
+  State init_state(Direction /*dir*/) const { return 0U; }
 
   /// extendAlongArc: transform bit vector from source ordering to target
   /// ordering. Does NOT mark the destination vertex — that's done by
@@ -158,25 +159,25 @@ struct NgPathResource {
       // Forward: arc from→to, label at from, extending to to
       // Check: is 'to' forbidden? (to ∈ N(from) and to's bit set in from's
       // state)
-      if (ai.fw_check_bit >= 0 && (s & (1ULL << ai.fw_check_bit)))
-        return {0ULL, INF};
+      if (ai.fw_check_bit >= 0 && (s & (uint32_t{1} << ai.fw_check_bit)))
+        return {0U, INF};
 
-      uint64_t new_s = 0;
+      uint32_t new_s = 0;
       for (int i = 0; i < ai.fw_n_pairs; ++i) {
         auto [fp, tp] = ai.fw_shift_pairs[i];
-        if (s & (1ULL << fp)) new_s |= (1ULL << tp);
+        if (s & (uint32_t{1} << fp)) new_s |= (uint32_t{1} << tp);
       }
       return {new_s, 0.0};
     } else {
       // Backward: arc from→to traversed as to→from, label at to, extending to
       // from
-      if (ai.bw_check_bit >= 0 && (s & (1ULL << ai.bw_check_bit)))
-        return {0ULL, INF};
+      if (ai.bw_check_bit >= 0 && (s & (uint32_t{1} << ai.bw_check_bit)))
+        return {0U, INF};
 
-      uint64_t new_s = 0;
+      uint32_t new_s = 0;
       for (int i = 0; i < ai.bw_n_pairs; ++i) {
         auto [fp, tp] = ai.bw_shift_pairs[i];
-        if (s & (1ULL << fp)) new_s |= (1ULL << tp);
+        if (s & (uint32_t{1} << fp)) new_s |= (uint32_t{1} << tp);
       }
       return {new_s, 0.0};
     }
@@ -187,10 +188,10 @@ struct NgPathResource {
   /// self-loop arcs are correctly detected by extend_along_arc's check.
   std::pair<State, double> extend_to_vertex(Direction /*dir*/, State s,
                                             int vertex) const {
-    s |= (1ULL << self_bit_[vertex]);
+    s |= (uint32_t{1} << self_bit_[vertex]);
     int8_t self_as_neighbor =
         bit_map[static_cast<size_t>(vertex) * n_vertices_ + vertex];
-    if (self_as_neighbor >= 0) s |= (1ULL << self_as_neighbor);
+    if (self_as_neighbor >= 0) s |= (uint32_t{1} << self_as_neighbor);
     return {s, 0.0};
   }
 
@@ -214,6 +215,12 @@ struct NgPathResource {
                             State s_bw) const {
     if (s_fw & s_bw) return INF;
     return 0.0;
+  }
+
+  /// Strip self bit from state for SoA storage (all labels in a bucket share
+  /// the same vertex, so the self bit is always 1 — redundant for dominance).
+  uint32_t compress_state(State s, int vertex) const {
+    return s & ~(uint32_t{1} << self_bit_[vertex]);
   }
 };
 

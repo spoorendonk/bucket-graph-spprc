@@ -2,6 +2,7 @@
 
 #include <bit>
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <span>
 #include <utility>
@@ -33,6 +34,12 @@ struct R1CResource {
   /// Asserts ≤ 64 cuts (single uint64_t state).
   void set_cuts(std::span<const R1Cut> cuts, int n_vertices, int n_arcs) {
     assert(cuts.size() <= 64 && "R1CResource supports at most 64 cuts");
+    for (const auto& cut : cuts) {
+      for (double p : cut.multipliers) {
+        assert(std::abs(p - 0.5) < 1e-9 &&
+               "R1CResource only supports 3-SRC (p=1/2) multipliers");
+      }
+    }
     n_vertices_ = n_vertices;
     n_arcs_ = n_arcs;
     cuts_.assign(cuts.begin(), cuts.end());
