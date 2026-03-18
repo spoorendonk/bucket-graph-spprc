@@ -29,6 +29,33 @@
 
 namespace bgspprc {
 
+namespace detail {
+
+// Detect a resource with compress_state(uint32_t, int) → uint32_t
+template <typename R>
+concept HasCompressState = requires(const R& r, typename R::State s, int v) {
+  { r.compress_state(s, v) } -> std::same_as<uint32_t>;
+};
+
+// Find the index of the first resource with compress_state in a ResourcePack.
+// Returns sizeof...(Rs) if none found.
+template <typename Pack>
+struct NgResourceIndex;
+
+template <Resource... Rs>
+struct NgResourceIndex<ResourcePack<Rs...>> {
+  static constexpr std::size_t find() {
+    std::size_t idx = 0;
+    bool found = false;
+    ((found || (HasCompressState<Rs> ? (found = true, true) : (++idx, false))), ...);
+    return found ? idx : sizeof...(Rs);
+  }
+  static constexpr std::size_t value = find();
+  static constexpr bool has_ng = value < sizeof...(Rs);
+};
+
+}  // namespace detail
+
 /// Core bucket graph engine for SPPRC labeling.
 ///
 /// Template parameter Pack is a ResourcePack<Rs...>.
@@ -332,17 +359,22 @@ class BucketGraph {
  private:
   // ── SoA label storage ──
 
+  static constexpr bool has_ng_ = detail::NgResourceIndex<Pack>::has_ng;
+  static constexpr std::size_t ng_idx_ = detail::NgResourceIndex<Pack>::value;
+
   struct BucketLabels {
     std::vector<std::vector<Label<Pack>*>> labels;
     std::vector<std::vector<double>> costs;
     std::vector<std::vector<double>> q0;
     std::vector<std::vector<double>> q1;
+    std::vector<std::vector<uint32_t>> ng_bits;  // self-bit-stripped ng states
 
     void resize(std::size_t n) {
       labels.resize(n);
       costs.resize(n);
       q0.resize(n);
       q1.resize(n);
+      if constexpr (has_ng_) ng_bits.resize(n);
     }
 
     std::size_t size() const { return labels.size(); }
@@ -806,7 +838,18 @@ class BucketGraph {
     return dom_cost <= L2->cost + EPS;
   }
 
-  static void insert_sorted(BucketLabels& bl, int bi, Label<Pack>* L) {
+  /// Extract compressed ng bits from a label (self bit stripped).
+  uint32_t label_ng_bits(const Label<Pack>* L) const {
+    if constexpr (has_ng_) {
+      auto& ng_res = std::get<ng_idx_>(pack_.resources);
+      auto state = std::get<ng_idx_>(L->resource_states);
+      return ng_res.compress_state(state, L->vertex);
+    } else {
+      return 0;
+    }
+  }
+
+  void insert_sorted(BucketLabels& bl, int bi, Label<Pack>* L) const {
     auto& bucket_costs = bl.costs[bi];
     auto pos = std::lower_bound(bucket_costs.begin(), bucket_costs.end(), L->cost);
     auto idx = pos - bucket_costs.begin();
@@ -814,6 +857,9 @@ class BucketGraph {
     bl.labels[bi].insert(bl.labels[bi].begin() + idx, L);
     bl.q0[bi].insert(bl.q0[bi].begin() + idx, L->q[0]);
     bl.q1[bi].insert(bl.q1[bi].begin() + idx, L->q[1]);
+    if constexpr (has_ng_) {
+      bl.ng_bits[bi].insert(bl.ng_bits[bi].begin() + idx, label_ng_bits(L));
+    }
   }
 
 #ifdef BGSPPRC_HAS_SIMD
@@ -830,6 +876,19 @@ class BucketGraph {
     auto& bucket_q1 = bl.q1[bi];
     const std::size_t n = bucket.size();
     const double threshold = L->cost + EPS;
+
+    // Precompute new label's compressed ng bits for subset check
+    [[maybe_unused]] uint32_t new_ng = 0;
+    [[maybe_unused]] const uint32_t* ng_data = nullptr;
+    if constexpr (has_ng_) {
+      new_ng = label_ng_bits(L);
+      ng_data = bl.ng_bits[bi].data();
+    }
+
+    // In heuristic stages, ng check is skipped (cost-only dominance)
+    [[maybe_unused]] const bool check_ng =
+        has_ng_ && opts_.stage != Stage::Heuristic1 &&
+        opts_.stage != Stage::Heuristic2;
 
     std::size_t i = 0;
     for (; i + W <= n; i += W) {
@@ -864,6 +923,8 @@ class BucketGraph {
         if (!mask[j]) continue;
         auto* existing = bucket[i + j];
         if (existing->dominated) continue;
+        // Scalar ng subset check from SoA — avoids chasing label pointer
+        if (check_ng && (ng_data[i + j] & ~new_ng)) continue;
         if (dominates(existing, L, dir)) return true;
       }
     }
@@ -872,6 +933,7 @@ class BucketGraph {
       if (bucket_costs[i] + min_dom_cost_ > threshold) break;
       auto* existing = bucket[i];
       if (existing->dominated) continue;
+      if (check_ng && (ng_data[i] & ~new_ng)) continue;
       if (dominates(existing, L, dir)) return true;
     }
     return false;
@@ -973,6 +1035,9 @@ class BucketGraph {
       bl.costs[actual_bi].push_back(new_label->cost);
       bl.q0[actual_bi].push_back(new_label->q[0]);
       bl.q1[actual_bi].push_back(new_label->q[1]);
+      if constexpr (has_ng_) {
+        bl.ng_bits[actual_bi].push_back(label_ng_bits(new_label));
+      }
       ++label_count;
       ++total_enum_labels_;
       if (buckets_[actual_bi].vertex == pv_.sink) ++enum_sink_labels_;
@@ -1117,6 +1182,13 @@ class BucketGraph {
         c[i] = surviving[i]->cost;
         q0[i] = surviving[i]->q[0];
         q1[i] = surviving[i]->q[1];
+      }
+      if constexpr (has_ng_) {
+        auto& ng = bl.ng_bits[bi];
+        ng.resize(surviving.size());
+        for (std::size_t i = 0; i < surviving.size(); ++i) {
+          ng[i] = label_ng_bits(surviving[i]);
+        }
       }
     }
 
@@ -1667,6 +1739,7 @@ class BucketGraph {
       bl.costs[i].clear();
       bl.q0[i].clear();
       bl.q1[i].clear();
+      if constexpr (has_ng_) bl.ng_bits[i].clear();
     }
   }
 
@@ -1738,6 +1811,7 @@ class BucketGraph {
     fw_labels_.costs[src_bi].push_back(src->cost);
     fw_labels_.q0[src_bi].push_back(src->q[0]);
     fw_labels_.q1[src_bi].push_back(src->q[1]);
+    if constexpr (has_ng_) fw_labels_.ng_bits[src_bi].push_back(label_ng_bits(src));
     if (opts_.stage == Stage::Enumerate) ++total_enum_labels_;
 
     // Inject warm labels from previous solve
@@ -1829,6 +1903,7 @@ class BucketGraph {
       bw_labels_.costs[snk_bi].push_back(snk->cost);
       bw_labels_.q0[snk_bi].push_back(snk->q[0]);
       bw_labels_.q1[snk_bi].push_back(snk->q[1]);
+      if constexpr (has_ng_) bw_labels_.ng_bits[snk_bi].push_back(label_ng_bits(snk));
       if (opts_.stage == Stage::Enumerate) {
         ++total_enum_labels_;
         ++enum_sink_labels_;  // seed label is at sink
@@ -1849,6 +1924,7 @@ class BucketGraph {
     fw_labels_.costs[src_bi].push_back(src->cost);
     fw_labels_.q0[src_bi].push_back(src->q[0]);
     fw_labels_.q1[src_bi].push_back(src->q[1]);
+    if constexpr (has_ng_) fw_labels_.ng_bits[src_bi].push_back(label_ng_bits(src));
     if (opts_.stage == Stage::Enumerate) ++total_enum_labels_;
 
     if (!warm_labels_.empty()) {
