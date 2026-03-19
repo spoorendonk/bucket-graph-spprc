@@ -1148,8 +1148,7 @@ class BucketGraph {
           auto try_insert = [&](Label<Pack>* new_label) {
             if (!new_label) return;
             if (prune_past_mid && new_label->q[0] > midpoint &&
-                !has_compatible_opposite(new_label, opts_.theta,
-                                         bw_labels_))
+                !has_compatible_opposite(new_label, opts_.theta))
               return;
             if (try_insert_label(new_label, new_label->bucket, dir, bl,
                                  label_count))
@@ -1417,6 +1416,7 @@ class BucketGraph {
 
   /// Post-pass: mark bw labels past midpoint as dominated if no θ-compatible
   /// fw label exists via incoming arcs.  Mirror of has_compatible_opposite.
+  /// Uses O(1) bucket-level c_best bound per bucket (no label iteration).
   void prune_bw_past_midpoint(double mu, double theta) {
     bw_labels_pruned_ = 0;
     for (int v = 0; v < pv_.n_vertices; ++v) {
@@ -1433,20 +1433,8 @@ class BucketGraph {
             int i = pv_.arc_from[arc_id];
             auto [istart, iend] = vertex_bucket_range(i);
             for (int fbi = istart; fbi < iend && !found; ++fbi) {
-              // Bucket-level c_best skip
-              if (buckets_[fbi].c_best + bw_base + min_dom_cost_ >= theta)
-                continue;
-              // Cost-sorted early break within bucket
-              auto& fw_costs = fw_labels_.costs[fbi];
-              auto& fw_labs = fw_labels_.labels[fbi];
-              for (std::size_t idx = 0; idx < fw_labs.size(); ++idx) {
-                if (fw_costs[idx] + bw_base + min_dom_cost_ >= theta)
-                  break;  // sorted
-                if (fw_labs[idx]->dominated) continue;
-                if (is_theta_compatible(fw_labs[idx], bw, arc_id, theta)) {
-                  found = true;
-                  break;
-                }
+              if (buckets_[fbi].c_best + bw_base + min_dom_cost_ < theta) {
+                found = true;
               }
             }
             if (found) break;
@@ -1462,10 +1450,11 @@ class BucketGraph {
 
   /// Check if a forward label past q* has any θ-compatible backward label
   /// via across-arc concatenation (BucketGraph 2021 §5 exact completion
-  /// bounds). Iterates outgoing arcs (v,j), checks bw labels at j.
-  bool has_compatible_opposite(
-      const Label<Pack>* L, double theta,
-      const BucketLabels& bw_bl) const {
+  /// bounds).  Uses O(1) bucket-level bw_c_best bound per bucket — if even
+  /// the cheapest bw label in a bucket can form a sub-θ path, return true.
+  /// This is a relaxation (may keep labels the full scan would prune) but
+  /// never incorrectly prunes — matches the paper's Algorithm 2 bound.
+  bool has_compatible_opposite(const Label<Pack>* L, double theta) const {
     int v = L->vertex;
     if (v == pv_.source || v == pv_.sink) return true;
 
@@ -1476,17 +1465,8 @@ class BucketGraph {
       int j = pv_.arc_to[arc_id];
       auto [jstart, jend] = vertex_bucket_range(j);
       for (int bi = jstart; bi < jend; ++bi) {
-        // Bucket-level c_best skip
-        if (base + buckets_[bi].bw_c_best + min_dom_cost_ >= theta) continue;
-        // Cost-sorted early break within bucket
-        auto& bw_costs = bw_bl.costs[bi];
-        auto& bw_labels = bw_bl.labels[bi];
-        for (std::size_t idx = 0; idx < bw_labels.size(); ++idx) {
-          if (base + bw_costs[idx] + min_dom_cost_ >= theta) break;  // sorted
-          if (bw_labels[idx]->dominated) continue;
-          if (is_theta_compatible(L, bw_labels[idx], arc_id, theta))
-            return true;
-        }
+        if (base + buckets_[bi].bw_c_best + min_dom_cost_ < theta)
+          return true;
       }
     }
     return false;
