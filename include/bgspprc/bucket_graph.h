@@ -65,7 +65,7 @@ class BucketGraph {
   struct Options {
     std::array<double, 2> bucket_steps = {1.0, 1.0};
     int max_paths = 0;  // 0 = unlimited
-    double tolerance = -1e-6;
+    double theta = -1e-6;
     bool bidirectional = false;
     bool symmetric = false;  // skip backward labeling, use fw labels as bw
     Stage stage = Stage::Exact;
@@ -138,7 +138,7 @@ class BucketGraph {
   const std::vector<Bucket>& buckets() const { return buckets_; }
 
   void set_stage(Stage s) { opts_.stage = s; }
-  void set_tolerance(double t) { opts_.tolerance = t; }
+  void set_theta(double t) { opts_.theta = t; }
   bool enumeration_complete() const { return enum_complete_; }
 
   void reset_midpoint() { midpoint_initialized_ = false; }
@@ -1046,7 +1046,7 @@ class BucketGraph {
       auto& completion =
           (dir == Direction::Forward) ? fw_completion_ : bw_completion_;
       if (!completion.empty() && completion[actual_bi] < INF &&
-          new_label->cost + completion[actual_bi] >= opts_.tolerance)
+          new_label->cost + completion[actual_bi] >= opts_.theta)
         return false;
       bl.labels[actual_bi].push_back(new_label);
       bl.costs[actual_bi].push_back(new_label->cost);
@@ -1130,7 +1130,7 @@ class BucketGraph {
             auto& completion =
                 (dir == Direction::Forward) ? fw_completion_ : bw_completion_;
             if (!completion.empty() && completion[bi] < INF &&
-                label->cost + completion[bi] >= opts_.tolerance) {
+                label->cost + completion[bi] >= opts_.theta) {
               label->extended = true;
               continue;
             }
@@ -1148,7 +1148,7 @@ class BucketGraph {
           auto try_insert = [&](Label<Pack>* new_label) {
             if (!new_label) return;
             if (prune_past_mid && new_label->q[0] > midpoint &&
-                !has_compatible_opposite(new_label, opts_.tolerance,
+                !has_compatible_opposite(new_label, opts_.theta,
                                          bw_labels_))
               return;
             if (try_insert_label(new_label, new_label->bucket, dir, bl,
@@ -1839,12 +1839,12 @@ class BucketGraph {
     if (opts_.stage == Stage::Enumerate) {
       compute_completion_bounds(Direction::Forward);
       if (fixed_.n_fixed() > 0 &&
-          std::abs(opts_.tolerance - fixing_theta_) > EPS) {
+          std::abs(opts_.theta - fixing_theta_) > EPS) {
         fprintf(stderr,
                 "bgspprc: warning: enumerating with gap=%.6g but "
                 "buckets were fixed with theta=%.6g; consider "
                 "reset_elimination()\n",
-                opts_.tolerance, fixing_theta_);
+                opts_.theta, fixing_theta_);
       }
     }
 
@@ -1926,12 +1926,12 @@ class BucketGraph {
       compute_completion_bounds(Direction::Forward);
       compute_completion_bounds(Direction::Backward);
       if (fixed_.n_fixed() > 0 &&
-          std::abs(opts_.tolerance - fixing_theta_) > EPS) {
+          std::abs(opts_.theta - fixing_theta_) > EPS) {
         fprintf(stderr,
                 "bgspprc: warning: enumerating with gap=%.6g but "
                 "buckets were fixed with theta=%.6g; consider "
                 "reset_elimination()\n",
-                opts_.tolerance, fixing_theta_);
+                opts_.theta, fixing_theta_);
       }
     }
 
@@ -1983,7 +1983,7 @@ class BucketGraph {
 
     // Post-pass: prune bw labels past midpoint with no compatible fw label
     if (!opts_.symmetric && opts_.stage != Stage::Enumerate)
-      prune_bw_past_midpoint(mu, opts_.tolerance);
+      prune_bw_past_midpoint(mu, opts_.theta);
 
     if (opts_.symmetric) {
       // Symmetric: populate bw_c_best from fw c_best via mirror
@@ -2046,9 +2046,9 @@ class BucketGraph {
             if (fw->dominated) continue;
 
             // For EmptyPack, bw costs and resource adjustments are
-            // non-negative, so fw + arc alone exceeding tolerance is sufficient.
+            // non-negative, so fw + arc alone exceeding theta is sufficient.
             if constexpr (Pack::size == 0) {
-              if (fw->cost + arc_cost >= opts_.tolerance) continue;
+              if (fw->cost + arc_cost >= opts_.theta) continue;
             }
 
             for (int bbi = bw_start; bbi < bw_end; ++bbi) {
@@ -2068,7 +2068,7 @@ class BucketGraph {
                 // future resource breaks either assumption, add a dedicated
                 // min_concatenation_cost() to the Resource concept.
                 double total_cost = fw->cost + bw->cost + arc_cost;
-                if (total_cost + min_dom_cost_ >= opts_.tolerance) continue;
+                if (total_cost + min_dom_cost_ >= opts_.theta) continue;
 
                 bool feasible = true;
                 for (int r = 0; r < n_main_; ++r) {
@@ -2101,7 +2101,7 @@ class BucketGraph {
                   total_cost += cc;
                 }
 
-                if (total_cost < opts_.tolerance) {
+                if (total_cost < opts_.theta) {
                   Path p;
                   fw->get_path(p.vertices, p.arcs);
                   p.arcs.push_back(a);
@@ -2135,7 +2135,7 @@ class BucketGraph {
     for (int bi = start; bi < end; ++bi) {
       for (const auto* L : bl.labels[bi]) {
         if (L->dominated) continue;
-        if (L->cost < opts_.tolerance) {
+        if (L->cost < opts_.theta) {
           Path p;
           L->get_path(p.vertices, p.arcs);
           p.reduced_cost = L->cost;

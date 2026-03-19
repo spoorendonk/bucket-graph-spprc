@@ -11,6 +11,7 @@
 ///   --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;
 ///                   from file or 8 for graph; 0 disables)
 ///   --steps S1,S2   Bucket step sizes (default: per-type)
+///   --theta T       Pricing threshold θ (default: -1e-6 for CG)
 
 #include <bgspprc/resource.h>
 #include <bgspprc/resources/ng_path.h>
@@ -40,6 +41,7 @@ struct Options {
   int ng = -1;      // -1 = use file default or 8, 0 = disable ng-path
   double step1 = 0, step2 = 0;  // 0 = per-type default
   bool auto_steps = false;       // use per-vertex auto-computed steps
+  double theta = -1e-6;          // pricing threshold θ
 };
 
 struct Result {
@@ -47,6 +49,7 @@ struct Result {
   std::string type;
   int n_verts = 0;
   int n_arcs = 0;
+  double theta = -1e-6;
   double cost = 0;
   int n_paths = 0;
   double ms = 0;
@@ -78,6 +81,7 @@ static Result run_sppcc(const std::string& path, const Options& opts) {
     auto pv = inst.problem_view();
     r.n_verts = pv.n_vertices;
     r.n_arcs = pv.n_arcs;
+    r.theta = opts.theta;
 
     NgPathResource ng(pv.n_vertices, pv.n_arcs, pv.arc_from, pv.arc_to,
                       inst.ng_neighbors);
@@ -87,7 +91,7 @@ static Result run_sppcc(const std::string& path, const Options& opts) {
                           {.bucket_steps = {s1, s2},
                            .bidirectional = opts.bidir,
                            .max_paths = 100,
-                           .tolerance = 1e9});
+                           .theta = opts.theta});
     if (opts.auto_steps) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
@@ -104,13 +108,14 @@ static Result run_sppcc(const std::string& path, const Options& opts) {
     auto pv = inst.problem_view();
     r.n_verts = pv.n_vertices;
     r.n_arcs = pv.n_arcs;
+    r.theta = opts.theta;
 
     auto t0 = std::chrono::high_resolution_clock::now();
     Solver<EmptyPack> solver(pv, EmptyPack{},
                              {.bucket_steps = {s1, s2},
                               .bidirectional = opts.bidir,
                               .max_paths = 100,
-                              .tolerance = 1e9});
+                              .theta = opts.theta});
     if (opts.auto_steps) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
@@ -142,6 +147,7 @@ static Result run_vrp(const std::string& path, const Options& opts) {
     auto pv = inst.problem_view();
     r.n_verts = pv.n_vertices;
     r.n_arcs = pv.n_arcs;
+    r.theta = opts.theta;
 
     NgPathResource ng(pv.n_vertices, pv.n_arcs, pv.arc_from, pv.arc_to,
                       inst.ng_neighbors);
@@ -151,7 +157,7 @@ static Result run_vrp(const std::string& path, const Options& opts) {
                           {.bucket_steps = {s1, s2},
                            .bidirectional = opts.bidir,
                            .max_paths = 100,
-                           .tolerance = 1e9});
+                           .theta = opts.theta});
     if (opts.auto_steps) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
@@ -168,13 +174,14 @@ static Result run_vrp(const std::string& path, const Options& opts) {
     auto pv = inst.problem_view();
     r.n_verts = pv.n_vertices;
     r.n_arcs = pv.n_arcs;
+    r.theta = opts.theta;
 
     auto t0 = std::chrono::high_resolution_clock::now();
     Solver<EmptyPack> solver(pv, EmptyPack{},
                              {.bucket_steps = {s1, s2},
                               .bidirectional = opts.bidir,
                               .max_paths = 100,
-                              .tolerance = 1e9});
+                              .theta = opts.theta});
     if (opts.auto_steps) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
@@ -208,13 +215,14 @@ static Result run_graph(const std::string& path, const Options& opts) {
     auto pv = inst.problem_view();
     r.n_verts = pv.n_vertices;
     r.n_arcs = pv.n_arcs;
+    r.theta = opts.theta;
 
     auto t0 = std::chrono::high_resolution_clock::now();
     Solver<EmptyPack> solver(pv, EmptyPack{},
                              {.bucket_steps = {s1, s2},
                               .bidirectional = opts.bidir,
                               .max_paths = 100,
-                              .tolerance = 0.0});
+                              .theta = opts.theta});
     if (use_auto) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
@@ -237,6 +245,7 @@ static Result run_graph(const std::string& path, const Options& opts) {
     auto pv = inst.problem_view();
     r.n_verts = pv.n_vertices;
     r.n_arcs = pv.n_arcs;
+    r.theta = opts.theta;
 
     NgPathResource ng(pv.n_vertices, pv.n_arcs, pv.arc_from, pv.arc_to,
                       inst.ng_neighbors);
@@ -246,7 +255,7 @@ static Result run_graph(const std::string& path, const Options& opts) {
                           {.bucket_steps = {s1, s2},
                            .bidirectional = opts.bidir,
                            .max_paths = 100,
-                           .tolerance = 0.0});
+                           .theta = opts.theta});
     if (use_auto) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
@@ -276,9 +285,9 @@ static Result run_instance(const std::string& path, const Options& opts) {
 
 static void print_result(const Result& r) {
   if (r.name.empty()) return;
-  std::printf("%-30s  %-5s  n=%-4d  arcs=%-6d  cost=%.3f  paths=%-3d  %.1fms\n",
-              r.name.c_str(), r.type.c_str(), r.n_verts, r.n_arcs, r.cost,
-              r.n_paths, r.ms);
+  std::printf("%-30s  %-5s  n=%-4d  arcs=%-6d  theta=%.3g  cost=%.3f  paths=%-3d  %.1fms\n",
+              r.name.c_str(), r.type.c_str(), r.n_verts, r.n_arcs, r.theta,
+              r.cost, r.n_paths, r.ms);
   if (!r.best_path.empty()) {
     std::printf(" ");
     for (int v : r.best_path) std::printf(" %d", v);
@@ -337,6 +346,8 @@ int main(int argc, char** argv) {
       parse_steps(argv[++i], opts.step1, opts.step2);
     } else if (std::strcmp(argv[i], "--auto-steps") == 0) {
       opts.auto_steps = true;
+    } else if (std::strcmp(argv[i], "--theta") == 0 && i + 1 < argc) {
+      opts.theta = std::atof(argv[++i]);
     } else if (argv[i][0] == '-') {
       std::fprintf(stderr, "Unknown option: %s\n", argv[i]);
       return 1;
@@ -353,7 +364,8 @@ int main(int argc, char** argv) {
                  "  --stage STAGE   heuristic1|heuristic2|exact (default: exact)\n"
                  "  --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;\n"
                  "                  from file or 8 for graph; 0 disables)\n"
-                 "  --steps S1,S2   Bucket step sizes\n");
+                 "  --steps S1,S2   Bucket step sizes\n"
+                 "  --theta T       Pricing threshold θ (default: -1e-6)\n");
     return 1;
   }
 
