@@ -150,8 +150,9 @@ TEST_CASE("Solve with reduced costs") {
 
 TEST_CASE("Arc elimination preserves optimality") {
   SimpleGraph g;
-  BucketGraph<EmptyPack> bg(g.pv, EmptyPack{},
-                            {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+  BucketGraph<EmptyPack> bg(
+      g.pv, EmptyPack{},
+      {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .stage = Stage::Exact});
   bg.build();
 
   auto paths_before = bg.solve();
@@ -171,8 +172,9 @@ TEST_CASE("Arc elimination preserves optimality") {
 
 TEST_CASE("Arc elimination with tight theta removes arcs") {
   LargerGraph g;
-  BucketGraph<EmptyPack> bg(g.pv, EmptyPack{},
-                            {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+  BucketGraph<EmptyPack> bg(
+      g.pv, EmptyPack{},
+      {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .stage = Stage::Exact});
   bg.build();
 
   // Solve to populate c_best
@@ -224,8 +226,9 @@ TEST_CASE("Jump arcs are same-vertex (paper §4.1)") {
 TEST_CASE("Jump arc resource boost preserves correctness") {
   // After elimination + jump arcs, solving should still find the optimal path
   LargerGraph g;
-  BucketGraph<EmptyPack> bg(g.pv, EmptyPack{},
-                            {.bucket_steps = {3.0, 1.0}, .tolerance = 1e9});
+  BucketGraph<EmptyPack> bg(
+      g.pv, EmptyPack{},
+      {.bucket_steps = {3.0, 1.0}, .tolerance = 1e9, .stage = Stage::Exact});
   bg.build();
 
   auto paths_before = bg.solve();
@@ -244,7 +247,10 @@ TEST_CASE("Label-based elimination preserves optimal paths") {
   LargerGraph g;
   BucketGraph<EmptyPack> bg(
       g.pv, EmptyPack{},
-      {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9, .bidirectional = true});
+      {.bucket_steps = {5.0, 1.0},
+       .tolerance = 1e9,
+       .bidirectional = true,
+       .stage = Stage::Exact});
   bg.build();
 
   auto paths_before = bg.solve();

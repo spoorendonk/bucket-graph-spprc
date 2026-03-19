@@ -1,10 +1,10 @@
 #pragma once
 
 #include <bit>
-#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <span>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -31,13 +31,19 @@ struct R1CResource {
   using State = uint64_t;
 
   /// Set the active cuts. Rebuilds all lookup masks.
-  /// Asserts ≤ 64 cuts (single uint64_t state).
+  /// Throws if >64 cuts (single uint64_t state).
   void set_cuts(std::span<const R1Cut> cuts, int n_vertices, int n_arcs) {
-    assert(cuts.size() <= 64 && "R1CResource supports at most 64 cuts");
+    if (cuts.size() > 64)
+      throw std::invalid_argument(
+          "R1CResource supports at most 64 cuts (uint64_t state limit)");
     for (const auto& cut : cuts) {
+      if (cut.base_set.size() != cut.multipliers.size())
+        throw std::invalid_argument(
+            "R1CResource: base_set and multipliers must have equal size");
       for (double p : cut.multipliers) {
-        assert(std::abs(p - 0.5) < 1e-9 &&
-               "R1CResource only supports 3-SRC (p=1/2) multipliers");
+        if (p != 0.5)
+          throw std::invalid_argument(
+              "R1CResource only supports 3-SRC (p=1/2) multipliers");
       }
     }
     n_vertices_ = n_vertices;

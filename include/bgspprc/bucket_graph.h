@@ -828,6 +828,11 @@ class BucketGraph {
       return L1->cost <= L2->cost + EPS;
     }
 
+    // Cost pre-check: if L1->cost already exceeds L2->cost by more than the
+    // maximum possible domination_cost reduction, L1 can never dominate.
+    // Avoids expensive pack domination_cost() (ng bit ops, R1C state ops).
+    if (L1->cost > L2->cost + EPS + (-min_dom_cost_)) return false;
+
     double dom_cost = L1->cost;
 
     if constexpr (Pack::size > 0) {
@@ -2051,6 +2056,20 @@ class BucketGraph {
                   ? fw_labels_.labels[bbi] : bw_labels_.labels[bbi];
               for (const auto* bw : bw_labels) {
                 if (bw->dominated) continue;
+
+                // Cost pre-check before expensive resource feasibility and
+                // pack ops. min_dom_cost_ is a lower bound on the combined
+                // extend_along_arc + concatenation_cost from the pack (0 for
+                // ng/standard resources, negative sum of betas for R1C).
+                // NOTE: this reuses min_dom_cost_ (a domination_cost bound)
+                // as a concatenation bound. Valid because extend_along_arc
+                // returns cost >= 0 for all resources, and concatenation_cost
+                // shares the same worst-case bound as domination_cost. If a
+                // future resource breaks either assumption, add a dedicated
+                // min_concatenation_cost() to the Resource concept.
+                double total_cost = fw->cost + bw->cost + arc_cost;
+                if (total_cost + min_dom_cost_ >= opts_.tolerance) continue;
+
                 bool feasible = true;
                 for (int r = 0; r < n_main_; ++r) {
                   double fw_after_arc = fw->q[r] + pv_.arc_resource[r][a];
@@ -2067,8 +2086,6 @@ class BucketGraph {
                   }
                 }
                 if (!feasible) continue;
-
-                double total_cost = fw->cost + bw->cost + arc_cost;
                 double total_real_cost =
                     fw->real_cost + bw->real_cost + arc_real_cost;
 
