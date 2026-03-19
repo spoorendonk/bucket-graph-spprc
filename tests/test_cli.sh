@@ -64,6 +64,15 @@ run_test "--ng 2 tiny.sppcc → exit 0" \
 run_test "directory mode → processes all files" \
   expect_exit_and_output 0 "cost=" "$SOLVER" "$FIXTURES"
 
+run_test "default theta in output" \
+  expect_exit_and_output 0 "theta=-1e-06" "$SOLVER" "$FIXTURES/tiny.sppcc"
+
+run_test "--theta 1e9 overrides default" \
+  expect_exit_and_output 0 "theta=1e+09" "$SOLVER" --theta 1e9 "$FIXTURES/tiny.sppcc"
+
+run_test "--theta 0 shows theta=0" \
+  expect_exit_and_output 0 "theta=0" "$SOLVER" --theta 0 "$FIXTURES/tiny.sppcc"
+
 # ── Summary ──
 
 echo ""
