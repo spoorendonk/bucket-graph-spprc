@@ -41,7 +41,7 @@ struct Options {
   int ng = -1;      // -1 = use file default or 8, 0 = disable ng-path
   double step1 = 0, step2 = 0;  // 0 = per-type default
   bool auto_steps = false;       // use per-vertex auto-computed steps
-  double theta = -1e-6;          // pricing threshold θ
+  double theta = NAN;             // NAN = use Solver default (-1e-6)
 };
 
 struct Result {
@@ -49,7 +49,7 @@ struct Result {
   std::string type;
   int n_verts = 0;
   int n_arcs = 0;
-  double theta = -1e-6;
+  double theta = 0;
   double cost = 0;
   int n_paths = 0;
   double ms = 0;
@@ -57,6 +57,18 @@ struct Result {
 };
 
 // ── Helpers ──
+
+template <typename Pack>
+typename Solver<Pack>::Options make_solver_opts(
+    double s1, double s2, const Options& opts, int max_paths = 100) {
+  typename Solver<Pack>::Options so{
+      .bucket_steps = {s1, s2},
+      .bidirectional = opts.bidir,
+      .max_paths = max_paths,
+  };
+  if (!std::isnan(opts.theta)) so.theta = opts.theta;
+  return so;
+}
 
 template <typename P>
 void apply_auto_steps(Solver<P>& solver) {
@@ -81,17 +93,14 @@ static Result run_sppcc(const std::string& path, const Options& opts) {
     auto pv = inst.problem_view();
     r.n_verts = pv.n_vertices;
     r.n_arcs = pv.n_arcs;
-    r.theta = opts.theta;
 
     NgPathResource ng(pv.n_vertices, pv.n_arcs, pv.arc_from, pv.arc_to,
                       inst.ng_neighbors);
 
     auto t0 = std::chrono::high_resolution_clock::now();
-    Solver<NgPack> solver(pv, make_resource_pack(std::move(ng)),
-                          {.bucket_steps = {s1, s2},
-                           .bidirectional = opts.bidir,
-                           .max_paths = 100,
-                           .theta = opts.theta});
+    auto so = make_solver_opts<NgPack>(s1, s2, opts);
+    r.theta = so.theta;
+    Solver<NgPack> solver(pv, make_resource_pack(std::move(ng)), so);
     if (opts.auto_steps) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
@@ -108,14 +117,11 @@ static Result run_sppcc(const std::string& path, const Options& opts) {
     auto pv = inst.problem_view();
     r.n_verts = pv.n_vertices;
     r.n_arcs = pv.n_arcs;
-    r.theta = opts.theta;
 
     auto t0 = std::chrono::high_resolution_clock::now();
-    Solver<EmptyPack> solver(pv, EmptyPack{},
-                             {.bucket_steps = {s1, s2},
-                              .bidirectional = opts.bidir,
-                              .max_paths = 100,
-                              .theta = opts.theta});
+    auto so = make_solver_opts<EmptyPack>(s1, s2, opts);
+    r.theta = so.theta;
+    Solver<EmptyPack> solver(pv, EmptyPack{}, so);
     if (opts.auto_steps) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
@@ -147,17 +153,14 @@ static Result run_vrp(const std::string& path, const Options& opts) {
     auto pv = inst.problem_view();
     r.n_verts = pv.n_vertices;
     r.n_arcs = pv.n_arcs;
-    r.theta = opts.theta;
 
     NgPathResource ng(pv.n_vertices, pv.n_arcs, pv.arc_from, pv.arc_to,
                       inst.ng_neighbors);
 
     auto t0 = std::chrono::high_resolution_clock::now();
-    Solver<NgPack> solver(pv, make_resource_pack(std::move(ng)),
-                          {.bucket_steps = {s1, s2},
-                           .bidirectional = opts.bidir,
-                           .max_paths = 100,
-                           .theta = opts.theta});
+    auto so = make_solver_opts<NgPack>(s1, s2, opts);
+    r.theta = so.theta;
+    Solver<NgPack> solver(pv, make_resource_pack(std::move(ng)), so);
     if (opts.auto_steps) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
@@ -174,14 +177,11 @@ static Result run_vrp(const std::string& path, const Options& opts) {
     auto pv = inst.problem_view();
     r.n_verts = pv.n_vertices;
     r.n_arcs = pv.n_arcs;
-    r.theta = opts.theta;
 
     auto t0 = std::chrono::high_resolution_clock::now();
-    Solver<EmptyPack> solver(pv, EmptyPack{},
-                             {.bucket_steps = {s1, s2},
-                              .bidirectional = opts.bidir,
-                              .max_paths = 100,
-                              .theta = opts.theta});
+    auto so = make_solver_opts<EmptyPack>(s1, s2, opts);
+    r.theta = so.theta;
+    Solver<EmptyPack> solver(pv, EmptyPack{}, so);
     if (opts.auto_steps) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
@@ -215,14 +215,11 @@ static Result run_graph(const std::string& path, const Options& opts) {
     auto pv = inst.problem_view();
     r.n_verts = pv.n_vertices;
     r.n_arcs = pv.n_arcs;
-    r.theta = opts.theta;
 
     auto t0 = std::chrono::high_resolution_clock::now();
-    Solver<EmptyPack> solver(pv, EmptyPack{},
-                             {.bucket_steps = {s1, s2},
-                              .bidirectional = opts.bidir,
-                              .max_paths = 100,
-                              .theta = opts.theta});
+    auto so = make_solver_opts<EmptyPack>(s1, s2, opts);
+    r.theta = so.theta;
+    Solver<EmptyPack> solver(pv, EmptyPack{}, so);
     if (use_auto) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
@@ -245,17 +242,14 @@ static Result run_graph(const std::string& path, const Options& opts) {
     auto pv = inst.problem_view();
     r.n_verts = pv.n_vertices;
     r.n_arcs = pv.n_arcs;
-    r.theta = opts.theta;
 
     NgPathResource ng(pv.n_vertices, pv.n_arcs, pv.arc_from, pv.arc_to,
                       inst.ng_neighbors);
 
     auto t0 = std::chrono::high_resolution_clock::now();
-    Solver<NgPack> solver(pv, make_resource_pack(std::move(ng)),
-                          {.bucket_steps = {s1, s2},
-                           .bidirectional = opts.bidir,
-                           .max_paths = 100,
-                           .theta = opts.theta});
+    auto so = make_solver_opts<NgPack>(s1, s2, opts);
+    r.theta = so.theta;
+    Solver<NgPack> solver(pv, make_resource_pack(std::move(ng)), so);
     if (use_auto) apply_auto_steps(solver);
     solver.build();
     solver.set_stage(opts.stage);
