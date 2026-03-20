@@ -50,7 +50,7 @@ TEST_CASE("End-to-end: 5-vertex graph optimal path") {
   pv.n_main_resources = 1;
 
   Solver<EmptyPack> solver(pv, EmptyPack{},
-                           {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+                           {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
   solver.build();
 
   auto paths = solver.solve();
@@ -95,7 +95,7 @@ TEST_CASE("End-to-end: with reduced costs (pricing)") {
   pv.n_main_resources = 1;
 
   Solver<EmptyPack> solver(pv, EmptyPack{},
-                           {.bucket_steps = {5.0, 1.0}, .tolerance = 0.0});
+                           {.bucket_steps = {5.0, 1.0}, .theta = 0.0});
   solver.build();
 
   // Reduced costs: make 0→1→3→4 have negative reduced cost
@@ -137,7 +137,7 @@ TEST_CASE("End-to-end: tight time windows") {
   pv.n_main_resources = 1;
 
   Solver<EmptyPack> solver(pv, EmptyPack{},
-                           {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+                           {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
   solver.build();
 
   auto paths = solver.solve();
@@ -185,14 +185,14 @@ TEST_CASE("Bidirectional: same optimal as mono-directional") {
 
   // Mono-directional
   Solver<EmptyPack> mono(pv, EmptyPack{},
-                         {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+                         {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
   mono.build();
   auto mono_paths = mono.solve();
 
   // Bi-directional
   Solver<EmptyPack> bidir(
       pv, EmptyPack{},
-      {.bucket_steps = {5.0, 1.0}, .bidirectional = true, .tolerance = 1e9});
+      {.bucket_steps = {5.0, 1.0}, .bidirectional = true, .theta = 1e9});
   bidir.build();
   auto bidir_paths = bidir.solve();
 
@@ -238,7 +238,7 @@ TEST_CASE("Bidirectional: with reduced costs") {
 
   Solver<EmptyPack> bidir(
       pv, EmptyPack{},
-      {.bucket_steps = {5.0, 1.0}, .bidirectional = true, .tolerance = 0.0});
+      {.bucket_steps = {5.0, 1.0}, .bidirectional = true, .theta = 0.0});
   bidir.build();
 
   double red[] = {-15.0, 3.0, 5.0, 4.0, 8.0, 2.0, 7.0};
@@ -282,14 +282,14 @@ TEST_CASE("Bidirectional: tight time windows") {
 
   // Mono
   Solver<EmptyPack> mono(pv, EmptyPack{},
-                         {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+                         {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
   mono.build();
   auto mono_paths = mono.solve();
 
   // Bidir
   Solver<EmptyPack> bidir(
       pv, EmptyPack{},
-      {.bucket_steps = {5.0, 1.0}, .bidirectional = true, .tolerance = 1e9});
+      {.bucket_steps = {5.0, 1.0}, .bidirectional = true, .theta = 1e9});
   bidir.build();
   auto bidir_paths = bidir.solve();
 

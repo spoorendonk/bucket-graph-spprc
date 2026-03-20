@@ -22,14 +22,14 @@ static void check_mono_bidir_agree(const ProblemView& pv, double tol = 1e9,
                                    double step = 5.0) {
   BucketGraph<EmptyPack> mono(pv, EmptyPack{},
                               {.bucket_steps = {step, 1.0},
-                               .tolerance = tol,
+                               .theta = tol,
                                .stage = Stage::Exact});
   mono.build();
   auto mp = mono.solve();
 
   BucketGraph<EmptyPack> bidir(pv, EmptyPack{},
                                {.bucket_steps = {step, 1.0},
-                                .tolerance = tol,
+                                .theta = tol,
                                 .bidirectional = true,
                                 .stage = Stage::Exact});
   bidir.build();
@@ -92,7 +92,7 @@ TEST_CASE("Stress: single-arc source→sink") {
 
   // Also verify the actual path
   BucketGraph<EmptyPack> bg(pv, EmptyPack{},
-                            {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+                            {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
   bg.build();
   auto paths = bg.solve();
   REQUIRE(paths.size() == 1);
@@ -132,14 +132,14 @@ TEST_CASE("Stress: all paths infeasible") {
   pv.n_main_resources = 1;
 
   BucketGraph<EmptyPack> mono(pv, EmptyPack{},
-                              {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+                              {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
   mono.build();
   auto mp = mono.solve();
   CHECK(mp.empty());
 
   BucketGraph<EmptyPack> bidir(pv, EmptyPack{},
                                {.bucket_steps = {5.0, 1.0},
-                                .tolerance = 1e9,
+                                .theta = 1e9,
                                 .bidirectional = true,
                                 .stage = Stage::Exact});
   bidir.build();
@@ -176,7 +176,7 @@ TEST_CASE("Stress: multi-hop all infeasible") {
   check_mono_bidir_agree(pv);
 
   BucketGraph<EmptyPack> bg(pv, EmptyPack{},
-                            {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+                            {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
   bg.build();
   CHECK(bg.solve().empty());
 }
@@ -215,7 +215,7 @@ TEST_CASE("Stress: parallel arcs") {
   check_mono_bidir_agree(pv);
 
   BucketGraph<EmptyPack> bg(pv, EmptyPack{},
-                            {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+                            {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
   bg.build();
   auto paths = bg.solve();
   REQUIRE(paths.size() >= 1);
@@ -252,7 +252,7 @@ TEST_CASE("Stress: parallel arcs, tight window forces expensive arc") {
   check_mono_bidir_agree(pv);
 
   BucketGraph<EmptyPack> bg(pv, EmptyPack{},
-                            {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+                            {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
   bg.build();
   auto paths = bg.solve();
   REQUIRE(paths.size() == 1);
@@ -292,7 +292,7 @@ TEST_CASE("Stress: zero-width time window at intermediate vertex") {
   check_mono_bidir_agree(pv);
 
   BucketGraph<EmptyPack> bg(pv, EmptyPack{},
-                            {.bucket_steps = {1.0, 1.0}, .tolerance = 1e9});
+                            {.bucket_steps = {1.0, 1.0}, .theta = 1e9});
   bg.build();
   auto paths = bg.solve();
   REQUIRE(paths.size() == 1);
@@ -327,7 +327,7 @@ TEST_CASE("Stress: zero-width window makes path infeasible") {
   pv.n_main_resources = 1;
 
   BucketGraph<EmptyPack> bg(pv, EmptyPack{},
-                            {.bucket_steps = {1.0, 1.0}, .tolerance = 1e9});
+                            {.bucket_steps = {1.0, 1.0}, .theta = 1e9});
   bg.build();
   CHECK(bg.solve().empty());
 }
@@ -368,7 +368,7 @@ TEST_CASE("Stress: diamond, neither path dominates the other") {
   check_mono_bidir_agree(pv, 1e9, 1.0);
 
   BucketGraph<EmptyPack> bg(pv, EmptyPack{},
-                            {.bucket_steps = {1.0, 1.0}, .tolerance = 1e9,
+                            {.bucket_steps = {1.0, 1.0}, .theta = 1e9,
                              .stage = Stage::Exact});
   bg.build();
   auto paths = bg.solve();
@@ -409,7 +409,7 @@ TEST_CASE("Stress: identical labels — only one survives") {
   pv.n_main_resources = 1;
 
   BucketGraph<EmptyPack> bg(pv, EmptyPack{},
-                            {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+                            {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
   bg.build();
   auto paths = bg.solve();
   // Both arcs lead to identical labels; dominance kills one → single path
@@ -448,7 +448,7 @@ TEST_CASE("Stress: large negative reduced costs") {
   pv.n_main_resources = 1;
 
   BucketGraph<EmptyPack> mono(pv, EmptyPack{},
-                              {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9,
+                              {.bucket_steps = {5.0, 1.0}, .theta = 1e9,
                                .stage = Stage::Exact});
   mono.build();
 
@@ -460,7 +460,7 @@ TEST_CASE("Stress: large negative reduced costs") {
 
   BucketGraph<EmptyPack> bidir(pv, EmptyPack{},
                                {.bucket_steps = {5.0, 1.0},
-                                .tolerance = 1e9,
+                                .theta = 1e9,
                                 .bidirectional = true,
                                 .stage = Stage::Exact});
   bidir.build();
@@ -545,7 +545,7 @@ TEST_CASE("Stress: ng-path blocks self-loop") {
 
   double red_cost[] = {1.0, -100.0, 1.0};
   BucketGraph<Pack> bg(pv, Pack(ng),
-                       {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9,
+                       {.bucket_steps = {5.0, 1.0}, .theta = 1e9,
                         .stage = Stage::Exact});
   bg.build();
   bg.update_arc_costs(red_cost);
@@ -591,7 +591,7 @@ TEST_CASE("Stress: ng-path blocks cycle on triangle") {
 
   // Mono
   BucketGraph<Pack> mono(pv, Pack(ng),
-                         {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9,
+                         {.bucket_steps = {5.0, 1.0}, .theta = 1e9,
                           .stage = Stage::Exact});
   mono.build();
   mono.update_arc_costs(red_cost);
@@ -602,7 +602,7 @@ TEST_CASE("Stress: ng-path blocks cycle on triangle") {
   // Bidir
   BucketGraph<Pack> bidir(pv, Pack(ng),
                           {.bucket_steps = {5.0, 1.0},
-                           .tolerance = 1e9,
+                           .theta = 1e9,
                            .bidirectional = true,
                            .stage = Stage::Exact});
   bidir.build();
@@ -649,7 +649,7 @@ TEST_CASE("Stress: infeasible source via resource returns empty") {
   using Pack = ResourcePack<PickupDeliveryResource>;
 
   BucketGraph<Pack> bg(pv, Pack(pd),
-                       {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+                       {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
   bg.build();
   auto paths = bg.solve();
   CHECK(paths.empty());  // graceful empty, no crash
@@ -687,7 +687,7 @@ TEST_CASE("Stress: infeasible source via resource, bidir returns empty") {
 
   BucketGraph<Pack> bg(pv, Pack(pd),
                        {.bucket_steps = {5.0, 1.0},
-                        .tolerance = 1e9,
+                        .theta = 1e9,
                         .bidirectional = true,
                         .stage = Stage::Exact});
   bg.build();
@@ -728,7 +728,7 @@ TEST_CASE("Stress: infeasible sink in bidir returns empty") {
 
   BucketGraph<Pack> bg(pv, Pack(pd),
                        {.bucket_steps = {5.0, 1.0},
-                        .tolerance = 1e9,
+                        .theta = 1e9,
                         .bidirectional = true,
                         .stage = Stage::Exact});
   bg.build();
@@ -807,7 +807,7 @@ TEST_CASE("Stress: forced waiting at vertex") {
   check_mono_bidir_agree(pv, 1e9, 1.0);
 
   BucketGraph<EmptyPack> bg(pv, EmptyPack{},
-                            {.bucket_steps = {1.0, 1.0}, .tolerance = 1e9});
+                            {.bucket_steps = {1.0, 1.0}, .theta = 1e9});
   bg.build();
   auto paths = bg.solve();
   REQUIRE(paths.size() == 1);
@@ -893,7 +893,7 @@ TEST_CASE("Stress: ng-path prevents revisit on triangle") {
 
   // Mono
   BucketGraph<Pack> mono(pv, Pack(ng),
-                         {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9,
+                         {.bucket_steps = {5.0, 1.0}, .theta = 1e9,
                           .stage = Stage::Exact});
   mono.build();
   auto mp = mono.solve();
@@ -904,7 +904,7 @@ TEST_CASE("Stress: ng-path prevents revisit on triangle") {
   // Bidir
   BucketGraph<Pack> bidir(pv, Pack(ng),
                           {.bucket_steps = {5.0, 1.0},
-                           .tolerance = 1e9,
+                           .theta = 1e9,
                            .bidirectional = true,
                            .stage = Stage::Exact});
   bidir.build();
@@ -917,7 +917,7 @@ TEST_CASE("Stress: ng-path prevents revisit on triangle") {
 // 15. Tolerance exactly at best path cost
 // ════════════════════════════════════════════════════════════════════
 
-TEST_CASE("Stress: tolerance exactly at best cost excludes path") {
+TEST_CASE("Stress: theta exactly at best cost excludes path") {
   // Path cost = 4.0. Tolerance < 4.0 means no paths returned.
   int from[] = {0, 1};
   int to[] = {1, 2};
@@ -943,15 +943,15 @@ TEST_CASE("Stress: tolerance exactly at best cost excludes path") {
   pv.vertex_ub = v_ub;
   pv.n_main_resources = 1;
 
-  // tolerance = 4.0 → path with cost 4.0 NOT included (strictly <)
+  // theta = 4.0 → path with cost 4.0 NOT included (strictly <)
   BucketGraph<EmptyPack> bg(pv, EmptyPack{},
-                            {.bucket_steps = {5.0, 1.0}, .tolerance = 4.0});
+                            {.bucket_steps = {5.0, 1.0}, .theta = 4.0});
   bg.build();
   CHECK(bg.solve().empty());
 
-  // tolerance = 4.0 + eps → included
+  // theta = 4.0 + eps → included
   BucketGraph<EmptyPack> bg2(pv, EmptyPack{},
-                             {.bucket_steps = {5.0, 1.0}, .tolerance = 4.001});
+                             {.bucket_steps = {5.0, 1.0}, .theta = 4.001});
   bg2.build();
   auto paths = bg2.solve();
   CHECK(paths.size() == 1);
@@ -996,7 +996,7 @@ TEST_CASE("Stress: non-disposable resource with equal values allows dominance") 
   pv.resource_nondisposable = nondisposable;
 
   BucketGraph<EmptyPack> bg(pv, EmptyPack{},
-                            {.bucket_steps = {5.0, 5.0}, .tolerance = 1e9,
+                            {.bucket_steps = {5.0, 5.0}, .theta = 1e9,
                              .stage = Stage::Exact});
   bg.build();
   auto paths = bg.solve();
@@ -1037,7 +1037,7 @@ TEST_CASE("Stress: non-disposable resource prevents dominance") {
   pv.resource_nondisposable = nondisposable;
 
   BucketGraph<EmptyPack> bg(pv, EmptyPack{},
-                            {.bucket_steps = {5.0, 5.0}, .tolerance = 1e9,
+                            {.bucket_steps = {5.0, 5.0}, .theta = 1e9,
                              .stage = Stage::Exact});
   bg.build();
   auto paths = bg.solve();

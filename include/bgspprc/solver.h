@@ -18,10 +18,10 @@ class Solver {
 
   struct Options {
     std::array<double, 2> bucket_steps = {1.0, 1.0};
-    bool bidirectional = false;
+    bool bidirectional = true;
     bool symmetric = false;
     int max_paths = 0;  // 0 = unlimited
-    double tolerance = -1e-6;
+    double theta = -1e-6;
     int max_enum_labels = 5000000;
   };
 
@@ -33,7 +33,7 @@ class Solver {
             typename BucketGraph<Pack>::Options{
                 .bucket_steps = opts_.bucket_steps,
                 .max_paths = opts_.max_paths,
-                .tolerance = opts_.tolerance,
+                .theta = opts_.theta,
                 .bidirectional = opts_.bidirectional,
                 .symmetric = opts_.symmetric,
                 .stage = Stage::Exact,
@@ -95,9 +95,9 @@ class Solver {
   /// Path enumeration within gap.
   std::vector<Path> enumerate(double gap) {
     bg_.set_stage(Stage::Enumerate);
-    bg_.set_tolerance(gap);
+    bg_.set_theta(gap);
     auto paths = bg_.solve();
-    bg_.set_tolerance(opts_.tolerance);
+    bg_.set_theta(opts_.theta);
     bg_.set_stage(stage_);
     return paths;
   }

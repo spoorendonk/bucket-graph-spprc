@@ -68,7 +68,7 @@ TEST_CASE("spprclib instances") {
     auto pv = inst.problem_view();
 
     Solver<EmptyPack> solver(pv, EmptyPack{},
-                             {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
+                             {.bucket_steps = {10.0, 1.0}, .theta = 1e9});
     solver.build();
 
     auto paths = solver.solve();
@@ -117,7 +117,7 @@ TEST_CASE("rcspp_dataset R1 instances") {
     auto pv = inst.problem_view();
 
     Solver<EmptyPack> solver(pv, EmptyPack{},
-                             {.bucket_steps = {20.0, 50.0}, .tolerance = 0.0});
+                             {.bucket_steps = {20.0, 50.0}, .theta = 0.0});
     solver.build();
 
     auto paths = solver.solve();
@@ -156,7 +156,7 @@ TEST_CASE("rcspp_dataset RC1 instances") {
     auto pv = inst.problem_view();
 
     Solver<EmptyPack> solver(pv, EmptyPack{},
-                             {.bucket_steps = {20.0, 50.0}, .tolerance = 0.0});
+                             {.bucket_steps = {20.0, 50.0}, .theta = 0.0});
     solver.build();
 
     auto paths = solver.solve();
