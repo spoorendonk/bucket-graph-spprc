@@ -831,7 +831,7 @@ class BucketGraph {
     // Cost pre-check: if L1->cost already exceeds L2->cost by more than the
     // maximum possible domination_cost reduction, L1 can never dominate.
     // Avoids expensive pack domination_cost() (ng bit ops, R1C state ops).
-    if (L1->cost > L2->cost + EPS + (-min_dom_cost_)) return false;
+    if (L1->cost > L2->cost + EPS - min_dom_cost_) return false;
 
     double dom_cost = L1->cost;
 
@@ -1849,15 +1849,9 @@ class BucketGraph {
                   INF);
     }
 
-    auto paths = extract_paths(fw_labels_);
-    std::sort(paths.begin(), paths.end(), [](const Path& a, const Path& b) {
-      return a.reduced_cost < b.reduced_cost;
-    });
-    if (opts_.max_paths > 0 && static_cast<int>(paths.size()) > opts_.max_paths) {
-      paths.resize(opts_.max_paths);
-      if (opts_.stage == Stage::Enumerate) enum_complete_ = false;
-    }
-    return paths;
+    std::vector<PathCandidate> candidates;
+    collect_sink_candidates(candidates, fw_labels_);
+    return select_and_realize(candidates);
   }
 
   // ── Bi-directional solve ──
@@ -1973,36 +1967,39 @@ class BucketGraph {
     if (opts_.stage == Stage::Exact && !opts_.symmetric) adjust_midpoint();
 
     // Collect paths: forward labels that reached sink + concatenations
-    auto paths = extract_paths(fw_labels_);
-    auto concat_paths = concatenate_and_extract();
-    paths.insert(paths.end(), concat_paths.begin(), concat_paths.end());
-
-    // Sort and limit
-    std::sort(paths.begin(), paths.end(), [](const Path& a, const Path& b) {
-      return a.reduced_cost < b.reduced_cost;
-    });
-    if (opts_.max_paths > 0 && static_cast<int>(paths.size()) > opts_.max_paths) {
-      paths.resize(opts_.max_paths);
-      if (opts_.stage == Stage::Enumerate) enum_complete_ = false;
-    }
-    return paths;
+    std::vector<PathCandidate> candidates;
+    collect_sink_candidates(candidates, fw_labels_);
+    collect_concat_candidates(candidates);
+    return select_and_realize(candidates);
   }
 
-  // ── Concatenation ──
+  // ── Candidate collection and path realization ──
 
-  std::vector<Path> concatenate_and_extract() {
-    std::vector<Path> paths;
+  // Lightweight proxy for a path: stores just enough to reconstruct later.
+  // Pointers into pool_ which is stable between collect and realize.
+  struct PathCandidate {
+    double reduced_cost;
+    double original_cost;
+    const Label<Pack>* fw_label;    // always set
+    const Label<Pack>* bw_label;    // null for sink paths
+    int concat_arc;                 // -1 for sink paths
+  };
 
+  void collect_sink_candidates(std::vector<PathCandidate>& candidates,
+                               const BucketLabels& bl) {
+    auto [start, end] = vertex_bucket_range(pv_.sink);
+    for (int bi = start; bi < end; ++bi) {
+      for (const auto* L : bl.labels[bi]) {
+        if (L->dominated) continue;
+        if (L->cost < opts_.theta) {
+          candidates.push_back({L->cost, L->real_cost, L, nullptr, -1});
+        }
+      }
+    }
+  }
+
+  void collect_concat_candidates(std::vector<PathCandidate>& candidates) {
     Symmetry sym = opts_.symmetric ? Symmetry::Symmetric : Symmetry::Asymmetric;
-
-    auto append_bw_subpath = [this](Path& p, const Label<Pack>* bw) {
-      scratch_path_verts_.clear();
-      scratch_path_arcs_.clear();
-      bw->get_backward_subpath(scratch_path_verts_, scratch_path_arcs_);
-      for (std::size_t k = 1; k < scratch_path_verts_.size(); ++k)
-        p.vertices.push_back(scratch_path_verts_[k]);
-      p.arcs.insert(p.arcs.end(), scratch_path_arcs_.begin(), scratch_path_arcs_.end());
-    };
 
     // Across-arc concatenation: for each arc a = (i,j), join fw labels at i
     // with bw labels at j using on-the-fly extend through arc a.
@@ -2082,18 +2079,7 @@ class BucketGraph {
                 }
 
                 if (total_cost < opts_.theta) {
-                  Path p;
-                  fw->get_path(p.vertices, p.arcs);
-                  p.arcs.push_back(a);
-                  p.vertices.push_back(j);
-                  if (opts_.symmetric) {
-                    append_symmetric_bw_subpath(p, bw);
-                  } else {
-                    append_bw_subpath(p, bw);
-                  }
-                  p.reduced_cost = total_cost;
-                  p.original_cost = total_real_cost;
-                  paths.push_back(std::move(p));
+                  candidates.push_back({total_cost, total_real_cost, fw, bw, a});
                 }
               }
             }
@@ -2101,30 +2087,50 @@ class BucketGraph {
         }
       }
     }();
-
-    return paths;
   }
 
-  // ── Path extraction ──
-
-  std::vector<Path> extract_paths(
-      const BucketLabels& bl) {
-    std::vector<Path> paths;
-
-    auto [start, end] = vertex_bucket_range(pv_.sink);
-    for (int bi = start; bi < end; ++bi) {
-      for (const auto* L : bl.labels[bi]) {
-        if (L->dominated) continue;
-        if (L->cost < opts_.theta) {
-          Path p;
-          L->get_path(p.vertices, p.arcs);
-          p.reduced_cost = L->cost;
-          p.original_cost = L->real_cost;
-          paths.push_back(std::move(p));
-        }
+  Path realize_path(const PathCandidate& c) {
+    Path p;
+    if (c.bw_label == nullptr) {
+      // Sink path — just walk the forward label's parent chain
+      c.fw_label->get_path(p.vertices, p.arcs);
+    } else {
+      // Concatenation path: fw subpath + arc + bw subpath
+      c.fw_label->get_path(p.vertices, p.arcs);
+      p.arcs.push_back(c.concat_arc);
+      int j = pv_.arc_to[c.concat_arc];
+      p.vertices.push_back(j);
+      if (opts_.symmetric) {
+        append_symmetric_bw_subpath(p, c.bw_label);
+      } else {
+        append_bw_subpath(p, c.bw_label);
       }
     }
+    p.reduced_cost = c.reduced_cost;
+    p.original_cost = c.original_cost;
+    return p;
+  }
 
+  std::vector<Path> select_and_realize(std::vector<PathCandidate>& candidates) {
+    auto cmp = [](const PathCandidate& a, const PathCandidate& b) {
+      return a.reduced_cost < b.reduced_cost;
+    };
+
+    int limit = static_cast<int>(candidates.size());
+    if (opts_.max_paths > 0 && limit > opts_.max_paths) {
+      limit = opts_.max_paths;
+      std::partial_sort(candidates.begin(), candidates.begin() + limit,
+                        candidates.end(), cmp);
+      candidates.resize(limit);
+      if (opts_.stage == Stage::Enumerate) enum_complete_ = false;
+    } else if (limit > 1) {
+      std::sort(candidates.begin(), candidates.end(), cmp);
+    }
+
+    std::vector<Path> paths;
+    paths.reserve(limit);
+    for (const auto& c : candidates)
+      paths.push_back(realize_path(c));
     return paths;
   }
 
@@ -2168,6 +2174,17 @@ class BucketGraph {
     auto it =
         arc_lookup_.find(static_cast<int64_t>(from) * pv_.n_vertices + to);
     return (it != arc_lookup_.end()) ? it->second : -1;
+  }
+
+  /// Append backward label's subpath (forward order, skipping first vertex
+  /// which is already in the path).
+  void append_bw_subpath(Path& p, const Label<Pack>* bw) {
+    scratch_path_verts_.clear();
+    scratch_path_arcs_.clear();
+    bw->get_backward_subpath(scratch_path_verts_, scratch_path_arcs_);
+    for (std::size_t k = 1; k < scratch_path_verts_.size(); ++k)
+      p.vertices.push_back(scratch_path_verts_[k]);
+    p.arcs.insert(p.arcs.end(), scratch_path_arcs_.begin(), scratch_path_arcs_.end());
   }
 
   /// Append the reversed forward path of a symmetric "bw" label.
