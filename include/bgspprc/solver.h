@@ -18,7 +18,7 @@ class Solver {
 
   struct Options {
     std::array<double, 2> bucket_steps = {1.0, 1.0};
-    bool bidirectional = false;
+    bool bidirectional = true;
     bool symmetric = false;
     int max_paths = 0;  // 0 = unlimited
     double theta = -1e-6;
