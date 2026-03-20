@@ -2337,3 +2337,270 @@ TEST_CASE("Backward exact completion bounds prune bw labels past midpoint") {
 }
 
 #endif  // !_WIN32
+
+// ── Lazy path extraction / partial_sort tests ──
+
+// Graph with multiple distinct-cost paths from source(0) to sink(4):
+//   0→1→3→4 cost=1+1+1=3
+//   0→1→4   cost=1+3=4
+//   0→2→3→4 cost=2+2+1=5
+//   0→2→4   cost=2+4=6
+struct MultiPathGraph {
+  int from[7] = {0, 0, 1, 2, 1, 2, 3};
+  int to[7] = {1, 2, 3, 3, 4, 4, 4};
+  double cost[7] = {1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 1.0};
+  double time_d[7] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+
+  double tw_lb[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+  double tw_ub[5] = {10.0, 10.0, 10.0, 10.0, 10.0};
+
+  const double* arc_res[1] = {time_d};
+  const double* v_lb[1] = {tw_lb};
+  const double* v_ub[1] = {tw_ub};
+
+  ProblemView pv;
+
+  MultiPathGraph() {
+    pv.n_vertices = 5;
+    pv.source = 0;
+    pv.sink = 4;
+    pv.n_arcs = 7;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+  }
+};
+
+TEST_CASE("max_paths selects cheapest paths (mono, Exact)") {
+  // In Exact mode, max_paths is purely a post-labeling selection (no
+  // early-stop). This directly tests the partial_sort path in
+  // select_and_realize.
+  MultiPathGraph g;
+  using BG = BucketGraph<EmptyPack>;
+
+  // Exact with large theta finds all non-dominated paths
+  BG bg_all(g.pv, EmptyPack{},
+            {.bucket_steps = {5.0, 1.0},
+             .max_paths = 0,
+             .theta = 1e9,
+             .stage = Stage::Exact});
+  bg_all.build();
+  auto all = bg_all.solve();
+  REQUIRE(all.size() >= 2);
+  for (std::size_t i = 1; i < all.size(); ++i)
+    CHECK(all[i - 1].reduced_cost <= all[i].reduced_cost + 1e-9);
+
+  // Limit to 1 — cheapest only (exercises partial_sort branch)
+  BG bg_lim(g.pv, EmptyPack{},
+            {.bucket_steps = {5.0, 1.0},
+             .max_paths = 1,
+             .theta = 1e9,
+             .stage = Stage::Exact});
+  bg_lim.build();
+  auto limited = bg_lim.solve();
+  CHECK(limited.size() == 1);
+  CHECK(limited[0].reduced_cost == doctest::Approx(all[0].reduced_cost));
+}
+
+TEST_CASE("max_paths selects cheapest paths (bidir, Exact)") {
+  MultiPathGraph g;
+  using BG = BucketGraph<EmptyPack>;
+
+  BG bg_all(g.pv, EmptyPack{},
+            {.bucket_steps = {5.0, 1.0},
+             .max_paths = 0,
+             .theta = 1e9,
+             .bidirectional = true,
+             .stage = Stage::Exact});
+  bg_all.build();
+  auto all = bg_all.solve();
+  REQUIRE(all.size() >= 2);
+  for (std::size_t i = 1; i < all.size(); ++i)
+    CHECK(all[i - 1].reduced_cost <= all[i].reduced_cost + 1e-9);
+
+  // Limit to 1
+  BG bg_lim(g.pv, EmptyPack{},
+            {.bucket_steps = {5.0, 1.0},
+             .max_paths = 1,
+             .theta = 1e9,
+             .bidirectional = true,
+             .stage = Stage::Exact});
+  bg_lim.build();
+  auto limited = bg_lim.solve();
+  CHECK(limited.size() == 1);
+  CHECK(limited[0].reduced_cost == doctest::Approx(all[0].reduced_cost));
+  // Realized path must have valid structure
+  CHECK(limited[0].vertices.front() == 0);
+  CHECK(limited[0].vertices.back() == 4);
+  CHECK(limited[0].arcs.size() == limited[0].vertices.size() - 1);
+}
+
+TEST_CASE("max_paths preserves path contents") {
+  MultiPathGraph g;
+  using BG = BucketGraph<EmptyPack>;
+
+  // Exact mode: max_paths only affects extraction, not labeling
+  BG bg_all(g.pv, EmptyPack{},
+            {.bucket_steps = {5.0, 1.0},
+             .max_paths = 0,
+             .theta = 1e9,
+             .stage = Stage::Exact});
+  bg_all.build();
+  auto all = bg_all.solve();
+  REQUIRE(all.size() >= 2);
+
+  // Get limited paths — same solver, just fewer results
+  BG bg_lim(g.pv, EmptyPack{},
+            {.bucket_steps = {5.0, 1.0},
+             .max_paths = static_cast<int>(all.size()) - 1,
+             .theta = 1e9,
+             .stage = Stage::Exact});
+  bg_lim.build();
+  auto limited = bg_lim.solve();
+  REQUIRE(limited.size() == all.size() - 1);
+
+  // The realized paths should have identical vertices, arcs, and costs
+  for (std::size_t i = 0; i < limited.size(); ++i) {
+    CHECK(limited[i].vertices == all[i].vertices);
+    CHECK(limited[i].arcs == all[i].arcs);
+    CHECK(limited[i].reduced_cost == doctest::Approx(all[i].reduced_cost));
+    CHECK(limited[i].original_cost == doctest::Approx(all[i].original_cost));
+  }
+}
+
+TEST_CASE("max_paths=0 returns all paths sorted (Enumerate)") {
+  MultiPathGraph g;
+  using BG = BucketGraph<EmptyPack>;
+
+  BG bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0},
+         .max_paths = 0,
+         .theta = 1e9,
+         .stage = Stage::Enumerate});
+  bg.build();
+  auto paths = bg.solve();
+  REQUIRE(paths.size() == 4);  // 4 distinct paths in this graph
+  for (std::size_t i = 1; i < paths.size(); ++i)
+    CHECK(paths[i - 1].reduced_cost <= paths[i].reduced_cost + 1e-9);
+}
+
+TEST_CASE("max_paths >= n_paths returns all paths") {
+  MultiPathGraph g;
+  using BG = BucketGraph<EmptyPack>;
+
+  BG bg_all(g.pv, EmptyPack{},
+            {.bucket_steps = {5.0, 1.0},
+             .max_paths = 0,
+             .theta = 1e9,
+             .stage = Stage::Exact});
+  bg_all.build();
+  auto all = bg_all.solve();
+  int n = static_cast<int>(all.size());
+  REQUIRE(n >= 2);
+
+  // max_paths equal to total count — should return everything
+  BG bg_eq(g.pv, EmptyPack{},
+           {.bucket_steps = {5.0, 1.0},
+            .max_paths = n,
+            .theta = 1e9,
+            .stage = Stage::Exact});
+  bg_eq.build();
+  auto eq = bg_eq.solve();
+  CHECK(eq.size() == all.size());
+
+  // max_paths larger than total — same result
+  BG bg_big(g.pv, EmptyPack{},
+            {.bucket_steps = {5.0, 1.0},
+             .max_paths = n + 100,
+             .theta = 1e9,
+             .stage = Stage::Exact});
+  bg_big.build();
+  auto big = bg_big.solve();
+  CHECK(big.size() == all.size());
+}
+
+TEST_CASE("max_paths sets enum_complete_ false") {
+  ParallelArcGraph g;
+  using BG = BucketGraph<EmptyPack>;
+
+  // ParallelArcGraph has 2 paths in Enumerate mode (cost 3, 5)
+  BG bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0},
+         .max_paths = 1,
+         .theta = 1e9,
+         .stage = Stage::Enumerate});
+  bg.build();
+  auto paths = bg.solve();
+  CHECK(paths.size() == 1);
+  CHECK_FALSE(bg.enumeration_complete());
+}
+
+TEST_CASE("Bidir concatenation paths are realized correctly") {
+  ParallelArcGraph g;
+  using BG = BucketGraph<EmptyPack>;
+
+  BG bg(g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0},
+         .max_paths = 0,
+         .theta = 1e9,
+         .bidirectional = true,
+         .stage = Stage::Exact});
+  bg.build();
+  auto paths = bg.solve();
+  REQUIRE(!paths.empty());
+
+  // All paths must start at source and end at sink with valid structure
+  for (const auto& p : paths) {
+    REQUIRE(!p.vertices.empty());
+    CHECK(p.vertices.front() == 0);
+    CHECK(p.vertices.back() == 3);
+    CHECK(p.arcs.size() == p.vertices.size() - 1);
+    // Verify arc connectivity
+    for (std::size_t k = 0; k < p.arcs.size(); ++k) {
+      CHECK(g.from[p.arcs[k]] == p.vertices[k]);
+      CHECK(g.to[p.arcs[k]] == p.vertices[k + 1]);
+    }
+  }
+  // Sorted by cost
+  for (std::size_t i = 1; i < paths.size(); ++i)
+    CHECK(paths[i - 1].reduced_cost <= paths[i].reduced_cost + 1e-9);
+}
+
+TEST_CASE("Bidir max_paths realizes concatenation paths correctly") {
+  MultiPathGraph g;
+  using BG = BucketGraph<EmptyPack>;
+
+  // Get all bidir paths
+  BG bg_all(g.pv, EmptyPack{},
+            {.bucket_steps = {5.0, 1.0},
+             .max_paths = 0,
+             .theta = 1e9,
+             .bidirectional = true,
+             .stage = Stage::Exact});
+  bg_all.build();
+  auto all = bg_all.solve();
+  REQUIRE(all.size() >= 2);
+
+  // Get limited — exercises realize_path for concatenation candidates
+  BG bg_lim(g.pv, EmptyPack{},
+            {.bucket_steps = {5.0, 1.0},
+             .max_paths = 1,
+             .theta = 1e9,
+             .bidirectional = true,
+             .stage = Stage::Exact});
+  bg_lim.build();
+  auto limited = bg_lim.solve();
+  REQUIRE(limited.size() == 1);
+  CHECK(limited[0].reduced_cost == doctest::Approx(all[0].reduced_cost));
+
+  // Verify arc connectivity of realized path
+  for (std::size_t k = 0; k < limited[0].arcs.size(); ++k) {
+    CHECK(g.from[limited[0].arcs[k]] == limited[0].vertices[k]);
+    CHECK(g.to[limited[0].arcs[k]] == limited[0].vertices[k + 1]);
+  }
+}
