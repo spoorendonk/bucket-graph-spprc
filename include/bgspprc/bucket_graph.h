@@ -1247,30 +1247,7 @@ class BucketGraph {
     }
 
     // Batch compaction: physically remove dominated labels at SCC boundary
-    for (int bi : scc_bs) {
-      std::erase_if(bl.labels[bi],
-                     [](const Label<Pack>* L) { return L->dominated; });
-      // Rebuild SoA arrays from surviving labels
-      auto& surviving = bl.labels[bi];
-      auto& c = bl.costs[bi];
-      auto& q0 = bl.q0[bi];
-      auto& q1 = bl.q1[bi];
-      c.resize(surviving.size());
-      q0.resize(surviving.size());
-      q1.resize(surviving.size());
-      for (std::size_t i = 0; i < surviving.size(); ++i) {
-        c[i] = surviving[i]->cost;
-        q0[i] = surviving[i]->q[0];
-        q1[i] = surviving[i]->q[1];
-      }
-      if constexpr (has_ng_) {
-        auto& ng = bl.ng_bits[bi];
-        ng.resize(surviving.size());
-        for (std::size_t i = 0; i < surviving.size(); ++i) {
-          ng[i] = label_ng_bits(surviving[i]);
-        }
-      }
-    }
+    compact_labels(bl, scc_bs);
 
     update_c_best(scc_id, dir, scc_buckets, bl);
   }
@@ -1487,29 +1464,20 @@ class BucketGraph {
     return total_cost < theta;
   }
 
-  /// Post-pass: mark bw labels past midpoint as dominated if no θ-compatible
-  /// fw label exists via incoming arcs.  Mirror of has_compatible_opposite.
-  /// Uses O(1) bucket-level c_best bound per bucket (no label iteration).
-  void prune_bw_past_midpoint(double mu, double theta) {
+  /// Post-pass: mark bw labels as dominated if no fw path can form a
+  /// sub-θ concatenation at their vertex.  Uses precomputed
+  /// vertex_min_fw_arrival_[v] = min over incoming arcs (i,v) of
+  /// (vertex_min_c_best_[i] + arc_cost(i,v)).  O(1) per label.
+  void prune_bw_incompatible(double theta) {
     bw_labels_pruned_ = 0;
     for (int v = 0; v < pv_.n_vertices; ++v) {
       if (v == pv_.source || v == pv_.sink) continue;
+      double arrival = vertex_min_fw_arrival_[v];
       auto [start, end] = vertex_bucket_range(v);
       for (int bi = start; bi < end; ++bi) {
         for (auto* bw : bw_labels_.labels[bi]) {
-          if (bw->dominated || bw->q[0] >= mu) continue;
-          bool found = false;
-          for (int arc_id : adj_.incoming[v]) {
-            double arc_cost = reduced_costs_ ? reduced_costs_[arc_id]
-                                             : pv_.arc_base_cost[arc_id];
-            double bw_base = bw->cost + arc_cost;
-            int i = pv_.arc_from[arc_id];
-            if (vertex_min_c_best_[i] + bw_base + min_dom_cost_ < theta) {
-              found = true;
-              break;
-            }
-          }
-          if (!found) {
+          if (bw->dominated) continue;
+          if (arrival + bw->cost + min_dom_cost_ >= theta) {
             bw->dominated = true;
             ++bw_labels_pruned_;
           }
@@ -1835,6 +1803,40 @@ class BucketGraph {
     }
   }
 
+  /// Compact a single bucket: remove dominated labels and rebuild SoA.
+  void compact_bucket(BucketLabels& bl, int bi) {
+    std::erase_if(bl.labels[bi],
+                   [](const Label<Pack>* L) { return L->dominated; });
+    auto& surviving = bl.labels[bi];
+    auto& c = bl.costs[bi];
+    auto& q0 = bl.q0[bi];
+    auto& q1 = bl.q1[bi];
+    c.resize(surviving.size());
+    q0.resize(surviving.size());
+    q1.resize(surviving.size());
+    for (std::size_t i = 0; i < surviving.size(); ++i) {
+      c[i] = surviving[i]->cost;
+      q0[i] = surviving[i]->q[0];
+      q1[i] = surviving[i]->q[1];
+    }
+    if constexpr (has_ng_) {
+      auto& ng = bl.ng_bits[bi];
+      ng.resize(surviving.size());
+      for (std::size_t i = 0; i < surviving.size(); ++i)
+        ng[i] = label_ng_bits(surviving[i]);
+    }
+  }
+
+  /// Compact a list of buckets.
+  void compact_labels(BucketLabels& bl, std::span<const int> bucket_ids) {
+    for (int bi : bucket_ids) compact_bucket(bl, bi);
+  }
+
+  /// Compact all buckets in a BucketLabels structure.
+  void compact_labels(BucketLabels& bl, int n_buckets) {
+    for (int bi = 0; bi < n_buckets; ++bi) compact_bucket(bl, bi);
+  }
+
   void reset_c_best() {
     for (auto& b : buckets_) {
       b.c_best = INF;
@@ -2024,9 +2026,23 @@ class BucketGraph {
                   mu);
     }
 
-    // Post-pass: prune bw labels past midpoint with no compatible fw label
-    if (!opts_.symmetric && opts_.stage != Stage::Enumerate)
-      prune_bw_past_midpoint(mu, opts_.theta);
+    // Post-pass: prune bw labels incompatible with any fw path
+    if (!opts_.symmetric && opts_.stage != Stage::Enumerate) {
+      // Precompute min fw arrival cost per vertex
+      vertex_min_fw_arrival_.assign(pv_.n_vertices, INF);
+      for (int a = 0; a < pv_.n_arcs; ++a) {
+        int i = pv_.arc_from[a];
+        int j = pv_.arc_to[a];
+        double cost = reduced_costs_ ? reduced_costs_[a] : pv_.arc_base_cost[a];
+        vertex_min_fw_arrival_[j] =
+            std::min(vertex_min_fw_arrival_[j], vertex_min_c_best_[i] + cost);
+      }
+      // Prune ALL bw labels incompatible with any fw path
+      prune_bw_incompatible(opts_.theta);
+      // Compact bw SoA + recompute bw_c_best
+      compact_labels(bw_labels_, static_cast<int>(buckets_.size()));
+      recompute_bw_c_best();
+    }
 
     if (opts_.symmetric) {
       // Symmetric: populate bw_c_best from fw c_best via mirror
@@ -2037,6 +2053,7 @@ class BucketGraph {
 
     // Collect paths: forward labels that reached sink + concatenations
     std::vector<PathCandidate> candidates;
+    candidates.reserve(1024);
     collect_sink_candidates(candidates, fw_labels_);
     collect_concat_candidates(candidates);
     return select_and_realize(candidates);
@@ -2255,6 +2272,25 @@ class BucketGraph {
     }
   }
 
+  /// Recompute bw_c_best per bucket and vertex_min_bw_c_best_ per vertex
+  /// from surviving (non-dominated) bw labels.
+  void recompute_bw_c_best() {
+    for (int bi = 0; bi < static_cast<int>(buckets_.size()); ++bi) {
+      double best = INF;
+      for (const auto* L : bw_labels_.labels[bi]) {
+        if (L->cost < best) best = L->cost;
+      }
+      buckets_[bi].bw_c_best = best;
+    }
+    for (int v = 0; v < pv_.n_vertices; ++v) {
+      auto [start, end] = vertex_bucket_range(v);
+      double vmin = INF;
+      for (int bi = start; bi < end; ++bi)
+        vmin = std::min(vmin, buckets_[bi].bw_c_best);
+      vertex_min_bw_c_best_[v] = vmin;
+    }
+  }
+
   /// Build arc lookup table for symmetric path reconstruction.
   void build_arc_lookup() {
     arc_lookup_.clear();
@@ -2326,6 +2362,7 @@ class BucketGraph {
   // Per-vertex min c_best / bw_c_best caches
   std::vector<double> vertex_min_c_best_;
   std::vector<double> vertex_min_bw_c_best_;
+  std::vector<double> vertex_min_fw_arrival_;  // min over incoming arcs of (vertex_min_c_best_[i] + arc_cost(i,j))
 
   // Forward SCC data
   std::vector<std::vector<int>> fw_scc_buckets_;
