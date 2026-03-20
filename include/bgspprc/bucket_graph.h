@@ -466,20 +466,56 @@ class BucketGraph {
   // ── Bucket arc generation ──
 
   void build_bucket_arcs(Direction dir) {
-    for (auto& b : buckets_) {
-      if (dir == Direction::Forward)
-        b.bucket_arcs.clear();
-      else
-        b.bw_bucket_arcs.clear();
-      b.jump_arcs.clear();
-    }
+    int nb = static_cast<int>(buckets_.size());
+    scratch_ba_count_.assign(nb, 0);
 
+    // Pass 1: count feasible arcs per source bucket
     for (int a = 0; a < pv_.n_arcs; ++a) {
       int from_v = pv_.arc_from[a];
       int to_v = pv_.arc_to[a];
 
       if (dir == Direction::Forward) {
-        // Forward: iterate buckets of from_v, target at to_v
+        auto [start, end] = vertex_bucket_range(from_v);
+        for (int bi = start; bi < end; ++bi) {
+          const auto& src_b = buckets_[bi];
+          bool feasible = true;
+          for (int r = 0; r < n_main_; ++r) {
+            double q = std::max(src_b.lb[r] + pv_.arc_resource[r][a],
+                                pv_.vertex_lb[r][to_v]);
+            if (q > pv_.vertex_ub[r][to_v]) { feasible = false; break; }
+          }
+          if (feasible) ++scratch_ba_count_[bi];
+        }
+      } else {
+        auto [start, end] = vertex_bucket_range(to_v);
+        for (int bi = start; bi < end; ++bi) {
+          const auto& src_b = buckets_[bi];
+          bool feasible = true;
+          for (int r = 0; r < n_main_; ++r) {
+            double q = std::min(src_b.ub[r] - pv_.arc_resource[r][a],
+                                pv_.vertex_ub[r][from_v]);
+            if (q < pv_.vertex_lb[r][from_v]) { feasible = false; break; }
+          }
+          if (feasible) ++scratch_ba_count_[bi];
+        }
+      }
+    }
+
+    // Reserve + clear
+    for (int bi = 0; bi < nb; ++bi) {
+      auto& arcs = (dir == Direction::Forward) ? buckets_[bi].bucket_arcs
+                                               : buckets_[bi].bw_bucket_arcs;
+      arcs.clear();
+      arcs.reserve(scratch_ba_count_[bi]);
+      buckets_[bi].jump_arcs.clear();
+    }
+
+    // Pass 2: fill
+    for (int a = 0; a < pv_.n_arcs; ++a) {
+      int from_v = pv_.arc_from[a];
+      int to_v = pv_.arc_to[a];
+
+      if (dir == Direction::Forward) {
         auto [start, end] = vertex_bucket_range(from_v);
         for (int bi = start; bi < end; ++bi) {
           const auto& src_b = buckets_[bi];
@@ -498,7 +534,6 @@ class BucketGraph {
           buckets_[bi].bucket_arcs.push_back({target_bi, a});
         }
       } else {
-        // Backward: iterate buckets of to_v, target at from_v
         auto [start, end] = vertex_bucket_range(to_v);
         for (int bi = start; bi < end; ++bi) {
           const auto& src_b = buckets_[bi];
@@ -535,11 +570,12 @@ class BucketGraph {
     scc_topo.clear();
     bucket_scc_id.assign(n, -1);
 
-    // Build adjacency
+    // Build adjacency (reserve from bucket arc counts + 2 for same-vertex)
     std::vector<std::vector<int>> adj(n);
     for (int bi = 0; bi < n; ++bi) {
       auto& arcs = (dir == Direction::Forward) ? buckets_[bi].bucket_arcs
                                                : buckets_[bi].bw_bucket_arcs;
+      adj[bi].reserve(arcs.size() + 2);
       for (const auto& ba : arcs) {
         adj[bi].push_back(ba.to_bucket);
       }
@@ -1042,7 +1078,19 @@ class BucketGraph {
 
   void remove_dominated(const Label<Pack>* new_label, int bi, Direction dir,
                         BucketLabels& bl) {
-    for (auto* existing : bl.labels[bi]) {
+    auto& bucket_costs = bl.costs[bi];
+    // Costs are sorted ascending.  dominates(new, existing) requires
+    // new->cost + dom_cost <= existing->cost + EPS for some dom_cost >=
+    // min_dom_cost_, so only labels with cost >= new->cost + min_dom_cost_ -
+    // EPS can possibly be dominated.
+    double min_victim_cost = new_label->cost + min_dom_cost_ - EPS;
+    auto start_it =
+        std::lower_bound(bucket_costs.begin(), bucket_costs.end(),
+                         min_victim_cost);
+    std::size_t start =
+        static_cast<std::size_t>(start_it - bucket_costs.begin());
+    for (std::size_t i = start; i < bl.labels[bi].size(); ++i) {
+      auto* existing = bl.labels[bi][i];
       if (!existing->dominated && dominates(new_label, existing, dir)) {
         existing->dominated = true;
       }
@@ -2050,33 +2098,48 @@ class BucketGraph {
         auto [bw_start, bw_end] = vertex_bucket_range(j);
 
         for (int fbi = fw_start; fbi < fw_end; ++fbi) {
-          for (const auto* fw : fw_labels_.labels[fbi]) {
+          // Per-fw-bucket c_best skip
+          if (buckets_[fbi].c_best + arc_cost + vertex_min_bw_c_best_[j] +
+                  min_dom_cost_ >=
+              opts_.theta)
+            continue;
+
+          auto& fw_costs = fw_labels_.costs[fbi];
+          for (std::size_t fi = 0; fi < fw_labels_.labels[fbi].size(); ++fi) {
+            // Sorted fw cost break
+            if (fw_costs[fi] + arc_cost + vertex_min_bw_c_best_[j] +
+                    min_dom_cost_ >=
+                opts_.theta)
+              break;
+            const auto* fw = fw_labels_.labels[fbi][fi];
             if (fw->dominated) continue;
+
+            double fw_arc = fw->cost + arc_cost;
 
             // For EmptyPack, bw costs and resource adjustments are
             // non-negative, so fw + arc alone exceeding theta is sufficient.
             if constexpr (Pack::size == 0) {
-              if (fw->cost + arc_cost >= opts_.theta) continue;
+              if (fw_arc >= opts_.theta) continue;
             }
 
             for (int bbi = bw_start; bbi < bw_end; ++bbi) {
-              auto& bw_labels = opts_.symmetric
-                  ? fw_labels_.labels[bbi] : bw_labels_.labels[bbi];
-              for (const auto* bw : bw_labels) {
-                if (bw->dominated) continue;
+              // Per-bw-bucket c_best skip (bw_c_best is populated from
+              // mirror c_best in symmetric mode)
+              if (fw_arc + buckets_[bbi].bw_c_best + min_dom_cost_ >=
+                  opts_.theta)
+                continue;
 
-                // Cost pre-check before expensive resource feasibility and
-                // pack ops. min_dom_cost_ is a lower bound on the combined
-                // extend_along_arc + concatenation_cost from the pack (0 for
-                // ng/standard resources, negative sum of betas for R1C).
-                // NOTE: this reuses min_dom_cost_ (a domination_cost bound)
-                // as a concatenation bound. Valid because extend_along_arc
-                // returns cost >= 0 for all resources, and concatenation_cost
-                // shares the same worst-case bound as domination_cost. If a
-                // future resource breaks either assumption, add a dedicated
-                // min_concatenation_cost() to the Resource concept.
-                double total_cost = fw->cost + bw->cost + arc_cost;
-                if (total_cost + min_dom_cost_ >= opts_.theta) continue;
+              auto& bw_costs = opts_.symmetric ? fw_labels_.costs[bbi]
+                                               : bw_labels_.costs[bbi];
+              auto& bw_labels = opts_.symmetric ? fw_labels_.labels[bbi]
+                                                : bw_labels_.labels[bbi];
+              for (std::size_t li = 0; li < bw_labels.size(); ++li) {
+                // Sorted bw cost break
+                double total_cost = fw_arc + bw_costs[li];
+                if (total_cost + min_dom_cost_ >= opts_.theta) break;
+
+                const auto* bw = bw_labels[li];
+                if (bw->dominated) continue;
 
                 bool feasible = true;
                 for (int r = 0; r < n_main_; ++r) {
@@ -2374,6 +2437,7 @@ class BucketGraph {
   LabelPool<Pack> pool_;
 
   // Scratch buffers — reused across calls
+  std::vector<int> scratch_ba_count_;              // build_bucket_arcs reserve
   std::vector<uint8_t> scratch_visited_;
   std::vector<uint64_t> scratch_b_bar_;
   std::vector<int> scratch_arc_local_;
