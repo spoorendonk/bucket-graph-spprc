@@ -41,7 +41,7 @@ struct R1CResource {
         throw std::invalid_argument(
             "R1CResource: base_set and multipliers must have equal size");
       for (double p : cut.multipliers) {
-        if (p != 0.5)
+        if (std::abs(p - 0.5) > 1e-9)
           throw std::invalid_argument(
               "R1CResource only supports 3-SRC (p=1/2) multipliers");
       }

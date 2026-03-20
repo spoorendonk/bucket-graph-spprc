@@ -831,7 +831,7 @@ class BucketGraph {
     // Cost pre-check: if L1->cost already exceeds L2->cost by more than the
     // maximum possible domination_cost reduction, L1 can never dominate.
     // Avoids expensive pack domination_cost() (ng bit ops, R1C state ops).
-    if (L1->cost > L2->cost + EPS + (-min_dom_cost_)) return false;
+    if (L1->cost > L2->cost + EPS - min_dom_cost_) return false;
 
     double dom_cost = L1->cost;
 
