@@ -2080,19 +2080,15 @@ class BucketGraph {
         if (i == pv_.source || i == pv_.sink) continue;
         if (j == pv_.source || j == pv_.sink) continue;
 
-        // Arc-level skip: if even the cheapest fw@i + bw@j can't beat theta
-        {
-          double arc_cost_quick =
-              reduced_costs_ ? reduced_costs_[a] : pv_.arc_base_cost[a];
-          if (vertex_min_c_best_[i] + vertex_min_bw_c_best_[j] +
-                  arc_cost_quick + min_dom_cost_ >=
-              opts_.theta)
-            continue;
-        }
-
         double arc_cost =
             reduced_costs_ ? reduced_costs_[a] : pv_.arc_base_cost[a];
         double arc_real_cost = pv_.arc_base_cost[a];
+
+        // Arc-level skip: if even the cheapest fw@i + bw@j can't beat theta
+        if (vertex_min_c_best_[i] + vertex_min_bw_c_best_[j] + arc_cost +
+                min_dom_cost_ >=
+            opts_.theta)
+          continue;
 
         auto [fw_start, fw_end] = vertex_bucket_range(i);
         auto [bw_start, bw_end] = vertex_bucket_range(j);
