@@ -15,7 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
-#if defined(__AVX2__) && __has_include(<experimental/simd>)
+#if __has_include(<experimental/simd>)
 #include <experimental/simd>
 #define BGSPPRC_HAS_SIMD 1
 #endif
