@@ -610,6 +610,22 @@ class BucketGraph {
     scc_topo.resize(n_scc);
     std::iota(scc_topo.begin(), scc_topo.end(), 0);
     std::reverse(scc_topo.begin(), scc_topo.end());
+
+    // Build SCC-to-vertex mapping (deduplicated)
+    auto& scc_vertices =
+        (dir == Direction::Forward) ? fw_scc_vertices_ : bw_scc_vertices_;
+    scc_vertices.assign(n_scc, {});
+    for (int i = 0; i < n; ++i) {
+      int s = bucket_scc_id[i];
+      int v = buckets_[i].vertex;
+      if (scc_vertices[s].empty() || scc_vertices[s].back() != v) {
+        scc_vertices[s].push_back(v);
+      }
+    }
+    for (auto& verts : scc_vertices) {
+      std::sort(verts.begin(), verts.end());
+      verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
+    }
   }
 
   // ── Jump arc generation (Section 4.1, ObtainJumpBucketArcs) ──
@@ -1232,18 +1248,21 @@ class BucketGraph {
         buckets_[bi].bw_c_best = best;
     }
 
-    // Second pass: propagate
-    for (int v = 0; v < pv_.n_vertices; ++v) {
+    // Second pass: propagate — only vertices in this SCC
+    auto& scc_verts =
+        (dir == Direction::Forward) ? fw_scc_vertices_ : bw_scc_vertices_;
+    auto& bucket_scc =
+        (dir == Direction::Forward) ? fw_bucket_scc_id_ : bw_bucket_scc_id_;
+
+    for (int v : scc_verts[scc_id]) {
       auto [start, end] = vertex_bucket_range(v);
       auto& nb = vertex_n_buckets_[v];
 
       if (dir == Direction::Forward) {
-        // Propagate from smaller to larger
         for (int k0 = 0; k0 < nb[0]; ++k0) {
           for (int k1 = 0; k1 < nb[1]; ++k1) {
             int bi = start + k0 * nb[1] + k1;
-            auto& scc_id_bi = fw_bucket_scc_id_[bi];
-            if (scc_id_bi != scc_id) continue;
+            if (bucket_scc[bi] != scc_id) continue;
             if (k0 > 0) {
               int prev = start + (k0 - 1) * nb[1] + k1;
               buckets_[bi].c_best =
@@ -1256,13 +1275,15 @@ class BucketGraph {
             }
           }
         }
+        double vmin = INF;
+        for (int bi = start; bi < end; ++bi)
+          vmin = std::min(vmin, buckets_[bi].c_best);
+        vertex_min_c_best_[v] = vmin;
       } else {
-        // Propagate from larger to smaller
         for (int k0 = nb[0] - 1; k0 >= 0; --k0) {
           for (int k1 = nb[1] - 1; k1 >= 0; --k1) {
             int bi = start + k0 * nb[1] + k1;
-            auto& scc_id_bi = bw_bucket_scc_id_[bi];
-            if (scc_id_bi != scc_id) continue;
+            if (bucket_scc[bi] != scc_id) continue;
             if (k0 + 1 < nb[0]) {
               int next = start + (k0 + 1) * nb[1] + k1;
               buckets_[bi].bw_c_best =
@@ -1275,6 +1296,10 @@ class BucketGraph {
             }
           }
         }
+        double vmin = INF;
+        for (int bi = start; bi < end; ++bi)
+          vmin = std::min(vmin, buckets_[bi].bw_c_best);
+        vertex_min_bw_c_best_[v] = vmin;
       }
     }
   }
@@ -1431,13 +1456,10 @@ class BucketGraph {
                                              : pv_.arc_base_cost[arc_id];
             double bw_base = bw->cost + arc_cost;
             int i = pv_.arc_from[arc_id];
-            auto [istart, iend] = vertex_bucket_range(i);
-            for (int fbi = istart; fbi < iend && !found; ++fbi) {
-              if (buckets_[fbi].c_best + bw_base + min_dom_cost_ < theta) {
-                found = true;
-              }
+            if (vertex_min_c_best_[i] + bw_base + min_dom_cost_ < theta) {
+              found = true;
+              break;
             }
-            if (found) break;
           }
           if (!found) {
             bw->dominated = true;
@@ -1463,11 +1485,8 @@ class BucketGraph {
                                        : pv_.arc_base_cost[arc_id];
       double base = L->cost + arc_cost;
       int j = pv_.arc_to[arc_id];
-      auto [jstart, jend] = vertex_bucket_range(j);
-      for (int bi = jstart; bi < jend; ++bi) {
-        if (base + buckets_[bi].bw_c_best + min_dom_cost_ < theta)
-          return true;
-      }
+      if (base + vertex_min_bw_c_best_[j] + min_dom_cost_ < theta)
+        return true;
     }
     return false;
   }
@@ -1773,6 +1792,8 @@ class BucketGraph {
       b.c_best = INF;
       b.bw_c_best = INF;
     }
+    vertex_min_c_best_.assign(pv_.n_vertices, INF);
+    vertex_min_bw_c_best_.assign(pv_.n_vertices, INF);
   }
 
   Label<Pack>* create_initial_label(Direction dir) {
@@ -2011,6 +2032,16 @@ class BucketGraph {
         if (i == pv_.source || i == pv_.sink) continue;
         if (j == pv_.source || j == pv_.sink) continue;
 
+        // Arc-level skip: if even the cheapest fw@i + bw@j can't beat theta
+        {
+          double arc_cost_quick =
+              reduced_costs_ ? reduced_costs_[a] : pv_.arc_base_cost[a];
+          if (vertex_min_c_best_[i] + vertex_min_bw_c_best_[j] +
+                  arc_cost_quick + min_dom_cost_ >=
+              opts_.theta)
+            continue;
+        }
+
         double arc_cost =
             reduced_costs_ ? reduced_costs_[a] : pv_.arc_base_cost[a];
         double arc_real_cost = pv_.arc_base_cost[a];
@@ -2156,6 +2187,13 @@ class BucketGraph {
       int mbi = mirror_bucket(bi);
       buckets_[bi].bw_c_best = buckets_[mbi].c_best;
     }
+    for (int v = 0; v < pv_.n_vertices; ++v) {
+      auto [start, end] = vertex_bucket_range(v);
+      double vmin = INF;
+      for (int bi = start; bi < end; ++bi)
+        vmin = std::min(vmin, buckets_[bi].bw_c_best);
+      vertex_min_bw_c_best_[v] = vmin;
+    }
   }
 
   /// Build arc lookup table for symmetric path reconstruction.
@@ -2226,15 +2264,21 @@ class BucketGraph {
   // Arc lookup for symmetric path reconstruction: (from*V + to) → arc_id
   std::unordered_map<int64_t, int> arc_lookup_;
 
+  // Per-vertex min c_best / bw_c_best caches
+  std::vector<double> vertex_min_c_best_;
+  std::vector<double> vertex_min_bw_c_best_;
+
   // Forward SCC data
   std::vector<std::vector<int>> fw_scc_buckets_;
   std::vector<int> fw_scc_topo_order_;
   std::vector<int> fw_bucket_scc_id_;
+  std::vector<std::vector<int>> fw_scc_vertices_;
 
   // Backward SCC data
   std::vector<std::vector<int>> bw_scc_buckets_;
   std::vector<int> bw_scc_topo_order_;
   std::vector<int> bw_bucket_scc_id_;
+  std::vector<std::vector<int>> bw_scc_vertices_;
 
   // Label storage (forward and backward)
   BucketLabels fw_labels_;
