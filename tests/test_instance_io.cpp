@@ -139,7 +139,7 @@ TEST_CASE("Solve through parser: tiny.sppcc") {
   auto pv = inst.problem_view();
 
   Solver<EmptyPack> solver(pv, EmptyPack{},
-                           {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
+                           {.bucket_steps = {10.0, 1.0}, .theta = 1e9});
   solver.build();
   solver.set_stage(Stage::Exact);
   auto paths = solver.solve();
@@ -154,7 +154,7 @@ TEST_CASE("Solve through parser: tiny.vrp") {
   auto pv = inst.problem_view();
 
   Solver<EmptyPack> solver(pv, EmptyPack{},
-                           {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
+                           {.bucket_steps = {10.0, 1.0}, .theta = 1e9});
   solver.build();
   solver.set_stage(Stage::Exact);
   auto paths = solver.solve();
@@ -169,7 +169,7 @@ TEST_CASE("Solve through parser: tiny.graph (optimal cost=9)") {
   auto pv = inst.problem_view();
 
   Solver<EmptyPack> solver(pv, EmptyPack{},
-                           {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+                           {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
   solver.build();
   solver.set_stage(Stage::Exact);
   auto paths = solver.solve();
@@ -192,7 +192,7 @@ TEST_CASE("Solve through parser: tiny.graph with ng-path") {
   using NgPack = ResourcePack<NgPathResource>;
 
   Solver<NgPack> solver(pv, make_resource_pack(std::move(ng)),
-                        {.bucket_steps = {5.0, 1.0}, .tolerance = 1e9});
+                        {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
   solver.build();
   solver.set_stage(Stage::Exact);
   auto paths = solver.solve();

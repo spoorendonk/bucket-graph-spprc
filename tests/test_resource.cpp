@@ -1163,7 +1163,7 @@ TEST_CASE("Solver: ng-path blocks cycles, mono and bidir agree") {
   // Mono
   NgPathResource ng_m(4, 6, from, to, neighbors);
   Solver<NgPack> mono(pv, make_resource_pack(std::move(ng_m)),
-                      {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
+                      {.bucket_steps = {10.0, 1.0}, .theta = 1e9});
   mono.build();
   mono.set_stage(Stage::Exact);
   auto mono_paths = mono.solve();
@@ -1176,7 +1176,7 @@ TEST_CASE("Solver: ng-path blocks cycles, mono and bidir agree") {
   NgPathResource ng_b(4, 6, from, to, neighbors);
   Solver<NgPack> bidir(
       pv, make_resource_pack(std::move(ng_b)),
-      {.bucket_steps = {10.0, 1.0}, .bidirectional = true, .tolerance = 1e9});
+      {.bucket_steps = {10.0, 1.0}, .bidirectional = true, .theta = 1e9});
   bidir.build();
   bidir.set_stage(Stage::Exact);
   auto bidir_paths = bidir.solve();
@@ -1196,7 +1196,7 @@ TEST_CASE("Solver: without ng-path, cycles are exploited") {
       make_cycle_pv(from, to, cost, time_d, tw_lb, tw_ub, arc_res, v_lb, v_ub);
 
   Solver<EmptyPack> solver(pv, EmptyPack{},
-                           {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
+                           {.bucket_steps = {10.0, 1.0}, .theta = 1e9});
   solver.build();
   solver.set_stage(Stage::Exact);
   auto paths = solver.solve();
@@ -1248,7 +1248,7 @@ TEST_CASE("Solver: bidir across-arc splice finds optimal elementary path") {
   // Mono
   NgPathResource ng_m(6, N, from, to, neighbors);
   Solver<NgPack> mono(pv, make_resource_pack(std::move(ng_m)),
-                      {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
+                      {.bucket_steps = {10.0, 1.0}, .theta = 1e9});
   mono.build();
   mono.set_stage(Stage::Exact);
   auto mono_paths = mono.solve();
@@ -1260,7 +1260,7 @@ TEST_CASE("Solver: bidir across-arc splice finds optimal elementary path") {
   NgPathResource ng_b(6, N, from, to, neighbors);
   Solver<NgPack> bidir(
       pv, make_resource_pack(std::move(ng_b)),
-      {.bucket_steps = {10.0, 1.0}, .bidirectional = true, .tolerance = 1e9});
+      {.bucket_steps = {10.0, 1.0}, .bidirectional = true, .theta = 1e9});
   bidir.build();
   bidir.set_stage(Stage::Exact);
   auto bidir_paths = bidir.solve();
@@ -1317,7 +1317,7 @@ TEST_CASE("Solver: bidir with cycle + concatenation") {
   // Without ng: cycle exploited
   {
     Solver<EmptyPack> solver(pv, EmptyPack{},
-                             {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
+                             {.bucket_steps = {10.0, 1.0}, .theta = 1e9});
     solver.build();
     solver.set_stage(Stage::Exact);
     auto paths = solver.solve();
@@ -1330,7 +1330,7 @@ TEST_CASE("Solver: bidir with cycle + concatenation") {
   {
     NgPathResource ng(5, N, from, to, neighbors);
     Solver<NgPack> solver(pv, make_resource_pack(std::move(ng)),
-                          {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
+                          {.bucket_steps = {10.0, 1.0}, .theta = 1e9});
     solver.build();
     solver.set_stage(Stage::Exact);
     auto paths = solver.solve();
@@ -1345,7 +1345,7 @@ TEST_CASE("Solver: bidir with cycle + concatenation") {
     NgPathResource ng(5, N, from, to, neighbors);
     Solver<NgPack> solver(
         pv, make_resource_pack(std::move(ng)),
-        {.bucket_steps = {10.0, 1.0}, .bidirectional = true, .tolerance = 1e9});
+        {.bucket_steps = {10.0, 1.0}, .bidirectional = true, .theta = 1e9});
     solver.build();
     solver.set_stage(Stage::Exact);
     auto paths = solver.solve();
@@ -1700,7 +1700,7 @@ TEST_CASE("Solver: CumulativeCostResource changes optimal path") {
   using CcPack = ResourcePack<CumulativeCostResource>;
   CumulativeCostResource cc(travel, wt, 12.0, 100.0, NA);
   Solver<CcPack> solver(pv, make_resource_pack(std::move(cc)),
-                        {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
+                        {.bucket_steps = {10.0, 1.0}, .theta = 1e9});
   solver.build();
   solver.set_stage(Stage::Exact);
   auto paths = solver.solve();
@@ -1766,7 +1766,7 @@ TEST_CASE("Solver: PickupDeliveryResource blocks capacity-violating paths") {
   using PdPack = ResourcePack<PickupDeliveryResource>;
   PickupDeliveryResource pd(pk, dl, 5.0, 4);
   Solver<PdPack> solver(pv, make_resource_pack(std::move(pd)),
-                        {.bucket_steps = {10.0, 1.0}, .tolerance = 1e9});
+                        {.bucket_steps = {10.0, 1.0}, .theta = 1e9});
   solver.build();
   solver.set_stage(Stage::Exact);
   auto paths = solver.solve();
