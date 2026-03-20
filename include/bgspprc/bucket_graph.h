@@ -2273,17 +2273,36 @@ class BucketGraph {
   }
 
   /// Recompute bw_c_best per bucket and vertex_min_bw_c_best_ per vertex
-  /// from surviving (non-dominated) bw labels.
+  /// from surviving bw labels (call after compaction removes dominated).
+  /// Includes monotone propagation (larger → smaller buckets) matching
+  /// update_c_best's backward pass.
   void recompute_bw_c_best() {
+    // First pass: per-bucket min from labels
     for (int bi = 0; bi < static_cast<int>(buckets_.size()); ++bi) {
       double best = INF;
-      for (const auto* L : bw_labels_.labels[bi]) {
-        if (L->cost < best) best = L->cost;
-      }
+      for (const auto* L : bw_labels_.labels[bi])
+        best = std::min(best, L->cost);
       buckets_[bi].bw_c_best = best;
     }
+    // Second pass: monotone propagation (larger → smaller) + vertex min
     for (int v = 0; v < pv_.n_vertices; ++v) {
       auto [start, end] = vertex_bucket_range(v);
+      auto& nb = vertex_n_buckets_[v];
+      for (int k0 = nb[0] - 1; k0 >= 0; --k0) {
+        for (int k1 = nb[1] - 1; k1 >= 0; --k1) {
+          int bi = start + k0 * nb[1] + k1;
+          if (k0 + 1 < nb[0]) {
+            int next = start + (k0 + 1) * nb[1] + k1;
+            buckets_[bi].bw_c_best =
+                std::min(buckets_[bi].bw_c_best, buckets_[next].bw_c_best);
+          }
+          if (k1 + 1 < nb[1]) {
+            int next = start + k0 * nb[1] + (k1 + 1);
+            buckets_[bi].bw_c_best =
+                std::min(buckets_[bi].bw_c_best, buckets_[next].bw_c_best);
+          }
+        }
+      }
       double vmin = INF;
       for (int bi = start; bi < end; ++bi)
         vmin = std::min(vmin, buckets_[bi].bw_c_best);
