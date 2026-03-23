@@ -16,7 +16,7 @@ SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
 REPODIR="$(cd "$SCRIPTDIR/.." && pwd)"
 SOLVE="${SOLVE:-$REPODIR/build/bgspprc-solve}"
 PAPER_CSV="$SCRIPTDIR/pull_algo_runtimes.csv"
-OUT_CSV="$SCRIPTDIR/comparison.csv"
+OUT_CSV="$SCRIPTDIR/comparison_rcspp.csv"
 TIMEOUT=120
 NG_GROUPS=(8 16 24)
 
