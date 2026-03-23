@@ -11,6 +11,7 @@
 ///   --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;
 ///                   from file or 8 for graph; 0 disables)
 ///   --steps S1,S2   Bucket step sizes (default: per-type)
+///   --max-paths N   Number of paths to return (0=all, 1=best; default: 1)
 ///   --theta T       Pricing threshold θ (default: -1e-6 for CG)
 
 #include <bgspprc/resource.h>
@@ -42,6 +43,7 @@ struct Options {
   double step1 = 0, step2 = 0;  // 0 = per-type default
   bool auto_steps = false;       // use per-vertex auto-computed steps
   double theta = NAN;             // NAN = use Solver default (-1e-6)
+  int max_paths = 1;              // 0 = all, 1 = best only, N = top N
 };
 
 struct Result {
@@ -60,11 +62,11 @@ struct Result {
 
 template <typename Pack>
 typename Solver<Pack>::Options make_solver_opts(
-    double s1, double s2, const Options& opts, int max_paths = 100) {
+    double s1, double s2, const Options& opts) {
   typename Solver<Pack>::Options so{
       .bucket_steps = {s1, s2},
       .bidirectional = opts.bidir,
-      .max_paths = max_paths,
+      .max_paths = opts.max_paths,
   };
   if (!std::isnan(opts.theta)) so.theta = opts.theta;
   return so;
@@ -342,6 +344,8 @@ int main(int argc, char** argv) {
       opts.auto_steps = true;
     } else if (std::strcmp(argv[i], "--theta") == 0 && i + 1 < argc) {
       opts.theta = std::atof(argv[++i]);
+    } else if (std::strcmp(argv[i], "--max-paths") == 0 && i + 1 < argc) {
+      opts.max_paths = std::atoi(argv[++i]);
     } else if (argv[i][0] == '-') {
       std::fprintf(stderr, "Unknown option: %s\n", argv[i]);
       return 1;
@@ -359,6 +363,7 @@ int main(int argc, char** argv) {
                  "  --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;\n"
                  "                  from file or 8 for graph; 0 disables)\n"
                  "  --steps S1,S2   Bucket step sizes\n"
+                 "  --max-paths N   Number of paths to return (0=all, 1=best; default: 1)\n"
                  "  --theta T       Pricing threshold θ (default: -1e-6)\n");
     return 1;
   }

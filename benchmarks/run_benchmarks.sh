@@ -13,6 +13,7 @@
 #                  Default: benchmarks/instances/spprclib and
 #                  benchmarks/instances/roberti.
 #   --ng K         Pass --ng K to solver (ng-neighborhood size).
+#   --max-paths N  Pass --max-paths N to solver.
 #   --timeout S    Per-instance timeout in seconds (default: 120).
 #
 # Environment:
@@ -49,15 +50,17 @@ CSV="${SCRIPTDIR}/bgspprc.csv"
 
 # ── Args ──
 NG_FLAG=()
+MAX_PATHS_FLAG=()
 TIMEOUT=120
 PATHS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --ng)      NG_FLAG=(--ng "$2"); shift 2 ;;
-    --timeout) TIMEOUT="$2"; shift 2 ;;
-    -h|--help) usage ;;
-    *)         PATHS+=("$1"); shift ;;
+    --ng)        NG_FLAG=(--ng "$2"); shift 2 ;;
+    --max-paths) MAX_PATHS_FLAG=(--max-paths "$2"); shift 2 ;;
+    --timeout)   TIMEOUT="$2"; shift 2 ;;
+    -h|--help)   usage ;;
+    *)           PATHS+=("$1"); shift ;;
   esac
 done
 
@@ -140,7 +143,7 @@ for file in "${FILES[@]}"; do
   # Run solver with timeout
   output=""
   status="OK"
-  if output=$(timeout "${TIMEOUT}s" "$SOLVE" "${NG_FLAG[@]}" "$file" 2>&1); then
+  if output=$(timeout "${TIMEOUT}s" "$SOLVE" "${NG_FLAG[@]}" "${MAX_PATHS_FLAG[@]}" "$file" 2>&1); then
     :
   else
     rc=$?
