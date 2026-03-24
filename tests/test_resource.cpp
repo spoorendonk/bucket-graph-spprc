@@ -20,7 +20,7 @@ TEST_CASE("StandardResource init_state forward") {
   StandardResource res(consumption, lb, ub, 0, 2, 3);
 
   CHECK(res.init_state(Direction::Forward) == 0.0);    // lb[source]
-  CHECK(res.init_state(Direction::Backward) == 10.0);  // lb[sink]
+  CHECK(res.init_state(Direction::Backward) == 30.0);  // ub[sink]
 }
 
 TEST_CASE("StandardResource extend") {
@@ -39,16 +39,65 @@ TEST_CASE("StandardResource extend") {
   CHECK(c2 == 0.0);
 }
 
-TEST_CASE("StandardResource extend_to_vertex is no-op") {
+TEST_CASE("StandardResource extend backward") {
+  double consumption[] = {5.0, 3.0};
+  double lb[] = {0.0, 0.0, 0.0};
+  double ub[] = {100.0, 100.0, 100.0};
+
+  StandardResource res(consumption, lb, ub, 0, 2, 2);
+
+  // Backward extension subtracts consumption
+  auto [s1, c1] = res.extend_along_arc(Direction::Backward, 50.0, 0);
+  CHECK(s1 == 45.0);
+  CHECK(c1 == 0.0);
+
+  auto [s2, c2] = res.extend_along_arc(Direction::Backward, 50.0, 1);
+  CHECK(s2 == 47.0);
+  CHECK(c2 == 0.0);
+}
+
+TEST_CASE("StandardResource extend_to_vertex forward") {
   double consumption[] = {5.0};
-  double lb[] = {0.0, 0.0};
-  double ub[] = {100.0, 100.0};
+  double lb[] = {0.0, 10.0};
+  double ub[] = {100.0, 50.0};
 
   StandardResource res(consumption, lb, ub, 0, 1, 1);
 
-  auto [s, c] = res.extend_to_vertex(Direction::Forward, 42.0, 1);
-  CHECK(s == 42.0);
-  CHECK(c == 0.0);
+  // Within bounds, no clamping needed
+  auto [s1, c1] = res.extend_to_vertex(Direction::Forward, 25.0, 1);
+  CHECK(s1 == 25.0);
+  CHECK(c1 == 0.0);
+
+  // Below lb → clamp up
+  auto [s2, c2] = res.extend_to_vertex(Direction::Forward, 5.0, 1);
+  CHECK(s2 == 10.0);
+  CHECK(c2 == 0.0);
+
+  // Above ub → infeasible
+  auto [s3, c3] = res.extend_to_vertex(Direction::Forward, 60.0, 1);
+  CHECK(c3 >= INF);
+}
+
+TEST_CASE("StandardResource extend_to_vertex backward") {
+  double consumption[] = {5.0};
+  double lb[] = {0.0, 10.0};
+  double ub[] = {100.0, 50.0};
+
+  StandardResource res(consumption, lb, ub, 0, 1, 1);
+
+  // Within bounds, no clamping needed
+  auto [s1, c1] = res.extend_to_vertex(Direction::Backward, 25.0, 1);
+  CHECK(s1 == 25.0);
+  CHECK(c1 == 0.0);
+
+  // Above ub → clamp down
+  auto [s2, c2] = res.extend_to_vertex(Direction::Backward, 60.0, 1);
+  CHECK(s2 == 50.0);
+  CHECK(c2 == 0.0);
+
+  // Below lb → infeasible
+  auto [s3, c3] = res.extend_to_vertex(Direction::Backward, 5.0, 1);
+  CHECK(c3 >= INF);
 }
 
 // ── ResourcePack ──
@@ -85,7 +134,7 @@ TEST_CASE("ResourcePack with StandardResource") {
 
   auto [vtx_states, vtx_cost] =
       pack.extend_to_vertex(Direction::Forward, new_states, 1);
-  CHECK(std::get<0>(vtx_states) == 2.0);  // no-op
+  CHECK(std::get<0>(vtx_states) == 2.0);  // within bounds, no clamp
   CHECK(vtx_cost == 0.0);
 
   // StandardResource is conservatively non-symmetric
