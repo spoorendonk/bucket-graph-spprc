@@ -16,7 +16,7 @@ SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
 REPODIR="$(cd "$SCRIPTDIR/.." && pwd)"
 SOLVE="${SOLVE:-$REPODIR/build/bgspprc-solve}"
 PAPER_CSV="$SCRIPTDIR/pull_algo_runtimes.csv"
-OUT_CSV="$SCRIPTDIR/comparison.csv"
+OUT_CSV="$SCRIPTDIR/comparison_rcspp.csv"
 TIMEOUT=120
 NG_GROUPS=(8 16 24)
 
@@ -95,15 +95,15 @@ for ng in "${NG_GROUPS[@]}"; do
       rc=$?
       if [[ $rc -eq 124 ]]; then
         status="TIMEOUT"
-        time_s="$TIMEOUT.000"
+        time_s="TL"
       else
         status="ERROR($rc)"
       fi
     fi
 
-    # Compute ratio
+    # Compute ratio (skip timeouts)
     ratio=""
-    if [[ -n "$time_s" && -n "$paper_val" ]]; then
+    if [[ -n "$time_s" && "$time_s" != "TL" && -n "$paper_val" ]]; then
       ratio="$(awk "BEGIN{printf \"%.2f\", $time_s / $paper_val}")"
     fi
 
