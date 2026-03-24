@@ -513,9 +513,9 @@ TEST_CASE("Stage: Heuristic1 cost-only dominance") {
   REQUIRE(!exact_paths.empty());
   REQUIRE(!h1_paths.empty());
 
-  // Heuristic1 should find at least as good cost (more aggressive dominance
-  // means fewer labels but shouldn't miss the optimal on EmptyPack)
-  CHECK(h1_paths[0].reduced_cost <= exact_paths[0].reduced_cost + 1e-6);
+  // BG2021 §5: Heuristic1 keeps 1 label per bucket — a true heuristic
+  // that may miss the optimal. Cost should be >= exact (or equal).
+  CHECK(h1_paths[0].reduced_cost >= exact_paths[0].reduced_cost - 1e-6);
 }
 
 TEST_CASE("Stage: set_stage changes behavior") {
@@ -534,8 +534,36 @@ TEST_CASE("Stage: set_stage changes behavior") {
   REQUIRE(!h1_paths.empty());
   REQUIRE(!exact_paths.empty());
 
-  CHECK(h1_paths[0].reduced_cost ==
-        doctest::Approx(exact_paths[0].reduced_cost));
+  // H1 is a heuristic (1 label/bucket), so cost >= exact is expected.
+  // After set_stage(Exact), we get the true optimum.
+  CHECK(h1_paths[0].reduced_cost >= exact_paths[0].reduced_cost - 1e-6);
+}
+
+TEST_CASE("Heuristic1: 1 label per bucket keeps only cheapest") {
+  LargerGraph g;
+
+  // Small bucket steps so multiple labels compete for the same bucket.
+  BucketGraph<EmptyPack> h1(g.pv, EmptyPack{},
+                            {.bucket_steps = {2.0, 1.0},
+                             .theta = 1e9,
+                             .stage = Stage::Heuristic1});
+  h1.build();
+  auto h1_paths = h1.solve();
+
+  BucketGraph<EmptyPack> exact(
+      g.pv, EmptyPack{},
+      {.bucket_steps = {2.0, 1.0}, .theta = 1e9, .stage = Stage::Exact});
+  exact.build();
+  auto exact_paths = exact.solve();
+
+  REQUIRE(!exact_paths.empty());
+  REQUIRE(!h1_paths.empty());
+
+  // H1 finds valid paths but cost >= exact (1 label/bucket is lossy).
+  CHECK(h1_paths[0].reduced_cost >= exact_paths[0].reduced_cost - 1e-6);
+
+  // H1 should produce fewer or equal paths (aggressive pruning).
+  CHECK(h1_paths.size() <= exact_paths.size());
 }
 
 // ── Bidirectional arc elimination ──

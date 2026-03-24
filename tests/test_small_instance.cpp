@@ -138,6 +138,7 @@ TEST_CASE("End-to-end: tight time windows") {
 
   Solver<EmptyPack> solver(pv, EmptyPack{},
                            {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
+  solver.set_stage(Stage::Exact);
   solver.build();
 
   auto paths = solver.solve();
@@ -283,6 +284,7 @@ TEST_CASE("Bidirectional: tight time windows") {
   // Mono
   Solver<EmptyPack> mono(pv, EmptyPack{},
                          {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
+  mono.set_stage(Stage::Exact);
   mono.build();
   auto mono_paths = mono.solve();
 
@@ -290,6 +292,7 @@ TEST_CASE("Bidirectional: tight time windows") {
   Solver<EmptyPack> bidir(
       pv, EmptyPack{},
       {.bucket_steps = {5.0, 1.0}, .bidirectional = true, .theta = 1e9});
+  bidir.set_stage(Stage::Exact);
   bidir.build();
   auto bidir_paths = bidir.solve();
 
