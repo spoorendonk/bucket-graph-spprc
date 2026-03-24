@@ -1125,6 +1125,34 @@ class BucketGraph {
       return true;
     }
 
+    // BG2021 §5 Stage 1: keep only the cheapest label per bucket.
+    if (opts_.stage == Stage::Heuristic1) {
+      auto& bucket = bl.labels[actual_bi];
+      if (bucket.empty()) {
+        insert_sorted(bl, actual_bi, new_label);
+        ++label_count;
+        if (dir == Direction::Forward)
+          ++fw_label_count_;
+        else
+          ++bw_label_count_;
+        return true;
+      }
+      // Bucket has exactly 1 label. Replace if new is cheaper.
+      auto* existing = bucket[0];
+      if (new_label->cost < existing->cost - EPS) {
+        existing->dominated = true;
+        bucket[0] = new_label;
+        bl.costs[actual_bi][0] = new_label->cost;
+        bl.q0[actual_bi][0] = new_label->q[0];
+        bl.q1[actual_bi][0] = new_label->q[1];
+        if constexpr (has_ng_) {
+          bl.ng_bits[actual_bi][0] = label_ng_bits(new_label);
+        }
+        return true;
+      }
+      return false;
+    }
+
     // Normal: dominance check
     if (!dominated_in_bucket(new_label, actual_bi, dir, bl)) {
       remove_dominated(new_label, actual_bi, dir, bl);
@@ -2448,6 +2476,7 @@ class BucketGraph {
   }
 
   void inject_warm_labels(BucketLabels& bl, Direction dir) {
+    int label_count = 0;  // local counter for try_insert_label
     for (const auto& wl : warm_labels_) {
       if (wl.dir != dir) continue;
 
@@ -2466,9 +2495,7 @@ class BucketGraph {
       int bi = vertex_bucket_index(wl.vertex, wl.q);
       L->bucket = bi;
 
-      if (!dominated_in_bucket(L, bi, dir, bl)) {
-        insert_sorted(bl, bi, L);
-      }
+      try_insert_label(L, bi, dir, bl, label_count);
     }
   }
 
