@@ -48,7 +48,7 @@ struct StandardResource {
 
   State init_state(Direction dir) const {
     if (dir == Direction::Forward) return lb[source];
-    return lb[sink];  // backward starts from sink lower bound
+    return ub[sink];  // backward starts from sink upper bound (Meta-Solver §4.2.1)
   }
 
   /// Extend along arc. Returns (new_state, cost_delta).
@@ -59,23 +59,26 @@ struct StandardResource {
     // we do the same extension as main resources.
     double d = consumption[arc_id];
     if (dir == Direction::Forward) {
-      // Not available from arc arrays here, so we assume arc_to is
-      // handled by the caller. For non-main resources, we track state
-      // but vertex bounds are checked by the caller during extend.
-      double q_new = q + d;
-      // We can't check vertex bounds without knowing the target vertex.
-      // This is returned to the caller who checks bounds.
-      return {q_new, 0.0};
+      return {q + d, 0.0};
     } else {
-      double q_new = q + d;
-      return {q_new, 0.0};
+      return {q - d, 0.0};
     }
   }
 
-  /// Extend to vertex: no-op for standard resource.
-  std::pair<State, double> extend_to_vertex(Direction /*dir*/, State q,
-                                            int /*vertex*/) const {
-    return {q, 0.0};
+  /// Extend to vertex: clamp to vertex bounds and check feasibility.
+  /// Forward: q = max(q, lb[v]), infeasible if q > ub[v].
+  /// Backward: q = min(q, ub[v]), infeasible if q < lb[v].
+  std::pair<State, double> extend_to_vertex(Direction dir, State q,
+                                            int vertex) const {
+    if (dir == Direction::Forward) {
+      double q_new = std::max(q, lb[vertex]);
+      if (q_new > ub[vertex]) return {q_new, INF};
+      return {q_new, 0.0};
+    } else {
+      double q_new = std::min(q, ub[vertex]);
+      if (q_new < lb[vertex]) return {q_new, INF};
+      return {q_new, 0.0};
+    }
   }
 
   double domination_cost(Direction /*dir*/, int /*vertex*/, State /*s1*/,
