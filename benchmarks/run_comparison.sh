@@ -95,15 +95,15 @@ for ng in "${NG_GROUPS[@]}"; do
       rc=$?
       if [[ $rc -eq 124 ]]; then
         status="TIMEOUT"
-        time_s="$TIMEOUT.000"
+        time_s="TL"
       else
         status="ERROR($rc)"
       fi
     fi
 
-    # Compute ratio
+    # Compute ratio (skip timeouts)
     ratio=""
-    if [[ -n "$time_s" && -n "$paper_val" ]]; then
+    if [[ -n "$time_s" && "$time_s" != "TL" && -n "$paper_val" ]]; then
       ratio="$(awk "BEGIN{printf \"%.2f\", $time_s / $paper_val}")"
     fi
 
