@@ -1,7 +1,6 @@
 #pragma once
 
 #include <algorithm>
-#include <span>
 #include <utility>
 
 #include "../types.h"
@@ -12,9 +11,9 @@ namespace bgspprc {
 ///
 /// State = double (accumulated consumption q).
 /// Extension: q' = max(q + d_a, lb[v']), infeasible if q' > ub[v'].
-/// Domination cost: 0 (pure feasibility resource — handled by main resource
-/// comparison). Concatenation cost: 0 (feasibility checked via main resource
-/// bounds).
+/// Domination cost: INF when L1's state exceeds L2's (forward: s1 > s2,
+/// backward: s1 < s2), otherwise 0 (Meta-Solver §4.2.1).
+/// Concatenation cost: INF when fw/bw states are incompatible at join vertex.
 ///
 /// This resource is typically used as one of the 1-2 "main resources" that
 /// define the bucket grid. Main resource extension is handled directly in the
@@ -81,16 +80,26 @@ struct StandardResource {
     }
   }
 
-  double domination_cost(Direction /*dir*/, int /*vertex*/, State /*s1*/,
-                         State /*s2*/) const {
-    return 0.0;  // pure feasibility resource
+  double domination_cost(Direction dir, int /*vertex*/, State s1,
+                         State s2) const {
+    if (dir == Direction::Forward) {
+      if (s1 > s2 + EPS) return INF;
+    } else {
+      if (s1 < s2 - EPS) return INF;
+    }
+    return 0.0;
   }
 
   /// Lower bound on domination_cost: always 0.
   double min_domination_cost() const { return 0.0; }
 
-  double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State /*s_fw*/,
-                            State /*s_bw*/) const {
+  double concatenation_cost(Symmetry sym, int vertex, State s_fw,
+                            State s_bw) const {
+    if (sym == Symmetry::Symmetric) {
+      if (s_fw + s_bw > ub[vertex] + EPS) return INF;
+    } else {
+      if (s_fw > s_bw + EPS) return INF;
+    }
     return 0.0;
   }
 };

@@ -100,6 +100,82 @@ TEST_CASE("StandardResource extend_to_vertex backward") {
   CHECK(c3 >= INF);
 }
 
+TEST_CASE("StandardResource domination_cost forward") {
+  double consumption[] = {1.0};
+  double lb[] = {0.0, 0.0};
+  double ub[] = {100.0, 100.0};
+
+  StandardResource res(consumption, lb, ub, 0, 1, 1);
+
+  // s1 <= s2 → feasible (0.0)
+  CHECK(res.domination_cost(Direction::Forward, 0, 5.0, 10.0) == 0.0);
+  CHECK(res.domination_cost(Direction::Forward, 0, 10.0, 10.0) == 0.0);
+
+  // s1 > s2 → infeasible (INF)
+  CHECK(res.domination_cost(Direction::Forward, 0, 15.0, 10.0) >= INF);
+
+  // EPS boundary: within tolerance → feasible, beyond → infeasible
+  CHECK(res.domination_cost(Direction::Forward, 0, 10.0 + 0.5e-9, 10.0) == 0.0);
+  CHECK(res.domination_cost(Direction::Forward, 0, 10.0 + 2e-9, 10.0) >= INF);
+}
+
+TEST_CASE("StandardResource domination_cost backward") {
+  double consumption[] = {1.0};
+  double lb[] = {0.0, 0.0};
+  double ub[] = {100.0, 100.0};
+
+  StandardResource res(consumption, lb, ub, 0, 1, 1);
+
+  // s1 >= s2 → feasible (0.0)
+  CHECK(res.domination_cost(Direction::Backward, 0, 50.0, 40.0) == 0.0);
+  CHECK(res.domination_cost(Direction::Backward, 0, 50.0, 50.0) == 0.0);
+
+  // s1 < s2 → infeasible (INF)
+  CHECK(res.domination_cost(Direction::Backward, 0, 30.0, 40.0) >= INF);
+
+  // EPS boundary
+  CHECK(res.domination_cost(Direction::Backward, 0, 40.0 - 0.5e-9, 40.0) == 0.0);
+  CHECK(res.domination_cost(Direction::Backward, 0, 40.0 - 2e-9, 40.0) >= INF);
+}
+
+TEST_CASE("StandardResource concatenation_cost asymmetric") {
+  double consumption[] = {1.0};
+  double lb[] = {0.0, 0.0};
+  double ub[] = {100.0, 50.0};
+
+  StandardResource res(consumption, lb, ub, 0, 1, 1);
+
+  // s_fw <= s_bw → feasible
+  CHECK(res.concatenation_cost(Symmetry::Asymmetric, 1, 20.0, 30.0) == 0.0);
+  CHECK(res.concatenation_cost(Symmetry::Asymmetric, 1, 30.0, 30.0) == 0.0);
+
+  // s_fw > s_bw → infeasible
+  CHECK(res.concatenation_cost(Symmetry::Asymmetric, 1, 35.0, 30.0) >= INF);
+
+  // EPS boundary
+  CHECK(res.concatenation_cost(Symmetry::Asymmetric, 1, 30.0 + 0.5e-9, 30.0) == 0.0);
+  CHECK(res.concatenation_cost(Symmetry::Asymmetric, 1, 30.0 + 2e-9, 30.0) >= INF);
+}
+
+TEST_CASE("StandardResource concatenation_cost symmetric") {
+  double consumption[] = {1.0};
+  double lb[] = {0.0, 0.0};
+  double ub[] = {100.0, 50.0};
+
+  StandardResource res(consumption, lb, ub, 0, 1, 1);
+
+  // s_fw + s_bw <= ub[vertex] → feasible
+  CHECK(res.concatenation_cost(Symmetry::Symmetric, 1, 20.0, 25.0) == 0.0);
+  CHECK(res.concatenation_cost(Symmetry::Symmetric, 1, 25.0, 25.0) == 0.0);
+
+  // s_fw + s_bw > ub[vertex] → infeasible
+  CHECK(res.concatenation_cost(Symmetry::Symmetric, 1, 30.0, 25.0) >= INF);
+
+  // EPS boundary: ub[1] = 50.0, so 25.5 + 24.5 = 50.0 is feasible
+  CHECK(res.concatenation_cost(Symmetry::Symmetric, 1, 25.0, 25.0 + 0.5e-9) == 0.0);
+  CHECK(res.concatenation_cost(Symmetry::Symmetric, 1, 25.0, 25.0 + 2e-9) >= INF);
+}
+
 // ── ResourcePack ──
 
 TEST_CASE("EmptyPack operations") {
