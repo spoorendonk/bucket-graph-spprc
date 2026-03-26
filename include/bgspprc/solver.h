@@ -183,6 +183,7 @@ class Solver {
       // Move to Heuristic2 if no neg-cost paths found or after 3 iters
       if (paths.empty() || iteration_ > 3) {
         stage_ = Stage::Heuristic2;
+        iteration_ = 0;
       }
     } else if (stage_ == Stage::Heuristic2) {
       // Move to Exact if no neg-cost paths found or after 10 iters

@@ -1,5 +1,6 @@
 #include <bgspprc/bucket_graph.h>
 #include <bgspprc/resource.h>
+#include <bgspprc/resources/cumulative_cost.h>
 #include <bgspprc/resources/ng_path.h>
 #include <bgspprc/resources/pickup_delivery.h>
 #include <bgspprc/solver.h>
@@ -1106,4 +1107,317 @@ TEST_CASE("Stress: 10-vertex layered graph, mono==bidir") {
   pv.n_main_resources = 1;
 
   check_mono_bidir_agree(pv, 1e9, 2.0);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// CumulativeCostResource integration (Meta-Solver §5)
+// ════════════════════════════════════════════════════════════════════
+
+TEST_CASE("Stress: CumulativeCostResource end-to-end solve") {
+  // 4 vertices: 0=source, 3=sink
+  // Two paths: 0→1→3 and 0→2→3
+  //
+  // Arc table:
+  //   arc 0: 0→1, base_cost=1, time=2, travel_time=2, weight=3
+  //   arc 1: 0→2, base_cost=2, time=1, travel_time=1, weight=1
+  //   arc 2: 1→3, base_cost=1, time=1, travel_time=1, weight=2
+  //   arc 3: 2→3, base_cost=1, time=2, travel_time=2, weight=4
+  //
+  // Path 0→1→3: base_cost = 1+1 = 2
+  //   CCR forward: arc0: T=0+2=2, S=3*(0+2)=6, delta=6
+  //                arc2: T=2+1=3, S=6+2*(2+1)=12, delta=6
+  //   total cost = 2 + 12 = 14
+  //
+  // Path 0→2→3: base_cost = 2+1 = 3
+  //   CCR forward: arc1: T=0+1=1, S=1*(0+1)=1, delta=1
+  //                arc3: T=1+2=3, S=1+4*(1+2)=13, delta=12
+  //   total cost = 3 + 13 = 16
+  //
+  // Best path: 0→1→3 with cost 14.
+
+  int from[] = {0, 0, 1, 2};
+  int to[] = {1, 2, 3, 3};
+  double base_cost[] = {1.0, 2.0, 1.0, 1.0};
+  double time_d[] = {2.0, 1.0, 1.0, 2.0};  // main resource
+  double tw_lb[] = {0.0, 0.0, 0.0, 0.0};
+  double tw_ub[] = {10.0, 10.0, 10.0, 10.0};
+
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 4;
+  pv.source = 0;
+  pv.sink = 3;
+  pv.n_arcs = 4;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = base_cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  double travel_time[] = {2.0, 1.0, 1.0, 2.0};
+  double weight[] = {3.0, 1.0, 2.0, 4.0};
+  CumulativeCostResource ccr(travel_time, weight, /*W_max=*/10.0,
+                              /*T_max=*/10.0, /*n_arcs=*/4);
+  using Pack = ResourcePack<CumulativeCostResource>;
+
+  BucketGraph<Pack> bg(pv, Pack(ccr),
+                       {.bucket_steps = {5.0, 1.0},
+                        .theta = 1e9,
+                        .stage = Stage::Exact});
+  bg.build();
+  auto paths = bg.solve();
+
+  REQUIRE(!paths.empty());
+  CHECK(paths[0].reduced_cost == doctest::Approx(14.0).epsilon(1e-6));
+  CHECK(paths[0].vertices.front() == 0);
+  CHECK(paths[0].vertices.back() == 3);
+}
+
+TEST_CASE("Stress: CumulativeCostResource bidir agrees with mono") {
+  int from[] = {0, 0, 1, 2};
+  int to[] = {1, 2, 3, 3};
+  double base_cost[] = {1.0, 2.0, 1.0, 1.0};
+  double time_d[] = {2.0, 1.0, 1.0, 2.0};
+  double tw_lb[] = {0.0, 0.0, 0.0, 0.0};
+  double tw_ub[] = {10.0, 10.0, 10.0, 10.0};
+
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 4;
+  pv.source = 0;
+  pv.sink = 3;
+  pv.n_arcs = 4;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = base_cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  double travel_time[] = {2.0, 1.0, 1.0, 2.0};
+  double weight[] = {3.0, 1.0, 2.0, 4.0};
+  CumulativeCostResource ccr(travel_time, weight, 10.0, 10.0, 4);
+  using Pack = ResourcePack<CumulativeCostResource>;
+
+  BucketGraph<Pack> mono(pv, Pack(ccr),
+                         {.bucket_steps = {5.0, 1.0},
+                          .theta = 1e9,
+                          .stage = Stage::Exact});
+  mono.build();
+  auto mp = mono.solve();
+
+  BucketGraph<Pack> bidir(pv, Pack(ccr),
+                          {.bucket_steps = {5.0, 1.0},
+                           .theta = 1e9,
+                           .bidirectional = true,
+                           .stage = Stage::Exact});
+  bidir.build();
+  auto bp = bidir.solve();
+
+  REQUIRE(!mp.empty());
+  REQUIRE(!bp.empty());
+  CHECK(mp[0].reduced_cost ==
+        doctest::Approx(bp[0].reduced_cost).epsilon(1e-6));
+}
+
+// ════════════════════════════════════════════════════════════════════
+// PickupDeliveryResource integration with feasible paths (Meta-Solver §6)
+// ════════════════════════════════════════════════════════════════════
+
+TEST_CASE("Stress: PickupDeliveryResource feasible solve") {
+  // 4 vertices: 0=source(depot), 3=sink(depot)
+  // Customers 1 and 2 have pickup/delivery demands.
+  // Vehicle capacity Q = 10.
+  //
+  // Path 0→1→3: pickup 3, delivery 2 at vertex 1. Feasible.
+  // Path 0→2→3: pickup 8, delivery 1 at vertex 2. Feasible.
+  // Path 0→1→2→3: cumulative pickup = 3+8 = 11 > Q=10. Infeasible!
+
+  int from[] = {0, 0, 1, 2, 1};
+  int to[] = {1, 2, 3, 3, 2};
+  double base_cost[] = {1.0, 2.0, 3.0, 1.0, 1.0};
+  double time_d[] = {1.0, 1.0, 1.0, 1.0, 1.0};
+  double tw_lb[] = {0.0, 0.0, 0.0, 0.0};
+  double tw_ub[] = {10.0, 10.0, 10.0, 10.0};
+
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 4;
+  pv.source = 0;
+  pv.sink = 3;
+  pv.n_arcs = 5;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = base_cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  // Depot: no demand. Customer 1: pickup=3, delivery=2. Customer 2: pickup=8,
+  // delivery=1.
+  double pickup[] = {0.0, 3.0, 8.0, 0.0};
+  double delivery[] = {0.0, 2.0, 1.0, 0.0};
+  PickupDeliveryResource pd(pickup, delivery, /*Q=*/10.0, /*n_vertices=*/4);
+  using Pack = ResourcePack<PickupDeliveryResource>;
+
+  BucketGraph<Pack> bg(pv, Pack(pd),
+                       {.bucket_steps = {5.0, 1.0},
+                        .theta = 1e9,
+                        .stage = Stage::Exact});
+  bg.build();
+  auto paths = bg.solve();
+
+  REQUIRE(!paths.empty());
+  // Best feasible path: 0→2→3 cost=3 or 0→1→3 cost=4
+  CHECK(paths[0].reduced_cost == doctest::Approx(3.0).epsilon(1e-6));
+
+  // All returned paths must be feasible (no path with cumulative pickup > Q)
+  for (const auto& p : paths) {
+    double total_pickup = 0.0;
+    for (int v : p.vertices) total_pickup += pickup[v];
+    CHECK(total_pickup <= 10.0 + 1e-6);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Warm label injection across Solver stage transitions
+// ════════════════════════════════════════════════════════════════════
+
+TEST_CASE("Stress: warm labels across Heuristic1 to Exact transition") {
+  // Use a graph with multiple paths so Heuristic1 (1 label/bucket) may
+  // miss the optimal, but warm labels help Exact converge.
+  //
+  // LargerGraph-style: 6 vertices, 8 arcs.
+  int from[] = {0, 0, 1, 2, 3, 4, 1, 2};
+  int to[] = {1, 2, 3, 4, 5, 5, 4, 3};
+  double cost[] = {5.0, 3.0, 4.0, 6.0, 2.0, 1.0, 7.0, 8.0};
+  double time_d[] = {1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 3.0, 2.0};
+  double tw_lb[] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  double tw_ub[] = {20.0, 20.0, 20.0, 20.0, 20.0, 20.0};
+
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 6;
+  pv.source = 0;
+  pv.sink = 5;
+  pv.n_arcs = 8;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  // Get exact optimal for reference
+  BucketGraph<EmptyPack> ref(pv, EmptyPack{},
+                             {.bucket_steps = {5.0, 1.0},
+                              .theta = 1e9,
+                              .stage = Stage::Exact});
+  ref.build();
+  auto exact_paths = ref.solve();
+  REQUIRE(!exact_paths.empty());
+  double exact_best = exact_paths[0].reduced_cost;
+
+  // Solver starts at Heuristic1, transitions through stages
+  Solver<EmptyPack> solver(pv, EmptyPack{},
+                           {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
+  solver.build();
+
+  CHECK(solver.current_stage() == Stage::Heuristic1);
+
+  // First solve in Heuristic1
+  auto paths1 = solver.solve();
+  REQUIRE(!paths1.empty());
+  // Heuristic1 must find cost >= exact (it's a heuristic)
+  CHECK(paths1[0].reduced_cost >= exact_best - 1e-6);
+
+  // Save warm labels
+  solver.save_warm_labels(0.7);
+
+  // Force to Exact for deterministic comparison
+  solver.set_stage(Stage::Exact);
+
+  // Solve in Exact with warm labels injected
+  auto paths2 = solver.solve();
+  REQUIRE(!paths2.empty());
+  CHECK(paths2[0].reduced_cost == doctest::Approx(exact_best).epsilon(1e-6));
+}
+
+TEST_CASE("Stress: warm labels with ng-path resource across stages") {
+  // Verify warm labels preserve ng-path resource states correctly.
+  int from[] = {0, 0, 1, 2, 1, 2};
+  int to[] = {1, 2, 3, 3, 2, 1};
+  double cost[] = {1.0, 2.0, 3.0, 1.0, 1.0, 1.0};
+  double time_d[] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+  double tw_lb[] = {0.0, 0.0, 0.0, 0.0};
+  double tw_ub[] = {10.0, 10.0, 10.0, 10.0};
+
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 4;
+  pv.source = 0;
+  pv.sink = 3;
+  pv.n_arcs = 6;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  // ng-neighborhoods: each vertex sees all others (k=3)
+  std::vector<std::vector<int>> neighbors = {{1, 2, 3}, {0, 2, 3}, {0, 1, 3}, {0, 1, 2}};
+  NgPathResource ng(4, 6, from, to, neighbors);
+  using Pack = ResourcePack<NgPathResource>;
+
+  // Exact solve for reference
+  BucketGraph<Pack> ref(pv, Pack(ng),
+                        {.bucket_steps = {5.0, 1.0},
+                         .theta = 1e9,
+                         .stage = Stage::Exact});
+  ref.build();
+  auto exact_paths = ref.solve();
+  REQUIRE(!exact_paths.empty());
+  double exact_best = exact_paths[0].reduced_cost;
+
+  // Solver with warm labels across Heuristic1 → Exact
+  Solver<Pack> solver(pv, Pack(ng),
+                      {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
+  solver.build();
+
+  auto paths1 = solver.solve();
+  REQUIRE(!paths1.empty());
+
+  solver.save_warm_labels(0.7);
+  solver.set_stage(Stage::Exact);
+
+  auto paths2 = solver.solve();
+  REQUIRE(!paths2.empty());
+  CHECK(paths2[0].reduced_cost == doctest::Approx(exact_best).epsilon(1e-6));
 }
