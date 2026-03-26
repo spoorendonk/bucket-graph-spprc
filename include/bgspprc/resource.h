@@ -8,7 +8,7 @@
 
 namespace bgspprc {
 
-/// Concept for a Meta-Solver resource type (§4.1 functions 1-5).
+/// Concept for a Meta-Solver resource type (§4.1 functions 1-6).
 ///
 /// Each resource carries per-label state and defines:
 ///  - symmetric: whether this resource supports symmetric labeling (§4.1)
