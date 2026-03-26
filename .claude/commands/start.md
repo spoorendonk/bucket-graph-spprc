@@ -4,7 +4,7 @@ Before starting any work, check the current state and present options. Follow th
 
 1. Check if the submodule has upstream updates:
    ```bash
-   cd .dev-std && git fetch origin main --quiet && git rev-list HEAD..origin/main --count
+   git -C .dev-std fetch origin main --quiet && git -C .dev-std rev-list HEAD..origin/main --count
    ```
    If the count is > 0, tell the user how many commits behind the submodule is and suggest running `bash .dev-std/update.sh` to pull the latest and re-apply shared files. Don't auto-run — let the user decide.
 

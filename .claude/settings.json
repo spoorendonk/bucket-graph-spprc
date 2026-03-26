@@ -1,77 +1,17 @@
 {
-  "_note": "Git pre-push hook is also installed at .git/hooks/pre-push by setup.sh (runs tests, clang-tidy, mypy, review check)",
+  "_note": "Git hooks installed by setup.sh: pre-commit (auto-format via clang-format/ruff/shfmt, auto-fix lint, tests), commit-msg (conventional commits), pre-push (review check, clang-tidy, shellcheck, ruff complexity, mypy). Claude hooks defined below: PostToolUse Write|Edit (auto-format, ruff complexity, mypy), PreToolUse Bash (block branch creation off main, enforce venv usage).",
   "permissions": {
     "allow": [
-      "Bash(* --help)",
-      "Bash(* --version)",
-      "Bash(*<(*)",
-      "Bash(*<*)",
-      "Bash(*<<*)",
-      "Bash(*>*)",
-      "Bash(*>>*)",
-      "Bash(bash .dev-std/setup.sh*)",
-      "Bash(bash .dev-std/update.sh*)",
-      "Bash(c++ *)",
-      "Bash(cat *)",
-      "Bash(cc *)",
-      "Bash(ccache *)",
-      "Bash(cl *)",
-      "Bash(cl.exe *)",
-      "Bash(clang *)",
-      "Bash(clang++ *)",
-      "Bash(clang-format *)",
-      "Bash(clang-tidy *)",
-      "Bash(cmake *)",
-      "Bash(ctest *)",
-      "Bash(cuda-memcheck *)",
-      "Bash(curl *)",
-      "Bash(devenv *)",
-      "Bash(diff *)",
-      "Bash(dmypy *)",
-      "Bash(do echo*)",
-      "Bash(done)",
-      "Bash(echo *)",
-      "Bash(find *)",
-      "Bash(g++ *)",
-      "Bash(gcc *)",
-      "Bash(gh *)",
-      "Bash(git *)",
-      "Bash(grep *)",
-      "Bash(head *)",
-      "Bash(ls *)",
-      "Bash(make *)",
-      "Bash(mkdir *)",
-      "Bash(msbuild *)",
-      "Bash(mypy *)",
-      "Bash(ncu *)",
-      "Bash(ninja *)",
-      "Bash(nsys *)",
-      "Bash(nvcc *)",
-      "Bash(nvidia-smi *)",
-      "Bash(pip *)",
-      "Bash(pipx *)",
-      "Bash(pwd)",
-      "Bash(pytest *)",
-      "Bash(python *)",
-      "Bash(python -m pytest *)",
-      "Bash(python3 *)",
-      "Bash(ruff *)",
-      "Bash(sed *)",
-      "Bash(sort *)",
-      "Bash(tail *)",
-      "Bash(uv *)",
-      "Bash(vcvarsall *)",
-      "Bash(wc *)",
-      "Bash(while read*)",
-      "Edit",
-      "Read",
-      "WebFetch",
-      "WebSearch"
+      "Bash(*)",
+      "Read(*)",
+      "Edit(*)",
+      "WebSearch",
+      "WebFetch"
     ],
     "deny": [
-      "Bash(chmod -R 777 *)",
       "Bash(rm -rf /*)",
       "Bash(sudo *)",
+      "Bash(chmod -R 777 *)",
       "Read(./.env*)",
       "Read(./secrets/**)"
     ]
@@ -84,14 +24,6 @@
           {
             "type": "command",
             "command": "bash .dev-std/hooks/post-tool-format.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash .dev-std/hooks/check-pending-review.sh"
           }
         ]
       }
