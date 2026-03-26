@@ -1,0 +1,119 @@
+{
+  "_note": "Git pre-push hook is also installed at .git/hooks/pre-push by setup.sh (runs tests, clang-tidy, mypy, review check)",
+  "permissions": {
+    "allow": [
+      "Bash(* --help)",
+      "Bash(* --version)",
+      "Bash(*<(*)",
+      "Bash(*<*)",
+      "Bash(*<<*)",
+      "Bash(*>*)",
+      "Bash(*>>*)",
+      "Bash(bash .dev-std/setup.sh*)",
+      "Bash(bash .dev-std/update.sh*)",
+      "Bash(c++ *)",
+      "Bash(cat *)",
+      "Bash(cc *)",
+      "Bash(ccache *)",
+      "Bash(cl *)",
+      "Bash(cl.exe *)",
+      "Bash(clang *)",
+      "Bash(clang++ *)",
+      "Bash(clang-format *)",
+      "Bash(clang-tidy *)",
+      "Bash(cmake *)",
+      "Bash(ctest *)",
+      "Bash(cuda-memcheck *)",
+      "Bash(curl *)",
+      "Bash(devenv *)",
+      "Bash(diff *)",
+      "Bash(dmypy *)",
+      "Bash(do echo*)",
+      "Bash(done)",
+      "Bash(echo *)",
+      "Bash(find *)",
+      "Bash(g++ *)",
+      "Bash(gcc *)",
+      "Bash(gh *)",
+      "Bash(git *)",
+      "Bash(grep *)",
+      "Bash(head *)",
+      "Bash(ls *)",
+      "Bash(make *)",
+      "Bash(mkdir *)",
+      "Bash(msbuild *)",
+      "Bash(mypy *)",
+      "Bash(ncu *)",
+      "Bash(ninja *)",
+      "Bash(nsys *)",
+      "Bash(nvcc *)",
+      "Bash(nvidia-smi *)",
+      "Bash(pip *)",
+      "Bash(pipx *)",
+      "Bash(pwd)",
+      "Bash(pytest *)",
+      "Bash(python *)",
+      "Bash(python -m pytest *)",
+      "Bash(python3 *)",
+      "Bash(ruff *)",
+      "Bash(sed *)",
+      "Bash(sort *)",
+      "Bash(tail *)",
+      "Bash(uv *)",
+      "Bash(vcvarsall *)",
+      "Bash(wc *)",
+      "Bash(while read*)",
+      "Edit",
+      "Read",
+      "WebFetch",
+      "WebSearch"
+    ],
+    "deny": [
+      "Bash(chmod -R 777 *)",
+      "Bash(rm -rf /*)",
+      "Bash(sudo *)",
+      "Read(./.env*)",
+      "Read(./secrets/**)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .dev-std/hooks/post-tool-format.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .dev-std/hooks/check-pending-review.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .dev-std/hooks/check-branch-create.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .dev-std/hooks/check-venv.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash .dev-std/statusline.sh"
+  }
+}

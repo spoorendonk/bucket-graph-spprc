@@ -1,0 +1,3 @@
+[submodule ".dev-std"]
+	path = .dev-std
+	url = https://github.com/spoorendonk/devkit.git
