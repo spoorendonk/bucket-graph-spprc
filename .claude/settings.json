@@ -2,16 +2,24 @@
   "_note": "Git hooks installed by setup.sh: pre-commit (auto-format via clang-format/ruff/shfmt, auto-fix lint, tests), commit-msg (conventional commits), pre-push (review check, clang-tidy, shellcheck, ruff complexity, mypy). Claude hooks defined below: PostToolUse Write|Edit (auto-format, ruff complexity, mypy), PreToolUse Bash (block branch creation off main, enforce venv usage).",
   "permissions": {
     "allow": [
+      "Bash(*&&*)",
       "Bash(*)",
-      "Read(*)",
+      "Bash(*;*)",
+      "Bash(*<*)",
+      "Bash(*<<*)",
+      "Bash(*>*)",
+      "Bash(*>>*)",
+      "Bash(*|*)",
       "Edit(*)",
-      "WebSearch",
-      "WebFetch"
+      "Edit(.claude/.last-review)",
+      "Read(*)",
+      "WebFetch",
+      "WebSearch"
     ],
     "deny": [
+      "Bash(chmod -R 777 *)",
       "Bash(rm -rf /*)",
       "Bash(sudo *)",
-      "Bash(chmod -R 777 *)",
       "Read(./.env*)",
       "Read(./secrets/**)"
     ]
