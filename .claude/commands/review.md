@@ -3,7 +3,7 @@ Run a multi-agent code review on all changes vs main. Follow these steps exactly
 ## Options (from $ARGUMENTS)
 
 - `--quick`: Do the review directly (no agents). Faster, less thorough.
-- `--stamp`: Skip the review entirely — just write the current HEAD to `.claude/.last-review`. Use when you've already reviewed manually.
+- `--stamp`: Skip the review entirely — just write the current HEAD to `.dev-std/.last-review`. Use when you've already reviewed manually.
 
 If `--stamp` is passed, skip directly to the final step (mark review complete).
 
@@ -90,10 +90,10 @@ Ask the user which issues to address and how.
 
 ## Step 8: Mark review complete
 
-Write the current HEAD commit hash to `.claude/.last-review`:
+Write the current HEAD commit hash to `.dev-std/.last-review`:
 
 ```bash
-git rev-parse HEAD > .claude/.last-review
+git rev-parse HEAD > .dev-std/.last-review
 ```
 
 This lets the pre-push hook and statusline know the review is up to date.

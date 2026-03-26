@@ -2,6 +2,8 @@
   "_note": "Git hooks installed by setup.sh: pre-commit (auto-format via clang-format/ruff/shfmt, auto-fix lint, tests), commit-msg (conventional commits), pre-push (review check, clang-tidy, shellcheck, ruff complexity, mypy). Claude hooks defined below: PostToolUse Write|Edit (auto-format, ruff complexity, mypy), PreToolUse Bash (block branch creation off main, enforce venv usage).",
   "permissions": {
     "allow": [
+      "Bash(* > .claude/.last-review *)",
+      "Bash(* > .claude/.last-review)",
       "Bash(*&&*)",
       "Bash(*)",
       "Bash(*;*)",
