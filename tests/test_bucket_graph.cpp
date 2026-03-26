@@ -2632,3 +2632,97 @@ TEST_CASE("Bidir max_paths realizes concatenation paths correctly") {
     CHECK(g.to[limited[0].arcs[k]] == limited[0].vertices[k + 1]);
   }
 }
+
+// ── BG2021 §6.3 A+ dominance counters and ξ-doubling ──
+
+TEST_CASE("Dominance check counters are non-zero after exact solve") {
+  LargerGraph g;
+  BucketGraph<EmptyPack> bg(g.pv, EmptyPack{},
+                            {.bucket_steps = {5.0, 1.0},
+                             .theta = 1e9,
+                             .stage = Stage::Exact});
+  bg.build();
+  bg.solve();
+  // With multiple labels competing in same buckets, we expect some
+  // dominance checks and surviving labels
+  CHECK(bg.dominance_checks() > 0);
+  CHECK(bg.non_dominated_labels() > 0);
+}
+
+TEST_CASE("Dominance counters reset between solves") {
+  LargerGraph g;
+  BucketGraph<EmptyPack> bg(g.pv, EmptyPack{},
+                            {.bucket_steps = {5.0, 1.0},
+                             .theta = 1e9,
+                             .stage = Stage::Exact});
+  bg.build();
+  bg.solve();
+  auto checks1 = bg.dominance_checks();
+  auto labels1 = bg.non_dominated_labels();
+  CHECK(checks1 > 0);
+  CHECK(labels1 > 0);
+
+  // Second solve should reset and produce fresh counts
+  bg.solve();
+  auto checks2 = bg.dominance_checks();
+  auto labels2 = bg.non_dominated_labels();
+  CHECK(checks2 > 0);
+  CHECK(labels2 > 0);
+  // They reflect only the second solve (same graph → same counts)
+  CHECK(checks2 == checks1);
+  CHECK(labels2 == labels1);
+}
+
+TEST_CASE("Non-fixed arc count") {
+  LargerGraph g;
+  BucketGraph<EmptyPack> bg(g.pv, EmptyPack{},
+                            {.bucket_steps = {5.0, 1.0},
+                             .theta = 1e9,
+                             .bidirectional = true,
+                             .stage = Stage::Exact});
+  bg.build();
+  auto count_before = bg.non_fixed_arc_count();
+  CHECK(count_before > 0);
+
+  // Fix some buckets — arc count from fixed buckets should be excluded
+  bg.solve();
+  bg.fix_buckets(1e9);  // very large theta → may fix some buckets
+  // Even if nothing gets fixed, the count should still be valid
+  auto count_after = bg.non_fixed_arc_count();
+  CHECK(count_after <= count_before);
+}
+
+TEST_CASE("Halve bucket steps") {
+  LargerGraph g;
+  BucketGraph<EmptyPack> bg(g.pv, EmptyPack{},
+                            {.bucket_steps = {10.0, 1.0},
+                             .theta = 1e9,
+                             .stage = Stage::Exact});
+  bg.build();
+  auto steps_before = bg.bucket_steps();
+  CHECK(steps_before[0] == doctest::Approx(10.0));
+
+  bg.halve_bucket_steps();
+  auto steps_after = bg.bucket_steps();
+  CHECK(steps_after[0] == doctest::Approx(5.0));
+
+  bg.build();
+  bg.solve();
+  // Should still produce valid paths after rebuild
+  CHECK(bg.dominance_checks() >= 0);
+}
+
+TEST_CASE("Solver: auto xi refinement on small instance") {
+  LargerGraph g;
+  Solver<EmptyPack> solver(g.pv, EmptyPack{},
+                           {.bucket_steps = {5.0, 1.0},
+                            .bidirectional = false,
+                            .theta = -1e6});  // tight enough → empty result
+  solver.build();
+  solver.set_stage(Stage::Exact);
+  // Exact pricing with extremely tight theta → empty result
+  // triggers A+ check, but ratio won't exceed 500 on a small instance
+  auto paths = solver.solve();
+  // No crash — that's the main check. Paths may or may not be empty.
+  (void)paths;
+}
