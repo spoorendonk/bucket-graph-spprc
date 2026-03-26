@@ -257,10 +257,12 @@ class BucketGraph {
   }
 
   /// Arc elimination: remove bucket arcs incompatible with gap theta.
-  /// Uses c_best (cost-to-b from source) + bw_completion (cost-to-go to sink).
+  /// Uses c_best (cost-to-b from source) + completion (cost-to-go to sink).
+  /// Completion bounds must be available from a prior solve().
   /// Then generates jump arcs to maintain reachability.
   void eliminate_arcs(double theta) {
-    compute_completion_bounds(Direction::Forward);
+    assert(!fw_completion_.empty() &&
+           "eliminate_arcs requires completion bounds from a prior solve()");
 
     int nb = static_cast<int>(buckets_.size());
     for (int bi = 0; bi < nb; ++bi) {
@@ -274,7 +276,8 @@ class BucketGraph {
     obtain_jump_arcs(Direction::Forward);
 
     if (opts_.bidirectional) {
-      compute_completion_bounds(Direction::Backward);
+      assert(!bw_completion_.empty() &&
+             "eliminate_arcs requires bw completion bounds from a prior solve()");
 
       for (int bi = 0; bi < nb; ++bi) {
         auto& b = buckets_[bi];
@@ -319,14 +322,15 @@ class BucketGraph {
   ///
   /// Fix bucket b if c_best(b) + completion(b) > theta, meaning no
   /// source-to-sink path through b can have cost within the gap.
+  /// Completion bounds must be available from a prior solve().
   ///
   /// Returns number of newly fixed buckets.
   int fix_buckets(double theta) {
     fixing_theta_ = theta;
-    // Ensure completion bounds are computed
-    if (fw_completion_.empty()) compute_completion_bounds(Direction::Forward);
-    if (opts_.bidirectional && bw_completion_.empty())
-      compute_completion_bounds(Direction::Backward);
+    assert(!fw_completion_.empty() &&
+           "fix_buckets requires completion bounds from a prior solve()");
+    assert((!opts_.bidirectional || !bw_completion_.empty()) &&
+           "fix_buckets requires bw completion bounds from a prior solve()");
 
     int nb = static_cast<int>(buckets_.size());
     int newly_fixed = 0;
@@ -1985,6 +1989,10 @@ class BucketGraph {
                   INF);
     }
 
+    // Completion bounds for arc elimination and bucket fixing (BG2021 §4).
+    if (opts_.stage != Stage::Enumerate)
+      compute_completion_bounds(Direction::Forward);
+
     std::vector<PathCandidate> candidates;
     collect_sink_candidates(candidates, fw_labels_);
     return select_and_realize(candidates);
@@ -2091,6 +2099,12 @@ class BucketGraph {
     for (int scc : fw_scc_topo_order_) {
       process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_labels_,
                   mu);
+    }
+
+    // Completion bounds for arc elimination and bucket fixing (BG2021 §4).
+    if (opts_.stage != Stage::Enumerate) {
+      compute_completion_bounds(Direction::Forward);
+      compute_completion_bounds(Direction::Backward);
     }
 
     // Post-pass: prune bw labels incompatible with any fw path
