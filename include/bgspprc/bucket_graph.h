@@ -192,6 +192,34 @@ class BucketGraph {
     return opts_.bucket_steps;
   }
 
+  /// BG2021 §6.3 A+: dominance check counters for ξ-doubling criterion.
+  int64_t dominance_checks() const { return dominance_checks_; }
+  int64_t non_dominated_labels() const { return non_dominated_labels_; }
+
+  /// Count of non-fixed bucket arcs (including jump arcs), both directions.
+  int64_t non_fixed_arc_count() const {
+    int64_t count = 0;
+    for (int bi = 0; bi < static_cast<int>(buckets_.size()); ++bi) {
+      if (fixed_.test(bi)) continue;
+      count += static_cast<int64_t>(buckets_[bi].bucket_arcs.size())
+             + static_cast<int64_t>(buckets_[bi].jump_arcs.size());
+      if (opts_.bidirectional) {
+        count += static_cast<int64_t>(buckets_[bi].bw_bucket_arcs.size())
+               + static_cast<int64_t>(buckets_[bi].bw_jump_arcs.size());
+      }
+    }
+    return count;
+  }
+
+  /// BG2021 §6.3 A+: halve all bucket steps (doubles ξ).
+  void halve_bucket_steps() {
+    for (int r = 0; r < n_main_; ++r)
+      opts_.bucket_steps[r] *= 0.5;
+    for (auto& vs : vertex_bucket_steps_)
+      for (int r = 0; r < n_main_; ++r)
+        vs[r] *= 0.5;
+  }
+
   /// Set per-vertex bucket step sizes. Overrides uniform opts_.bucket_steps
   /// during build. Size must equal n_vertices.
   void set_vertex_bucket_steps(
@@ -982,6 +1010,7 @@ class BucketGraph {
         if (existing->dominated) continue;
         // Scalar ng subset check from SoA — avoids chasing label pointer
         if (check_ng && (ng_data[i + j] & ~new_ng)) continue;
+        ++dominance_checks_;
         if (dominates(existing, L, dir)) return true;
       }
     }
@@ -991,6 +1020,7 @@ class BucketGraph {
       auto* existing = bucket[i];
       if (existing->dominated) continue;
       if (check_ng && (ng_data[i] & ~new_ng)) continue;
+      ++dominance_checks_;
       if (dominates(existing, L, dir)) return true;
     }
     return false;
@@ -1022,6 +1052,7 @@ class BucketGraph {
       auto* existing = bucket[i];
       if (existing->dominated) continue;
       if (check_ng && (ng_data[i] & ~new_ng)) continue;
+      ++dominance_checks_;
       if (dominates(existing, L, dir)) return true;
     }
     return false;
@@ -1091,8 +1122,11 @@ class BucketGraph {
         static_cast<std::size_t>(start_it - bucket_costs.begin());
     for (std::size_t i = start; i < bl.labels[bi].size(); ++i) {
       auto* existing = bl.labels[bi][i];
-      if (!existing->dominated && dominates(new_label, existing, dir)) {
-        existing->dominated = true;
+      if (!existing->dominated) {
+        ++dominance_checks_;
+        if (dominates(new_label, existing, dir)) {
+          existing->dominated = true;
+        }
       }
     }
   }
@@ -1158,6 +1192,7 @@ class BucketGraph {
       remove_dominated(new_label, actual_bi, dir, bl);
       insert_sorted(bl, actual_bi, new_label);
       ++label_count;
+      ++non_dominated_labels_;
       if (dir == Direction::Forward)
         ++fw_label_count_;
       else
@@ -1906,6 +1941,8 @@ class BucketGraph {
   // ── Mono-directional solve ──
 
   std::vector<Path> solve_mono() {
+    dominance_checks_ = 0;
+    non_dominated_labels_ = 0;
     pool_.clear();
     reset_label_storage(fw_labels_);
     reset_c_best();
@@ -1983,6 +2020,8 @@ class BucketGraph {
   }
 
   std::vector<Path> solve_bidirectional() {
+    dominance_checks_ = 0;
+    non_dominated_labels_ = 0;
     pool_.clear();
     reset_label_storage(fw_labels_);
     reset_label_storage(bw_labels_);
@@ -2512,6 +2551,10 @@ class BucketGraph {
   bool midpoint_initialized_ = false;
 
   double min_dom_cost_ = 0.0;  // cached pack_.min_domination_cost()
+
+  // BG2021 §6.3 A+: dominance check counters (reset per solve)
+  mutable int64_t dominance_checks_ = 0;   // same-bucket dominates() calls
+  int64_t non_dominated_labels_ = 0;       // labels surviving dominance
 
   LabelPool<Pack> pool_;
 

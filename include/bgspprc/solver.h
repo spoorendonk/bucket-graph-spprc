@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdint>
 #include <vector>
 
 #include "bucket_graph.h"
@@ -50,9 +51,30 @@ class Solver {
 
   /// Solve SPPRC — returns paths with negative reduced cost.
   /// Uses multi-stage progression: Heuristic1 → Heuristic2 → Exact.
+  /// In Exact stage, accumulates dominance stats for BG2021 §6.3 A+
+  /// ξ-doubling: on CG convergence (empty exact pricing), checks if finer
+  /// buckets would help and retries if so.
   std::vector<Path> solve() {
     bg_.set_stage(stage_);
     auto paths = bg_.solve();
+
+    // Accumulate stats for A+ criterion during exact pricing
+    if (stage_ == Stage::Exact) {
+      total_dom_checks_ += bg_.dominance_checks();
+      total_nondom_labels_ += bg_.non_dominated_labels();
+      ++exact_pricing_calls_;
+
+      // BG2021 §6.3 A+: on CG convergence (empty exact pricing),
+      // check if finer buckets would help
+      if (paths.empty() && try_refine_buckets()) {
+        bg_.set_stage(stage_);
+        paths = bg_.solve();
+        total_dom_checks_ += bg_.dominance_checks();
+        total_nondom_labels_ += bg_.non_dominated_labels();
+        ++exact_pricing_calls_;
+      }
+    }
+
     update_stage(paths);
     return paths;
   }
@@ -131,6 +153,29 @@ class Solver {
   }
 
  private:
+  /// BG2021 §6.3 A+: check if bucket steps should be halved.
+  /// Returns true if bucket graph was rebuilt with finer steps.
+  bool try_refine_buckets() {
+    if (exact_pricing_calls_ == 0) return false;
+
+    double avg_ratio = static_cast<double>(total_dom_checks_)
+                     / std::max(total_nondom_labels_, int64_t{1});
+    double arcs_per_vertex = static_cast<double>(bg_.non_fixed_arc_count())
+                           / pv_.n_vertices;
+
+    // Reset accumulators for next convergence cycle
+    total_dom_checks_ = 0;
+    total_nondom_labels_ = 0;
+    exact_pricing_calls_ = 0;
+
+    if (avg_ratio > 500.0 && arcs_per_vertex < 10000.0) {
+      bg_.halve_bucket_steps();
+      bg_.build();
+      return true;
+    }
+    return false;
+  }
+
   void update_stage(const std::vector<Path>& paths) {
     ++iteration_;
 
@@ -153,6 +198,11 @@ class Solver {
   BucketGraph<Pack> bg_;
   Stage stage_ = Stage::Heuristic1;
   int iteration_ = 0;
+
+  // BG2021 §6.3 A+: accumulated stats across exact pricing calls
+  int64_t total_dom_checks_ = 0;
+  int64_t total_nondom_labels_ = 0;
+  int exact_pricing_calls_ = 0;
 };
 
 }  // namespace bgspprc
