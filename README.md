@@ -52,14 +52,15 @@ pv.arc_resource = &arc_resource_ptr;
 pv.vertex_lb = &vertex_lb_ptr;
 pv.vertex_ub = &vertex_ub_ptr;
 
-// Create solver with default resource pack and options
+// Create solver with no extra resources
 Solver<EmptyPack> solver(pv, EmptyPack{},
     {.bucket_steps = {10.0, 1.0}, .bidirectional = true});
+solver.set_stage(Stage::Exact);
 solver.build();
 
 auto paths = solver.solve();
 for (auto& p : paths)
-    printf("cost=%.2f  vertices=%zu\n", p.cost, p.vertices.size());
+    printf("cost=%.2f  vertices=%zu\n", p.reduced_cost, p.vertices.size());
 ```
 
 ## Build from Source
@@ -157,7 +158,7 @@ See [`include/bgspprc/resource.h`](include/bgspprc/resource.h) for the full conc
 ## Related Projects
 
 - [**Baldes**](https://github.com/lseman/baldes) — Bucket graph labeling for CVRP (BG2021 implementation in C++)
-- [**Pathwyse**](https://github.com/dukduque/pathwyse) — Standard labeling + DSSR for RCSPP
+- [**Pathwyse**](https://github.com/pathwyse/pathwyse) — Standard labeling + DSSR for RCSPP
 - [**Flowty**](https://flowty.ai) — Commercial solver for vehicle routing and scheduling
 
 ## License
