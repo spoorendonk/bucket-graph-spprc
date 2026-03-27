@@ -78,8 +78,9 @@ Built-in resources:
 
 Test framework is **doctest** (fetched via FetchContent).
 
-## Reference Papers (docs/)
+## Reference Papers
 
+See [References](README.md#references) for full citations. Key papers:
 - BucketGraph 2021 (Sadykov/Uchoa/Pessoa) — core algorithm
 - Meta-Solver 2026 (Sadykov et al.) — resource interface, ng-path destination marking, across-arc concatenation
 - VRPSolver 2020 (Pessoa et al.) — broader context
