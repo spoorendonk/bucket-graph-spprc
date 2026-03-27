@@ -21,8 +21,8 @@ benchmarks/
 │       ├── ng16/
 │       └── ng24/
 ├── bgspprc.csv            unified results (all sets, all ng values)
-├── comparison_rcspp.csv   runtime comparison vs Spoorendonk et al. 2025 (rcspp only)
-├── pull_algo_runtimes.csv reference runtimes from Spoorendonk et al. 2025 (arXiv:2511.01397)
+├── comparison_rcspp.csv   runtime comparison vs Petersen & Spoorendonk 2025 (rcspp only)
+├── pull_algo_runtimes.csv reference runtimes from Petersen & Spoorendonk 2025 (arXiv:2511.01397)
 ├── fetch_instances.sh     download all instance sets
 ├── run_benchmarks.sh      run solver, produce bgspprc.csv
 ├── run_comparison.sh      run solver on rcspp, compare vs paper
@@ -65,7 +65,7 @@ done
 | `fetch_instances.sh` | Download all instance sets | — | `instances/` |
 | `run_benchmarks.sh` | Run solver on instances, deduplicate results | Instance files/dirs, `--ng K`, `--timeout S` | `bgspprc.csv` |
 | `check_optimal.sh` | Verify costs against reference optima | `bgspprc.csv`, `optimal*.csv` | Pass/fail table |
-| `run_comparison.sh` | Compare rcspp runtimes vs Spoorendonk et al. 2025 | `instances/rcspp/`, `pull_algo_runtimes.csv` | `comparison_rcspp.csv` |
+| `run_comparison.sh` | Compare rcspp runtimes vs Petersen & Spoorendonk 2025 | `instances/rcspp/`, `pull_algo_runtimes.csv` | `comparison_rcspp.csv` |
 | `compare_mono_bidir.sh` | Side-by-side mono vs bidir comparison | Instance files/dirs | Terminal table |
 
 ## How to reproduce
@@ -98,7 +98,7 @@ done
 
 ```bash
 ./benchmarks/run_comparison.sh
-# Compares bgspprc wall-clock times vs Spoorendonk et al. 2025 "Base" column
+# Compares bgspprc wall-clock times vs Petersen & Spoorendonk 2025 "Base" column
 # Produces shifted geometric mean summary per ng group
 ```
 
@@ -123,5 +123,5 @@ done
 | `instance` | Solomon instance name |
 | `ng` | ng-neighborhood size (8, 16, or 24) |
 | `bgspprc_s` | bgspprc wall-clock time in seconds |
-| `paper_base_s` | Spoorendonk et al. 2025 "Base" time in seconds |
+| `paper_base_s` | Petersen & Spoorendonk 2025 "Base" time in seconds |
 | `ratio` | `bgspprc_s / paper_base_s` |

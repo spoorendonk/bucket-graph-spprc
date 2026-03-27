@@ -4,7 +4,7 @@ Header-only C++23 template library implementing the bucket graph labeling algori
 
 ## References
 
-1. **Spoorendonk, Sadykov, Uchoa, Pessoa (2025)** — *A generic exact solver for vehicle routing and related problems*. arXiv:2511.01397. **This library's paper.** <https://arxiv.org/abs/2511.01397>
+1. **Petersen, Spoorendonk (2025)** — *A parallel pull labelling algorithm for the resource constrained shortest path problem*. arXiv:2511.01397. <https://arxiv.org/abs/2511.01397>
 
 2. **Sadykov, Uchoa, Pessoa (2021)** — *A bucket graph-based labeling algorithm with application to vehicle routing*. Mathematical Programming. DOI: [10.1007/s10107-020-01485-4](https://doi.org/10.1007/s10107-020-01485-4)
 
