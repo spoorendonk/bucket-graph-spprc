@@ -65,7 +65,7 @@ for (auto& p : paths)
 
 ## Build from Source
 
-Requires GCC 14+ (C++23) and CMake 3.14+.
+Requires GCC 14+ (C++23) and CMake 3.25+.
 
 ```bash
 cmake -B build -DCMAKE_CXX_COMPILER=g++-14
