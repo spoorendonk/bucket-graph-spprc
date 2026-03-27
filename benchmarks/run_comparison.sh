@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_comparison.sh — Compare bgspprc runtimes against Flowty paper (2511.01397) "Base" column.
+# run_comparison.sh — Compare bgspprc runtimes against Spoorendonk et al. 2025 (arXiv:2511.01397) "Base" column.
 #
 # Runs bgspprc-solve on all 56 Solomon RCSPP instances × {ng8, ng16, ng24},
 # compares wall-clock times against the paper's sequential scalar baseline,
