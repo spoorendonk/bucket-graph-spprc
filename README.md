@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/spoorendonk/bucket-graph-spprc/actions/workflows/ci.yml/badge.svg)](https://github.com/spoorendonk/bucket-graph-spprc/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)
+![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)
 
-Header-only C++23 template library implementing the bucket graph labeling algorithm for the Shortest Path Problem with Resource Constraints (SPPRC) and vehicle routing variants. Based on [Sadykov, Uchoa & Pessoa (2021)](#references) with extensions from the [Meta-Solver (2026)](#references).
+Header-only C++20 template library implementing the bucket graph labeling algorithm for the Shortest Path Problem with Resource Constraints (SPPRC) and vehicle routing variants. Based on [Sadykov, Uchoa & Pessoa (2021)](#references) with extensions from the [Meta-Solver (2026)](#references).
 
 ## Key Features
 
@@ -65,7 +65,7 @@ for (auto& p : paths)
 
 ## Build from Source
 
-Requires GCC 14+ (C++23) and CMake 3.25+.
+Requires GCC 14+ and CMake 3.25+.
 
 ```bash
 cmake -B build -DCMAKE_CXX_COMPILER=g++-14
