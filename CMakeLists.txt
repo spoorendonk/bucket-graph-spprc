@@ -70,3 +70,10 @@ if(BGSPPRC_BUILD_TESTS)
     target_compile_definitions(bench_runner PRIVATE
         DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/instances")
 endif()
+
+# Examples (opt-in, off by default when consumed as submodule)
+option(BGSPPRC_BUILD_EXAMPLES "Build examples" ${PROJECT_IS_TOP_LEVEL})
+
+if(BGSPPRC_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()

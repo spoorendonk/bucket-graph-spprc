@@ -88,6 +88,23 @@ ctest --test-dir build
 ./build/test_runner --list-test-cases
 ```
 
+## Examples
+
+The [`examples/`](examples/) directory contains standalone programs:
+
+- **`basic_spprc.cpp`** — Solve a 5-vertex SPPRC with time windows
+- **`custom_resource.cpp`** — Implement a custom capacity resource using the `Resource` concept and `ResourcePack`
+
+```bash
+# Build (examples are built by default at top level)
+cmake -B build -DCMAKE_CXX_COMPILER=g++-14
+cmake --build build
+
+# Run
+./build/examples/example_basic_spprc
+./build/examples/example_custom_resource
+```
+
 ## CLI Usage
 
 ```
@@ -143,7 +160,7 @@ using MyPack = ResourcePack<StandardResource, MyResource>;
 Solver<MyPack> solver(pv, MyPack{std_res, my_res}, opts);
 ```
 
-See [`include/bgspprc/resource.h`](include/bgspprc/resource.h) for the full concept definition and [`include/bgspprc/resources/`](include/bgspprc/resources/) for built-in implementations.
+See [`examples/custom_resource.cpp`](examples/custom_resource.cpp) for a complete working example, [`include/bgspprc/resource.h`](include/bgspprc/resource.h) for the full concept definition, and [`include/bgspprc/resources/`](include/bgspprc/resources/) for built-in implementations.
 
 ## References
 
