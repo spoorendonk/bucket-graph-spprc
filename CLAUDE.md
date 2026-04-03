@@ -48,7 +48,7 @@ Options `BGSPPRC_BUILD_CLI` and `BGSPPRC_BUILD_TESTS` default ON at top-level, O
 
 ### Resource System
 
-Resources are defined by the `Resource` concept (`resource.h`) with 6 functions: `symmetric`, `init_state`, `extend_along_arc`, `extend_to_vertex`, `domination_cost`, `concatenation_cost` (per Meta-Solver §4.1). `ResourcePack<Rs...>` bundles resources at compile time and dispatches all operations via index_sequence.
+Resources are defined by the `Resource` concept (`resource.h`) with 7 functions: `symmetric`, `init_state`, `extend_along_arc`, `extend_to_vertex`, `domination_cost`, `concatenation_cost`, `min_domination_cost`. `ResourcePack<Rs...>` bundles resources at compile time and dispatches all operations via index_sequence.
 
 Built-in resources:
 - **`StandardResource`** (`resources/standard.h`) — Single double state (time windows, capacity).
