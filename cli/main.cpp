@@ -10,6 +10,8 @@
 ///   --stage STAGE   heuristic1|heuristic2|exact (default: exact)
 ///   --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;
 ///                   from file or 8 for graph; 0 disables)
+///   --ng-metric M   distance|cost — metric for ng neighborhoods
+///                   (default: distance for sppcc/vrp, cost for graph)
 ///   --steps S1,S2   Bucket step sizes (default: per-type)
 ///   --no-jump-arcs  Disable jump arcs (for ablation studies)
 ///   --max-paths N   Number of paths to return (0=all, 1=best; default: 1)
@@ -43,7 +45,9 @@ using NgPack = ResourcePack<NgPathResource>;
 struct Options {
   bool bidir = true;
   Stage stage = Stage::Exact;
-  int ng = -1;      // -1 = use file default or 8, 0 = disable ng-path
+  int ng = -1;              // -1 = use file default or 8, 0 = disable ng-path
+  int ng_metric = -1;       // -1 = auto (distance for sppcc/vrp, cost for graph)
+                            //  0 = cost, 1 = distance
   double step1 = 0, step2 = 0;  // 0 = per-type default
   bool auto_steps = false;       // use per-vertex auto-computed steps
   bool no_jump_arcs = false;     // disable jump arcs (for ablation studies)
@@ -122,7 +126,8 @@ static Result run_sppcc(const std::string& path, const Options& opts) {
   r.type = "sppcc";
 
   if (opts.ng > 0) {
-    io::compute_ng_neighbors(inst, opts.ng);
+    bool use_dist = opts.ng_metric != 0;  // auto (-1) or explicit distance (1)
+    io::compute_ng_neighbors(inst, opts.ng, use_dist);
     auto pv = inst.problem_view();
     r.n_verts = pv.n_vertices;
     r.n_arcs = pv.n_arcs;
@@ -186,7 +191,8 @@ static Result run_vrp(const std::string& path, const Options& opts) {
   r.type = "vrp";
 
   if (opts.ng > 0) {
-    io::compute_ng_neighbors(inst, opts.ng);
+    bool use_dist = opts.ng_metric != 0;  // auto (-1) or explicit distance (1)
+    io::compute_ng_neighbors(inst, opts.ng, use_dist);
     auto pv = inst.problem_view();
     r.n_verts = pv.n_vertices;
     r.n_arcs = pv.n_arcs;
@@ -279,7 +285,8 @@ static Result run_graph(const std::string& path, const Options& opts) {
     // Use ng-path resource
     int ng_k = opts.ng > 0 ? opts.ng : (inst.ng_size > 0 ? inst.ng_size : 8);
     if (inst.ng_neighbors.empty() || (opts.ng > 0 && opts.ng != inst.ng_size)) {
-      io::compute_ng_neighbors(inst, ng_k);
+      bool use_dist = opts.ng_metric == 1;  // auto (-1) defaults to cost for graph
+      io::compute_ng_neighbors(inst, ng_k, use_dist);
     }
 
     auto pv = inst.problem_view();
@@ -426,6 +433,14 @@ int main(int argc, char** argv) {
       opts.stage = parse_stage(argv[++i]);
     } else if (std::strcmp(argv[i], "--ng") == 0 && i + 1 < argc) {
       opts.ng = std::atoi(argv[++i]);
+    } else if (std::strcmp(argv[i], "--ng-metric") == 0 && i + 1 < argc) {
+      ++i;
+      if (std::strcmp(argv[i], "distance") == 0) opts.ng_metric = 1;
+      else if (std::strcmp(argv[i], "cost") == 0) opts.ng_metric = 0;
+      else {
+        std::fprintf(stderr, "Unknown ng-metric: %s (use distance|cost)\n", argv[i]);
+        return 1;
+      }
     } else if (std::strcmp(argv[i], "--steps") == 0 && i + 1 < argc) {
       parse_steps(argv[++i], opts.step1, opts.step2);
     } else if (std::strcmp(argv[i], "--auto-steps") == 0) {
@@ -458,6 +473,8 @@ int main(int argc, char** argv) {
                  "  --stage STAGE   heuristic1|heuristic2|exact (default: exact)\n"
                  "  --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;\n"
                  "                  from file or 8 for graph; 0 disables)\n"
+                 "  --ng-metric M   distance|cost — ng neighbor metric\n"
+                 "                  (default: distance for sppcc/vrp, cost for graph)\n"
                  "  --steps S1,S2   Bucket step sizes\n"
                  "  --no-jump-arcs  Disable jump arcs (for ablation studies)\n"
                  "  --max-paths N   Number of paths to return (0=all, 1=best; default: 1)\n"

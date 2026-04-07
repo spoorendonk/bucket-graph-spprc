@@ -219,7 +219,7 @@ for file in "${FILES[@]}"; do
 
   # ── Run bgspprc-solve ──
   bg_cost="" bg_time_s="" bg_status="OK"
-  if bg_output=$(timeout "${TIMEOUT}s" "$SOLVE" --ng "$NG" "$file" 2>&1); then
+  if bg_output=$(timeout "${TIMEOUT}s" "$SOLVE" --ng "$NG" --ng-metric distance "$file" 2>&1); then
     bg_line="$(echo "$bg_output" | head -1)"
     if [[ "$bg_line" =~ cost=([0-9.eE+-]+) ]]; then
       bg_cost="${BASH_REMATCH[1]}"

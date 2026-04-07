@@ -45,6 +45,9 @@ struct Instance {
   // as neighbor of i.  Populated by loaders for complete-graph instances.
   // Empty for sparse instances (ng-neighbors computed from arcs instead).
   std::vector<double> ng_cost;
+  // Pairwise Euclidean distance (no duals): ng_dist[i*n_orig + j].
+  // For fair comparison with solvers using distance-based ng neighborhoods.
+  std::vector<double> ng_dist;
   int n_orig = 0;  // original node count (before source/sink split)
 
   // Owning storage for ProblemView pointers
@@ -178,9 +181,12 @@ inline Instance load_sppcc(const std::string& path) {
   // Pairwise ng-cost: dist(i,j) + node_weight[j] for all i,j in 0..N-1
   inst.n_orig = N;
   inst.ng_cost.resize(N * N);
+  inst.ng_dist.resize(N * N);
   for (int i = 0; i < N; ++i)
-    for (int j = 0; j < N; ++j)
+    for (int j = 0; j < N; ++j) {
       inst.ng_cost[i * N + j] = dist_matrix[i][j] + node_weights[j];
+      inst.ng_dist[i * N + j] = dist_matrix[i][j];
+    }
 
   // Initial cost from depot node weight (vehicle dual)
   // We bake this into arcs leaving source:
@@ -324,42 +330,51 @@ inline Instance load_roberti_vrp(const std::string& path) {
   // Pairwise ng-cost: dist(i,j) - profit[j] for all i,j in 0..N-1
   inst.n_orig = N;
   inst.ng_cost.resize(N * N);
+  inst.ng_dist.resize(N * N);
   for (int i = 0; i < N; ++i)
-    for (int j = 0; j < N; ++j)
+    for (int j = 0; j < N; ++j) {
       inst.ng_cost[i * N + j] = dist(i, j) - profits[j];
+      inst.ng_dist[i * N + j] = dist(i, j);
+    }
 
   return inst;
 }
 
-/// Compute ng-neighborhoods from pairwise costs or outgoing arc costs.
-/// For each vertex v, finds the k nearest neighbors by cost.
-/// When ng_cost is populated (complete-graph instances like SPPCC/Roberti),
-/// uses the original NxN cost matrix to match PathWyse's computation.
-inline void compute_ng_neighbors(Instance& inst, int k = 8) {
+/// Compute ng-neighborhoods from pairwise metrics or outgoing arc costs.
+/// For each vertex v, finds the k nearest neighbors.
+/// When use_distance=true and ng_dist is populated, ranks by Euclidean
+/// distance (standard for Baldacci et al. 2011, matches Pathwyse).
+/// Otherwise ranks by reduced cost (ng_cost or arc cost).
+inline void compute_ng_neighbors(Instance& inst, int k = 8,
+                                 bool use_distance = false) {
   int nv = inst.n_vertices;
   inst.ng_neighbors.resize(nv);
 
-  if (!inst.ng_cost.empty()) {
-    // Complete-graph instances: use pairwise ng_cost over original N nodes.
+  // Pick the metric: distance if requested and available, else cost.
+  const auto& metric =
+      (use_distance && !inst.ng_dist.empty()) ? inst.ng_dist : inst.ng_cost;
+
+  if (!metric.empty()) {
+    // Complete-graph instances: use pairwise metric over original N nodes.
     // ng-sets are defined over original nodes 0..N-1.
     // Sink (= source copy) gets same ng-set as source.
     int N = inst.n_orig;
 
     for (int v = 0; v < N; ++v) {
-      // Collect {cost, target} pairs for all j != v
+      // Collect {metric_value, target} pairs for all j != v
       std::vector<std::pair<double, int>> candidates;
       for (int j = 0; j < N; ++j) {
         if (j == v) continue;
-        candidates.push_back({inst.ng_cost[v * N + j], j});
+        candidates.push_back({metric[v * N + j], j});
       }
-      // Sort by cost ascending, break ties by ascending node ID
+      // Sort ascending, break ties by ascending node ID
       std::sort(candidates.begin(), candidates.end(), [](auto& a, auto& b) {
         return a.first < b.first || (a.first == b.first && a.second < b.second);
       });
 
       inst.ng_neighbors[v].clear();
       inst.ng_neighbors[v].push_back(v);
-      for (auto& [cost, j] : candidates) {
+      for (auto& [val, j] : candidates) {
         inst.ng_neighbors[v].push_back(j);
         if (static_cast<int>(inst.ng_neighbors[v].size()) >= k) break;
       }
