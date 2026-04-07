@@ -22,10 +22,13 @@ benchmarks/
 │       └── ng24/
 ├── bgspprc.csv            unified results (all sets, all ng values)
 ├── comparison_rcspp.csv   runtime comparison vs Petersen & Spoorendonk 2025 (rcspp only)
+├── comparison_pathwyse.csv runtime comparison vs Pathwyse (generated)
 ├── pull_algo_runtimes.csv reference runtimes from Petersen & Spoorendonk 2025 (arXiv:2511.01397)
 ├── fetch_instances.sh     download all instance sets
 ├── run_benchmarks.sh      run solver, produce bgspprc.csv
 ├── run_comparison.sh      run solver on rcspp, compare vs paper
+├── run_pathwyse.sh        build Pathwyse, convert instances, run comparison
+├── convert_to_pathwyse.py convert .sppcc/.vrp/.graph to Pathwyse format
 ├── compare_mono_bidir.sh  compare mono vs bidir mode
 └── check_optimal.sh       verify results against reference optima
 ```
@@ -66,6 +69,8 @@ done
 | `run_benchmarks.sh` | Run solver on instances, deduplicate results | Instance files/dirs, `--ng K`, `--timeout S` | `bgspprc.csv` |
 | `check_optimal.sh` | Verify costs against reference optima | `bgspprc.csv`, `optimal*.csv` | Pass/fail table |
 | `run_comparison.sh` | Compare rcspp runtimes vs Petersen & Spoorendonk 2025 | `instances/rcspp/`, `pull_algo_runtimes.csv` | `comparison_rcspp.csv` |
+| `run_pathwyse.sh` | Build Pathwyse, convert instances, compare both solvers | Instance files/dirs, `--ng K`, `--timeout S` | `comparison_pathwyse.csv` |
+| `convert_to_pathwyse.py` | Convert instances to Pathwyse format | `.sppcc`/`.vrp`/`.graph` files | `instances/pathwyse/` |
 | `compare_mono_bidir.sh` | Side-by-side mono vs bidir comparison | Instance files/dirs | Terminal table |
 
 ## How to reproduce
@@ -102,6 +107,29 @@ done
 # Produces shifted geometric mean summary per ng group
 ```
 
+### Pathwyse comparison
+
+```bash
+# Run on rcspp ng=8 instances (default)
+./benchmarks/run_pathwyse.sh
+
+# Run on specific instances with custom ng
+./benchmarks/run_pathwyse.sh --ng 8 benchmarks/instances/rcspp/ng8
+
+# Skip rebuilding Pathwyse (reuse previous build)
+./benchmarks/run_pathwyse.sh --skip-build
+
+# Run on all three datasets
+./benchmarks/run_pathwyse.sh --ng 8 \
+  benchmarks/instances/rcspp/ng8 \
+  benchmarks/instances/spprclib \
+  benchmarks/instances/roberti
+```
+
+Note: Pathwyse uses integer objectives internally (costs are truncated to int).
+For fractional-cost instances (rcspp .graph), this introduces small rounding
+differences (typically <10). The `cost_match` column uses a tolerance of 10.
+
 ## CSV columns
 
 ### `bgspprc.csv`
@@ -125,3 +153,18 @@ done
 | `bgspprc_s` | bgspprc wall-clock time in seconds |
 | `paper_base_s` | Petersen & Spoorendonk 2025 "Base" time in seconds |
 | `ratio` | `bgspprc_s / paper_base_s` |
+
+### `comparison_pathwyse.csv`
+
+| Column | Description |
+|--------|-------------|
+| `instance` | Instance name (filename without extension) |
+| `ng` | ng-neighborhood size used |
+| `bgspprc_s` | bgspprc wall-clock time in seconds |
+| `pathwyse_s` | Pathwyse wall-clock time in seconds |
+| `bgspprc_labels` | Number of paths found by bgspprc |
+| `pathwyse_labels` | (empty — Pathwyse does not expose label counts) |
+| `bgspprc_cost` | Optimal cost found by bgspprc |
+| `pathwyse_cost` | Optimal cost found by Pathwyse (int-truncated) |
+| `cost_match` | YES if costs agree within tolerance, NO otherwise |
+| `ratio` | `bgspprc_s / pathwyse_s` |
