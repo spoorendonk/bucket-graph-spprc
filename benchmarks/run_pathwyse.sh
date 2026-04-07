@@ -22,7 +22,7 @@
 # Output:
 #   benchmarks/comparison_pathwyse.csv — CSV with columns:
 #     instance, ng, bgspprc_s, pathwyse_s, bgspprc_cost, pathwyse_cost,
-#     cost_match, ratio
+#     bg_leq, ratio
 #
 # Prerequisites:
 #   bgspprc-solve must be built:
@@ -183,18 +183,19 @@ SETTINGS
 }
 
 # ── Write CSV header ──
-echo "instance,ng,bgspprc_s,pathwyse_s,bgspprc_cost,pathwyse_cost,cost_match,ratio" > "$OUT_CSV"
+echo "instance,ng,bgspprc_s,pathwyse_s,bgspprc_cost,pathwyse_cost,bg_leq,ratio" > "$OUT_CSV"
 
 # ── Run comparison ──
 echo
 TOTAL=${#FILES[@]}
 IDX=0
-# Pathwyse uses int objective (scale=1). Int truncation introduces error up to
-# 1 per arc. For paths with ~10 arcs, total error bounded by ~10.
-COST_EPS=10.0
+# Costs are NOT expected to match: bgspprc uses compressed ng-path (weaker
+# dominance, more negative paths found), while Pathwyse uses full O(|V|)
+# unreachable vectors (tighter dominance, fewer paths). bgspprc cost <= Pathwyse
+# cost is the expected relationship. We report bg_leq (bg <= pw) as a sanity check.
 
 printf "%-20s  %3s  %10s  %10s  %12s  %10s  %10s  %s\n" \
-  "Instance" "ng" "bg(s)" "pw(s)" "bg_cost" "pw_cost" "ratio" "match"
+  "Instance" "ng" "bg(s)" "pw(s)" "bg_cost" "pw_cost" "ratio" "bg<=pw"
 printf '%.0s-' {1..90}; echo
 
 # Accumulate for geometric mean
@@ -275,11 +276,11 @@ for file in "${FILES[@]}"; do
     fi
   fi
 
-  # Cost comparison
-  cost_match=""
+  # Cost comparison: bg cost <= pw cost expected (weaker dominance finds more paths)
+  bg_leq=""
   if [[ -n "$bg_cost" && -n "$pw_cost" ]]; then
-    cost_match="$(awk -v a="$bg_cost" -v b="$pw_cost" -v e="$COST_EPS" \
-      'BEGIN{d=a-b; if(d<0)d=-d; print (d<=e) ? "YES" : "NO"}')"
+    bg_leq="$(awk -v bg="$bg_cost" -v pw="$pw_cost" \
+      'BEGIN{print (bg <= pw + 1) ? "bg_leq" : "bg_gt"}')"
   fi
 
   # Ratio
@@ -291,10 +292,10 @@ for file in "${FILES[@]}"; do
   # Print row
   printf "%-20s  %3d  %10s  %10s  %12s  %10s  %10s  %s  [%d/%d]\n" \
     "$stem" "$NG" "${bg_time_s:--}" "${pw_time_s:--}" \
-    "${bg_cost:--}" "${pw_cost:--}" "${ratio:--}" "${cost_match:--}" "$IDX" "$TOTAL"
+    "${bg_cost:--}" "${pw_cost:--}" "${ratio:--}" "${bg_leq:--}" "$IDX" "$TOTAL"
 
   # Write CSV row
-  echo "${stem},${NG},${bg_time_s},${pw_time_s},${bg_cost},${pw_cost},${cost_match},${ratio}" >> "$OUT_CSV"
+  echo "${stem},${NG},${bg_time_s},${pw_time_s},${bg_cost},${pw_cost},${bg_leq},${ratio}" >> "$OUT_CSV"
 
   # Accumulate for geometric mean (only if both have valid times)
   if [[ -n "$bg_time_s" && -n "$pw_time_s" && "$bg_status" == "OK" && "$pw_status" == "OK" ]]; then
