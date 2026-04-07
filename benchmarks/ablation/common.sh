@@ -117,12 +117,17 @@ parse_timing() {
   local output="$1"
   FW_MS="" BW_MS="" COMPLETION_MS="" CONCAT_MS="" PATHS_MS="" SUM_MS=""
   if [[ -n "$output" ]]; then
-    if [[ "$output" =~ fw=([0-9.]+)ms ]]; then FW_MS="${BASH_REMATCH[1]}"; fi
-    if [[ "$output" =~ bw=([0-9.]+)ms ]]; then BW_MS="${BASH_REMATCH[1]}"; fi
-    if [[ "$output" =~ completion=([0-9.]+)ms ]]; then COMPLETION_MS="${BASH_REMATCH[1]}"; fi
-    if [[ "$output" =~ concat=([0-9.]+)ms ]]; then CONCAT_MS="${BASH_REMATCH[1]}"; fi
-    if [[ "$output" =~ paths=([0-9.]+)ms ]]; then PATHS_MS="${BASH_REMATCH[1]}"; fi
-    if [[ "$output" =~ sum=([0-9.]+)ms ]]; then SUM_MS="${BASH_REMATCH[1]}"; fi
+    # Extract timing line to avoid collision with paths=N on the summary line
+    local tline
+    tline="$(echo "$output" | grep 'timing:' || true)"
+    if [[ -n "$tline" ]]; then
+      if [[ "$tline" =~ fw=([0-9.]+)ms ]]; then FW_MS="${BASH_REMATCH[1]}"; fi
+      if [[ "$tline" =~ bw=([0-9.]+)ms ]]; then BW_MS="${BASH_REMATCH[1]}"; fi
+      if [[ "$tline" =~ completion=([0-9.]+)ms ]]; then COMPLETION_MS="${BASH_REMATCH[1]}"; fi
+      if [[ "$tline" =~ concat=([0-9.]+)ms ]]; then CONCAT_MS="${BASH_REMATCH[1]}"; fi
+      if [[ "$tline" =~ paths=([0-9.]+)ms ]]; then PATHS_MS="${BASH_REMATCH[1]}"; fi
+      if [[ "$tline" =~ sum=([0-9.]+)ms ]]; then SUM_MS="${BASH_REMATCH[1]}"; fi
+    fi
   fi
 }
 

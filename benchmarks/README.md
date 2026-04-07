@@ -126,9 +126,10 @@ done
   benchmarks/instances/roberti
 ```
 
-Note: Pathwyse uses integer objectives internally (costs are truncated to int).
-For fractional-cost instances (rcspp .graph), this introduces small rounding
-differences (typically <10). The `cost_match` column uses a tolerance of 10.
+Note: Costs are not expected to match exactly. bgspprc uses compressed ng-path
+(weaker dominance, finds more negative paths), while Pathwyse uses full O(|V|)
+unreachable vectors (tighter dominance). The `bg_leq` column checks that
+bgspprc cost <= Pathwyse cost (expected relationship).
 
 ## CSV columns
 
@@ -162,9 +163,7 @@ differences (typically <10). The `cost_match` column uses a tolerance of 10.
 | `ng` | ng-neighborhood size used |
 | `bgspprc_s` | bgspprc wall-clock time in seconds |
 | `pathwyse_s` | Pathwyse wall-clock time in seconds |
-| `bgspprc_labels` | Number of paths found by bgspprc |
-| `pathwyse_labels` | (empty — Pathwyse does not expose label counts) |
 | `bgspprc_cost` | Optimal cost found by bgspprc |
 | `pathwyse_cost` | Optimal cost found by Pathwyse (int-truncated) |
-| `cost_match` | YES if costs agree within tolerance, NO otherwise |
+| `bg_leq` | `bg_leq` if bgspprc cost <= Pathwyse cost, `bg_gt` otherwise |
 | `ratio` | `bgspprc_s / pathwyse_s` |

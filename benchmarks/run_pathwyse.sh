@@ -140,6 +140,8 @@ PW_SCALE=1
 
 write_pathwyse_settings() {
   local ng_val="$1"
+  local ng_mode="off"
+  [[ "$ng_val" -gt 0 ]] && ng_mode="standard"
   local settingsfile="$PATHWYSE_DIR/pathwyse.set"
 
   cat > "$settingsfile" <<SETTINGS
@@ -150,29 +152,7 @@ main_algorithm = PWDefault
 algo/default/timelimit = ${TIMEOUT}.0
 algo/default/bidirectional = 0
 algo/default/dssr = standard
-algo/default/ng = off
-algo/default/ng/set_size = ${ng_val}
-algo/default/reserve = 10000000
-algo/default/use_visited = 1
-algo/default/compare_unreachables = 1
-data_collection/level = -1
-output/write = 0
-SETTINGS
-}
-
-write_pathwyse_settings_with_ng() {
-  local ng_val="$1"
-  local settingsfile="$PATHWYSE_DIR/pathwyse.set"
-
-  cat > "$settingsfile" <<SETTINGS
-verbosity = 0
-problem/scaling/override = 1
-problem/scaling = 1.0
-main_algorithm = PWDefault
-algo/default/timelimit = ${TIMEOUT}.0
-algo/default/bidirectional = 0
-algo/default/dssr = standard
-algo/default/ng = standard
+algo/default/ng = ${ng_mode}
 algo/default/ng/set_size = ${ng_val}
 algo/default/reserve = 10000000
 algo/default/use_visited = 1
@@ -219,7 +199,7 @@ for file in "${FILES[@]}"; do
   fi
 
   # ── Run bgspprc-solve ──
-  bg_cost="" bg_time_s="" bg_status="OK"
+  bg_cost="" bg_time_s="" bg_time_ms="" bg_status="OK"
   if bg_output=$(timeout "${TIMEOUT}s" "$SOLVE" --ng "$NG" --ng-metric distance "$file" 2>&1); then
     bg_line="$(echo "$bg_output" | head -1)"
     if [[ "$bg_line" =~ cost=([0-9.eE+-]+) ]]; then
@@ -227,7 +207,7 @@ for file in "${FILES[@]}"; do
     fi
     if [[ "$bg_line" =~ ([0-9.]+)ms ]]; then
       bg_time_ms="${BASH_REMATCH[1]}"
-      bg_time_s="$(awk "BEGIN{printf \"%.3f\", $bg_time_ms/1000}")"
+      bg_time_s="$(awk -v ms="$bg_time_ms" 'BEGIN{printf "%.3f", ms/1000}')"
     fi
     :  # paths count not needed for comparison
   else
@@ -241,11 +221,7 @@ for file in "${FILES[@]}"; do
 
   # ── Run Pathwyse ──
   # Configure Pathwyse with ng settings
-  if [[ "$NG" -gt 0 ]]; then
-    write_pathwyse_settings_with_ng "$NG"
-  else
-    write_pathwyse_settings "$NG"
-  fi
+  write_pathwyse_settings "$NG"
 
   pw_cost="" pw_time_s="" pw_status="OK"
   # Run Pathwyse from its directory so it picks up pathwyse.set
@@ -268,7 +244,7 @@ for file in "${FILES[@]}"; do
     # Extract objective (may be negative)
     if [[ "$pw_raw" =~ Obj:[[:space:]]*(-?[0-9.eE+-]+) ]]; then
       pw_cost_raw="${BASH_REMATCH[1]}"
-      pw_cost="$(awk "BEGIN{printf \"%.3f\", $pw_cost_raw / $PW_SCALE}")"
+      pw_cost="$(awk -v raw="$pw_cost_raw" -v scale="$PW_SCALE" 'BEGIN{printf "%.3f", raw / scale}')"
     fi
     # Extract global time
     if [[ "$pw_raw" =~ global\ time:[[:space:]]*([0-9.eE+-]+) ]]; then
@@ -286,7 +262,7 @@ for file in "${FILES[@]}"; do
   # Ratio
   ratio=""
   if [[ -n "$bg_time_s" && -n "$pw_time_s" && "$bg_time_s" != "0.000" && "$pw_time_s" != "0.000" ]]; then
-    ratio="$(awk "BEGIN{printf \"%.2f\", $bg_time_s / $pw_time_s}")"
+    ratio="$(awk -v bg="$bg_time_s" -v pw="$pw_time_s" 'BEGIN{printf "%.2f", bg / pw}')"
   fi
 
   # Print row
@@ -299,8 +275,8 @@ for file in "${FILES[@]}"; do
 
   # Accumulate for geometric mean (only if both have valid times)
   if [[ -n "$bg_time_s" && -n "$pw_time_s" && "$bg_status" == "OK" && "$pw_status" == "OK" ]]; then
-    SUM_LOG_BG="$(awk "BEGIN{print $SUM_LOG_BG + log($bg_time_s + $SHIFT)}")"
-    SUM_LOG_PW="$(awk "BEGIN{print $SUM_LOG_PW + log($pw_time_s + $SHIFT)}")"
+    SUM_LOG_BG="$(awk -v s="$SUM_LOG_BG" -v t="$bg_time_s" -v sh="$SHIFT" 'BEGIN{print s + log(t + sh)}')"
+    SUM_LOG_PW="$(awk -v s="$SUM_LOG_PW" -v t="$pw_time_s" -v sh="$SHIFT" 'BEGIN{print s + log(t + sh)}')"
     COUNT=$((COUNT + 1))
   fi
 done
@@ -311,9 +287,9 @@ printf '%.0s-' {1..90}; echo
 printf "Shifted geometric mean (shift=%ds, n=%d):\n" "$SHIFT" "$COUNT"
 
 if [[ "$COUNT" -gt 0 ]]; then
-  geo_bg="$(awk "BEGIN{printf \"%.3f\", exp($SUM_LOG_BG / $COUNT) - $SHIFT}")"
-  geo_pw="$(awk "BEGIN{printf \"%.3f\", exp($SUM_LOG_PW / $COUNT) - $SHIFT}")"
-  geo_ratio="$(awk "BEGIN{printf \"%.2f\", ($geo_bg + $SHIFT) / ($geo_pw + $SHIFT)}")"
+  geo_bg="$(awk -v s="$SUM_LOG_BG" -v n="$COUNT" -v sh="$SHIFT" 'BEGIN{printf "%.3f", exp(s / n) - sh}')"
+  geo_pw="$(awk -v s="$SUM_LOG_PW" -v n="$COUNT" -v sh="$SHIFT" 'BEGIN{printf "%.3f", exp(s / n) - sh}')"
+  geo_ratio="$(awk -v bg="$geo_bg" -v pw="$geo_pw" -v sh="$SHIFT" 'BEGIN{printf "%.2f", (bg + sh) / (pw + sh)}')"
   printf "  bgspprc: %ss  pathwyse: %ss  ratio: %s\n" "$geo_bg" "$geo_pw" "$geo_ratio"
 else
   printf "  No valid results to summarize.\n"

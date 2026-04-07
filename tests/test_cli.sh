@@ -88,6 +88,18 @@ run_test "--csv prints header row" \
 run_test "--csv produces data row" \
   expect_exit_and_output 0 "tiny,sppcc," "$SOLVER" --csv "$FIXTURES/tiny.sppcc"
 
+run_test "--timing prints fw=" \
+  expect_exit_and_output 0 "fw=" "$SOLVER" --timing "$FIXTURES/tiny.sppcc"
+
+run_test "--no-jump-arcs exits 0" \
+  expect_exit_and_output 0 "cost=" "$SOLVER" --no-jump-arcs "$FIXTURES/tiny.sppcc"
+
+run_test "--ng-metric distance with --ng 2" \
+  expect_exit_and_output 0 "cost=" "$SOLVER" --ng 2 --ng-metric distance "$FIXTURES/tiny.sppcc"
+
+run_test "--ng-metric cost with --ng 2" \
+  expect_exit_and_output 0 "cost=" "$SOLVER" --ng 2 --ng-metric cost "$FIXTURES/tiny.sppcc"
+
 # ── Summary ──
 
 echo ""

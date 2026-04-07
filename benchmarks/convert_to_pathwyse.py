@@ -257,7 +257,7 @@ def parse_graph(filepath):
         "source": source,
         "sink": sink,
         "arcs": [(a[0], a[1], a[2], a[3]) for a in arcs],
-        "cap_ub": cap_ub_per_vertex[0],  # global capacity (same for all vertices)
+        "cap_ub": max(cap_ub_per_vertex),  # global capacity (max; per-vertex bounds override)
         "cap_ub_per_vertex": cap_ub_per_vertex,
         "demands": [v["d"] for v in vertices],
         "has_tw": True,
