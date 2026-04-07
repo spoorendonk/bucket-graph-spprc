@@ -15,6 +15,7 @@
 ///   --theta T       Pricing threshold θ (default: -1e-6 for CG)
 ///   --stats         Print solve statistics after each instance
 ///   --csv           Machine-readable CSV output (all fields)
+///   --timing        Print phase timing breakdown
 
 #include <bgspprc/resource.h>
 #include <bgspprc/resources/ng_path.h>
@@ -48,6 +49,7 @@ struct Options {
   int max_paths = 1;              // 0 = all, 1 = best only, N = top N
   bool stats = false;             // print solve statistics
   bool csv = false;               // machine-readable CSV output
+  bool timing = false;            // print phase timing breakdown
 };
 
 struct Result {
@@ -69,6 +71,8 @@ struct Result {
   int n_fixed_buckets = 0;
   int64_t n_eliminated_arcs = 0;
   std::size_t label_state_bytes = 0;
+
+  SolveTimings timings;
 };
 
 // ── Helpers ──
@@ -133,6 +137,7 @@ static Result run_sppcc(const std::string& path, const Options& opts) {
     auto paths = solver.solve();
     auto t1 = std::chrono::high_resolution_clock::now();
 
+    r.timings = solver.solve_timings();
     r.n_paths = static_cast<int>(paths.size());
     r.ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     if (!paths.empty()) {
@@ -155,6 +160,7 @@ static Result run_sppcc(const std::string& path, const Options& opts) {
     auto paths = solver.solve();
     auto t1 = std::chrono::high_resolution_clock::now();
 
+    r.timings = solver.solve_timings();
     r.n_paths = static_cast<int>(paths.size());
     r.ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     if (!paths.empty()) {
@@ -195,6 +201,7 @@ static Result run_vrp(const std::string& path, const Options& opts) {
     auto paths = solver.solve();
     auto t1 = std::chrono::high_resolution_clock::now();
 
+    r.timings = solver.solve_timings();
     r.n_paths = static_cast<int>(paths.size());
     r.ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     if (!paths.empty()) {
@@ -217,6 +224,7 @@ static Result run_vrp(const std::string& path, const Options& opts) {
     auto paths = solver.solve();
     auto t1 = std::chrono::high_resolution_clock::now();
 
+    r.timings = solver.solve_timings();
     r.n_paths = static_cast<int>(paths.size());
     r.ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     if (!paths.empty()) {
@@ -256,6 +264,7 @@ static Result run_graph(const std::string& path, const Options& opts) {
     auto paths = solver.solve();
     auto t1 = std::chrono::high_resolution_clock::now();
 
+    r.timings = solver.solve_timings();
     r.n_paths = static_cast<int>(paths.size());
     r.ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     if (!paths.empty()) {
@@ -287,6 +296,7 @@ static Result run_graph(const std::string& path, const Options& opts) {
     auto paths = solver.solve();
     auto t1 = std::chrono::high_resolution_clock::now();
 
+    r.timings = solver.solve_timings();
     r.n_paths = static_cast<int>(paths.size());
     r.ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     if (!paths.empty()) {
@@ -356,6 +366,14 @@ static void print_result(const Result& r, const Options& opts) {
                 static_cast<long long>(r.n_eliminated_arcs),
                 r.label_state_bytes);
   }
+  if (opts.timing) {
+    const auto& t = r.timings;
+    std::printf("  timing:  fw=%.3fms  bw=%.3fms  completion=%.3fms"
+                "  concat=%.3fms  paths=%.3fms  sum=%.3fms\n",
+                t.forward_labeling.count(), t.backward_labeling.count(),
+                t.completion_bounds.count(), t.concatenation.count(),
+                t.path_extraction.count(), t.total().count());
+  }
 }
 
 static void run_path(const std::string& path, const Options& opts) {
@@ -417,6 +435,8 @@ int main(int argc, char** argv) {
       opts.stats = true;
     } else if (std::strcmp(argv[i], "--csv") == 0) {
       opts.csv = true;
+    } else if (std::strcmp(argv[i], "--timing") == 0) {
+      opts.timing = true;
     } else if (argv[i][0] == '-') {
       std::fprintf(stderr, "Unknown option: %s\n", argv[i]);
       return 1;
@@ -437,7 +457,8 @@ int main(int argc, char** argv) {
                  "  --max-paths N   Number of paths to return (0=all, 1=best; default: 1)\n"
                  "  --theta T       Pricing threshold θ (default: -1e-6)\n"
                  "  --stats         Print solve statistics after each instance\n"
-                 "  --csv           Machine-readable CSV output (all fields)\n");
+                 "  --csv           Machine-readable CSV output (all fields)\n"
+                 "  --timing        Print phase timing breakdown\n");
     return 1;
   }
 

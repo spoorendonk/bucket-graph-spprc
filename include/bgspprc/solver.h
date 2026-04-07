@@ -132,6 +132,9 @@ class Solver {
   /// Whether the last enumeration was complete (no caps hit).
   bool enumeration_complete() const { return bg_.enumeration_complete(); }
 
+  /// Phase timing breakdown from the last solve() call.
+  const SolveTimings& solve_timings() const { return bg_.solve_timings(); }
+
   /// Stage management.
   void set_stage(Stage stage) { stage_ = stage; }
   Stage current_stage() const { return stage_; }

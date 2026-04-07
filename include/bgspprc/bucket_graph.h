@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -55,6 +56,26 @@ struct NgResourceIndex<ResourcePack<Rs...>> {
 };
 
 }  // namespace detail
+
+/// Phase timing breakdown from a single solve() call.
+struct SolveTimings {
+  using Duration = std::chrono::duration<double, std::milli>;
+
+  Duration forward_labeling{};
+  Duration backward_labeling{};    // bidir only
+  Duration completion_bounds{};
+  Duration concatenation{};        // bidir only
+  Duration path_extraction{};
+
+  /// Sum of all phase durations.
+  Duration total() const {
+    return forward_labeling + backward_labeling + completion_bounds
+         + concatenation + path_extraction;
+  }
+
+  /// Reset all durations to zero.
+  void reset() { *this = SolveTimings{}; }
+};
 
 /// Core bucket graph engine for SPPRC labeling.
 ///
@@ -144,6 +165,9 @@ class BucketGraph {
 
   void reset_midpoint() { midpoint_initialized_ = false; }
   double midpoint() const { return midpoint_; }
+
+  /// Phase timing breakdown from the last solve() call.
+  const SolveTimings& solve_timings() const { return timings_; }
 
   /// Save best labels for warm starting the next solve.
   /// Keeps the top `fraction` of non-dominated labels by cost.
@@ -1968,6 +1992,8 @@ class BucketGraph {
   // ── Mono-directional solve ──
 
   std::vector<Path> solve_mono() {
+    timings_.reset();
+
     dominance_checks_ = 0;
     non_dominated_labels_ = 0;
     pool_.clear();
@@ -2007,18 +2033,28 @@ class BucketGraph {
       inject_warm_labels(fw_labels_, Direction::Forward);
     }
 
+    // Forward labeling
+    auto t_fw_start = Clock_::now();
     for (int scc : fw_scc_topo_order_) {
       process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_labels_,
                   INF);
     }
+    timings_.forward_labeling = Clock_::now() - t_fw_start;
 
     // Completion bounds for arc elimination and bucket fixing (BG2021 §4).
+    auto t_comp_start = Clock_::now();
     if (opts_.stage != Stage::Enumerate)
       compute_completion_bounds(Direction::Forward);
+    timings_.completion_bounds = Clock_::now() - t_comp_start;
 
+    // Path extraction
+    auto t_path_start = Clock_::now();
     std::vector<PathCandidate> candidates;
     collect_sink_candidates(candidates, fw_labels_);
-    return select_and_realize(candidates);
+    auto result = select_and_realize(candidates);
+    timings_.path_extraction = Clock_::now() - t_path_start;
+
+    return result;
   }
 
   // ── Bi-directional solve ──
@@ -2051,6 +2087,8 @@ class BucketGraph {
   }
 
   std::vector<Path> solve_bidirectional() {
+    timings_.reset();
+
     dominance_checks_ = 0;
     non_dominated_labels_ = 0;
     pool_.clear();
@@ -2080,6 +2118,8 @@ class BucketGraph {
 
     double mu = get_midpoint();
 
+    // Backward labeling
+    auto t_bw_start = Clock_::now();
     if (!opts_.symmetric) {
       // Backward labeling (run first so bw labels exist for fw
       // exact completion bound pruning — BucketGraph 2021 §5)
@@ -2102,8 +2142,10 @@ class BucketGraph {
                     bw_labels_, mu);
       }
     }
+    timings_.backward_labeling = Clock_::now() - t_bw_start;
 
     // Forward labeling
+    auto t_fw_start = Clock_::now();
     auto* src = create_initial_label(Direction::Forward);
     if (!src) return {};  // infeasible source state
     int src_bi = vertex_bucket_index(pv_.source, src->q);
@@ -2123,8 +2165,10 @@ class BucketGraph {
       process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_labels_,
                   mu);
     }
+    timings_.forward_labeling = Clock_::now() - t_fw_start;
 
     // Completion bounds for arc elimination and bucket fixing (BG2021 §4).
+    auto t_comp_start = Clock_::now();
     if (opts_.stage != Stage::Enumerate) {
       compute_completion_bounds(Direction::Forward);
       compute_completion_bounds(Direction::Backward);
@@ -2152,15 +2196,24 @@ class BucketGraph {
       // Symmetric: populate bw_c_best from fw c_best via mirror
       populate_symmetric_bw_c_best();
     }
+    timings_.completion_bounds = Clock_::now() - t_comp_start;
 
     if (opts_.stage == Stage::Exact && !opts_.symmetric) adjust_midpoint();
 
-    // Collect paths: forward labels that reached sink + concatenations
+    // Concatenation
+    auto t_concat_start = Clock_::now();
     std::vector<PathCandidate> candidates;
     candidates.reserve(1024);
     collect_sink_candidates(candidates, fw_labels_);
     collect_concat_candidates(candidates);
-    return select_and_realize(candidates);
+    timings_.concatenation = Clock_::now() - t_concat_start;
+
+    // Path extraction
+    auto t_path_start = Clock_::now();
+    auto result = select_and_realize(candidates);
+    timings_.path_extraction = Clock_::now() - t_path_start;
+
+    return result;
   }
 
   // ── Candidate collection and path realization ──
@@ -2459,6 +2512,11 @@ class BucketGraph {
       p.arcs.push_back(opp);
     }
   }
+
+  // ── Timing ──
+
+  using Clock_ = std::chrono::high_resolution_clock;
+  SolveTimings timings_;
 
   // ── Data ──
 
