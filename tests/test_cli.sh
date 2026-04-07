@@ -73,6 +73,21 @@ run_test "--theta 1e9 overrides default" \
 run_test "--theta 0 shows theta=0" \
   expect_exit_and_output 0 "theta=0" "$SOLVER" --theta 0 "$FIXTURES/tiny.sppcc"
 
+run_test "--stats prints n_buckets" \
+  expect_exit_and_output 0 "n_buckets=" "$SOLVER" --stats "$FIXTURES/tiny.sppcc"
+
+run_test "--stats prints n_labels_created" \
+  expect_exit_and_output 0 "n_labels_created=" "$SOLVER" --stats "$FIXTURES/tiny.sppcc"
+
+run_test "--stats prints label_state_bytes" \
+  expect_exit_and_output 0 "label_state_bytes=" "$SOLVER" --stats "$FIXTURES/tiny.sppcc"
+
+run_test "--csv prints header row" \
+  expect_exit_and_output 0 "name,type,n_verts" "$SOLVER" --csv "$FIXTURES/tiny.sppcc"
+
+run_test "--csv produces data row" \
+  expect_exit_and_output 0 "tiny,sppcc," "$SOLVER" --csv "$FIXTURES/tiny.sppcc"
+
 # ── Summary ──
 
 echo ""

@@ -192,6 +192,11 @@ TEST_CASE("EmptyPack operations") {
   CHECK(vtx_cost == 0.0);
 }
 
+TEST_CASE("ResourcePack label_state_size") {
+  CHECK(EmptyPack::label_state_size() == sizeof(std::tuple<>));
+  CHECK(ResourcePack<NgPathResource>::label_state_size() == sizeof(std::tuple<uint32_t>));
+}
+
 TEST_CASE("ResourcePack with StandardResource") {
   double consumption[] = {2.0, 3.0};
   double lb[] = {0.0, 0.0, 0.0};

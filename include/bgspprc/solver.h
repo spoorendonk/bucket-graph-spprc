@@ -94,6 +94,28 @@ class Solver {
   /// Number of fixed buckets.
   int n_fixed_buckets() const { return bg_.n_fixed_buckets(); }
 
+  // ── Solve statistics ──
+
+  /// Total bucket count.
+  int n_buckets() const { return bg_.n_buckets(); }
+
+  /// Labels allocated by the pool during the last solve.
+  int64_t labels_created() const { return bg_.labels_created(); }
+
+  /// Dominance comparisons performed in the last solve.
+  int64_t dominance_checks() const { return bg_.dominance_checks(); }
+
+  /// Labels surviving dominance in the last solve.
+  int64_t non_dominated_labels() const { return bg_.non_dominated_labels(); }
+
+  /// Bucket arcs eliminated since last build.
+  int64_t eliminated_bucket_arcs() const { return bg_.eliminated_bucket_arcs(); }
+
+  /// Size of the compile-time resource state tuple in bytes.
+  static constexpr std::size_t label_state_size() {
+    return Pack::label_state_size();
+  }
+
   /// Reset all elimination/fixing.
   void reset_elimination() { bg_.reset_elimination(); }
 

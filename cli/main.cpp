@@ -13,6 +13,8 @@
 ///   --steps S1,S2   Bucket step sizes (default: per-type)
 ///   --max-paths N   Number of paths to return (0=all, 1=best; default: 1)
 ///   --theta T       Pricing threshold θ (default: -1e-6 for CG)
+///   --stats         Print solve statistics after each instance
+///   --csv           Machine-readable CSV output (all fields)
 
 #include <bgspprc/resource.h>
 #include <bgspprc/resources/ng_path.h>
@@ -44,6 +46,8 @@ struct Options {
   bool auto_steps = false;       // use per-vertex auto-computed steps
   double theta = NAN;             // NAN = use Solver default (-1e-6)
   int max_paths = 1;              // 0 = all, 1 = best only, N = top N
+  bool stats = false;             // print solve statistics
+  bool csv = false;               // machine-readable CSV output
 };
 
 struct Result {
@@ -56,6 +60,15 @@ struct Result {
   int n_paths = 0;
   double ms = 0;
   std::vector<int> best_path;
+
+  // Solve statistics (populated when --stats or --csv is set)
+  int n_buckets = 0;
+  int64_t n_labels_created = 0;
+  int64_t n_dominance_checks = 0;
+  int64_t n_non_dominated = 0;
+  int n_fixed_buckets = 0;
+  int64_t n_eliminated_arcs = 0;
+  std::size_t label_state_bytes = 0;
 };
 
 // ── Helpers ──
@@ -76,6 +89,17 @@ template <typename P>
 void apply_auto_steps(Solver<P>& solver) {
   auto steps = solver.compute_min_inbound_arc_resource();
   solver.set_vertex_bucket_steps(std::move(steps));
+}
+
+template <typename P>
+void collect_stats(const Solver<P>& solver, Result& r) {
+  r.n_buckets = solver.n_buckets();
+  r.n_labels_created = solver.labels_created();
+  r.n_dominance_checks = solver.dominance_checks();
+  r.n_non_dominated = solver.non_dominated_labels();
+  r.n_fixed_buckets = solver.n_fixed_buckets();
+  r.n_eliminated_arcs = solver.eliminated_bucket_arcs();
+  r.label_state_bytes = Solver<P>::label_state_size();
 }
 
 // ── Per-type runners ──
@@ -115,6 +139,7 @@ static Result run_sppcc(const std::string& path, const Options& opts) {
       r.cost = paths[0].reduced_cost;
       r.best_path = paths[0].vertices;
     }
+    if (opts.stats || opts.csv) collect_stats(solver, r);
   } else {
     auto pv = inst.problem_view();
     r.n_verts = pv.n_vertices;
@@ -136,6 +161,7 @@ static Result run_sppcc(const std::string& path, const Options& opts) {
       r.cost = paths[0].reduced_cost;
       r.best_path = paths[0].vertices;
     }
+    if (opts.stats || opts.csv) collect_stats(solver, r);
   }
   return r;
 }
@@ -175,6 +201,7 @@ static Result run_vrp(const std::string& path, const Options& opts) {
       r.cost = paths[0].reduced_cost;
       r.best_path = paths[0].vertices;
     }
+    if (opts.stats || opts.csv) collect_stats(solver, r);
   } else {
     auto pv = inst.problem_view();
     r.n_verts = pv.n_vertices;
@@ -196,6 +223,7 @@ static Result run_vrp(const std::string& path, const Options& opts) {
       r.cost = paths[0].reduced_cost;
       r.best_path = paths[0].vertices;
     }
+    if (opts.stats || opts.csv) collect_stats(solver, r);
   }
   return r;
 }
@@ -234,6 +262,7 @@ static Result run_graph(const std::string& path, const Options& opts) {
       r.cost = paths[0].reduced_cost;
       r.best_path = paths[0].vertices;
     }
+    if (opts.stats || opts.csv) collect_stats(solver, r);
   } else {
     // Use ng-path resource
     int ng_k = opts.ng > 0 ? opts.ng : (inst.ng_size > 0 ? inst.ng_size : 8);
@@ -264,6 +293,7 @@ static Result run_graph(const std::string& path, const Options& opts) {
       r.cost = paths[0].reduced_cost;
       r.best_path = paths[0].vertices;
     }
+    if (opts.stats || opts.csv) collect_stats(solver, r);
   }
   return r;
 }
@@ -279,8 +309,32 @@ static Result run_instance(const std::string& path, const Options& opts) {
   return {};
 }
 
-static void print_result(const Result& r) {
+static void print_csv_header() {
+  std::printf(
+      "name,type,n_verts,n_arcs,theta,cost,n_paths,ms,"
+      "n_buckets,n_labels_created,n_dominance_checks,"
+      "n_non_dominated,n_fixed_buckets,n_eliminated_arcs,"
+      "label_state_bytes\n");
+}
+
+static void print_result(const Result& r, const Options& opts) {
   if (r.name.empty()) return;
+
+  if (opts.csv) {
+    std::printf("%s,%s,%d,%d,%.3g,%.3f,%d,%.1f,"
+                "%d,%lld,%lld,%lld,%d,%lld,%zu\n",
+                r.name.c_str(), r.type.c_str(), r.n_verts, r.n_arcs,
+                r.theta, r.cost, r.n_paths, r.ms,
+                r.n_buckets,
+                static_cast<long long>(r.n_labels_created),
+                static_cast<long long>(r.n_dominance_checks),
+                static_cast<long long>(r.n_non_dominated),
+                r.n_fixed_buckets,
+                static_cast<long long>(r.n_eliminated_arcs),
+                r.label_state_bytes);
+    return;
+  }
+
   std::printf("%-30s  %-5s  n=%-4d  arcs=%-6d  theta=%.3g  cost=%.3f  paths=%-3d  %.1fms\n",
               r.name.c_str(), r.type.c_str(), r.n_verts, r.n_arcs, r.theta,
               r.cost, r.n_paths, r.ms);
@@ -288,6 +342,19 @@ static void print_result(const Result& r) {
     std::printf(" ");
     for (int v : r.best_path) std::printf(" %d", v);
     std::printf("\n");
+  }
+  if (opts.stats) {
+    std::printf("  n_buckets=%d  n_labels_created=%lld  "
+                "n_dominance_checks=%lld  n_non_dominated=%lld\n",
+                r.n_buckets,
+                static_cast<long long>(r.n_labels_created),
+                static_cast<long long>(r.n_dominance_checks),
+                static_cast<long long>(r.n_non_dominated));
+    std::printf("  n_fixed_buckets=%d  n_eliminated_arcs=%lld  "
+                "label_state_bytes=%zu\n",
+                r.n_fixed_buckets,
+                static_cast<long long>(r.n_eliminated_arcs),
+                r.label_state_bytes);
   }
 }
 
@@ -302,11 +369,11 @@ static void run_path(const std::string& path, const Options& opts) {
     std::sort(files.begin(), files.end());
     for (auto& f : files) {
       auto r = run_instance(f, opts);
-      print_result(r);
+      print_result(r, opts);
     }
   } else {
     auto r = run_instance(path, opts);
-    print_result(r);
+    print_result(r, opts);
   }
 }
 
@@ -346,6 +413,10 @@ int main(int argc, char** argv) {
       opts.theta = std::atof(argv[++i]);
     } else if (std::strcmp(argv[i], "--max-paths") == 0 && i + 1 < argc) {
       opts.max_paths = std::atoi(argv[++i]);
+    } else if (std::strcmp(argv[i], "--stats") == 0) {
+      opts.stats = true;
+    } else if (std::strcmp(argv[i], "--csv") == 0) {
+      opts.csv = true;
     } else if (argv[i][0] == '-') {
       std::fprintf(stderr, "Unknown option: %s\n", argv[i]);
       return 1;
@@ -364,10 +435,13 @@ int main(int argc, char** argv) {
                  "                  from file or 8 for graph; 0 disables)\n"
                  "  --steps S1,S2   Bucket step sizes\n"
                  "  --max-paths N   Number of paths to return (0=all, 1=best; default: 1)\n"
-                 "  --theta T       Pricing threshold θ (default: -1e-6)\n");
+                 "  --theta T       Pricing threshold θ (default: -1e-6)\n"
+                 "  --stats         Print solve statistics after each instance\n"
+                 "  --csv           Machine-readable CSV output (all fields)\n");
     return 1;
   }
 
+  if (opts.csv) print_csv_header();
   for (auto& p : paths) run_path(p, opts);
   return 0;
 }

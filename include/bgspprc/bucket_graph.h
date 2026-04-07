@@ -104,6 +104,7 @@ class BucketGraph {
       build_arc_lookup();
     }
     midpoint_initialized_ = false;
+    initial_bucket_arc_count_ = current_bucket_arc_count();
   }
 
   /// Update reduced costs (fast, O(1) — just stores the pointer).
@@ -196,6 +197,16 @@ class BucketGraph {
   int64_t dominance_checks() const { return dominance_checks_; }
   int64_t non_dominated_labels() const { return non_dominated_labels_; }
 
+  /// Total labels allocated by the pool during the last solve.
+  int64_t labels_created() const {
+    return static_cast<int64_t>(pool_.count());
+  }
+
+  /// Number of bucket arcs eliminated since last build.
+  int64_t eliminated_bucket_arcs() const {
+    return initial_bucket_arc_count_ - current_bucket_arc_count();
+  }
+
   /// Count of non-fixed bucket arcs (including jump arcs), both directions.
   int64_t non_fixed_arc_count() const {
     int64_t count = 0;
@@ -206,6 +217,18 @@ class BucketGraph {
       if (opts_.bidirectional) {
         count += static_cast<int64_t>(buckets_[bi].bw_bucket_arcs.size())
                + static_cast<int64_t>(buckets_[bi].bw_jump_arcs.size());
+      }
+    }
+    return count;
+  }
+
+  /// Total bucket arc count (excluding jump arcs), both directions.
+  int64_t current_bucket_arc_count() const {
+    int64_t count = 0;
+    for (const auto& b : buckets_) {
+      count += static_cast<int64_t>(b.bucket_arcs.size());
+      if (opts_.bidirectional) {
+        count += static_cast<int64_t>(b.bw_bucket_arcs.size());
       }
     }
     return count;
@@ -2569,6 +2592,8 @@ class BucketGraph {
   // BG2021 §6.3 A+: dominance check counters (reset per solve)
   mutable int64_t dominance_checks_ = 0;   // same-bucket dominates() calls
   int64_t non_dominated_labels_ = 0;       // labels surviving dominance
+
+  int64_t initial_bucket_arc_count_ = 0;  // snapshot after build()
 
   LabelPool<Pack> pool_;
 

@@ -129,6 +129,9 @@ struct ResourcePack {
     return total;
   }
 
+  /// Size of the compile-time resource state tuple in bytes.
+  static constexpr std::size_t label_state_size() { return sizeof(StatesTuple); }
+
   /// Lower bound on domination_cost across all possible state pairs.
   /// Used for c_best pruning: if c_best + min_dom_cost > L->cost, skip bucket.
   double min_domination_cost() const {
