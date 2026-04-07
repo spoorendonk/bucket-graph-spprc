@@ -2118,8 +2118,6 @@ class BucketGraph {
 
     double mu = get_midpoint();
 
-    // Backward labeling
-    auto t_bw_start = Clock_::now();
     if (!opts_.symmetric) {
       // Backward labeling (run first so bw labels exist for fw
       // exact completion bound pruning — BucketGraph 2021 §5)
@@ -2137,15 +2135,16 @@ class BucketGraph {
         ++enum_sink_labels_;  // seed label is at sink
       }
 
+      // Backward labeling
+      auto t_bw_start = Clock_::now();
       for (int scc : bw_scc_topo_order_) {
         process_scc(scc, Direction::Backward, bw_scc_buckets_,
                     bw_labels_, mu);
       }
+      timings_.backward_labeling = Clock_::now() - t_bw_start;
     }
-    timings_.backward_labeling = Clock_::now() - t_bw_start;
 
     // Forward labeling
-    auto t_fw_start = Clock_::now();
     auto* src = create_initial_label(Direction::Forward);
     if (!src) return {};  // infeasible source state
     int src_bi = vertex_bucket_index(pv_.source, src->q);
@@ -2161,6 +2160,7 @@ class BucketGraph {
       inject_warm_labels(fw_labels_, Direction::Forward);
     }
 
+    auto t_fw_start = Clock_::now();
     for (int scc : fw_scc_topo_order_) {
       process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_labels_,
                   mu);
@@ -2201,15 +2201,15 @@ class BucketGraph {
     if (opts_.stage == Stage::Exact && !opts_.symmetric) adjust_midpoint();
 
     // Concatenation
-    auto t_concat_start = Clock_::now();
     std::vector<PathCandidate> candidates;
     candidates.reserve(1024);
-    collect_sink_candidates(candidates, fw_labels_);
+    auto t_concat_start = Clock_::now();
     collect_concat_candidates(candidates);
     timings_.concatenation = Clock_::now() - t_concat_start;
 
-    // Path extraction
+    // Path extraction (sink candidates + sorting + realization)
     auto t_path_start = Clock_::now();
+    collect_sink_candidates(candidates, fw_labels_);
     auto result = select_and_realize(candidates);
     timings_.path_extraction = Clock_::now() - t_path_start;
 
