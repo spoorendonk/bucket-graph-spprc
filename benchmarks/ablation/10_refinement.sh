@@ -10,7 +10,7 @@
 #   ./benchmarks/ablation/10_refinement.sh [--timeout S] [PATH...]
 #
 # Output:
-#   CSV to stdout: instance,set,initial_step,cost,paths,time_ms,status
+#   CSV to stdout: instance,set,initial_step,cost,paths,time_ms,fw_ms,bw_ms,concat_ms,n_labels_created,status
 set -euo pipefail
 
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
@@ -45,7 +45,7 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
   exit 1
 fi
 
-echo "instance,set,initial_step,cost,paths,time_ms,status"
+echo "instance,set,initial_step,cost,paths,time_ms,fw_ms,bw_ms,concat_ms,n_labels_created,status"
 
 for file in "${FILES[@]}"; do
   stem="$(instance_stem "$file")"
@@ -55,6 +55,8 @@ for file in "${FILES[@]}"; do
     run_solver "$TIMEOUT" --steps "${step},${step}" --stage exact -- "$file"
     parse_cost_time "$OUT" "$STATUS"
     parse_paths "$OUT"
-    echo "${stem},${iset},${step},${COST},${PATHS_COUNT},${TIME_MS},${STATUS}"
+    parse_timing "$OUT"
+    parse_stats "$OUT"
+    echo "${stem},${iset},${step},${COST},${PATHS_COUNT},${TIME_MS},${FW_MS},${BW_MS},${CONCAT_MS},${N_LABELS_CREATED},${STATUS}"
   done
 done

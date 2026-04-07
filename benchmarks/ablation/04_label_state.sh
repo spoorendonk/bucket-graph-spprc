@@ -9,7 +9,7 @@
 #   ./benchmarks/ablation/04_label_state.sh [--timeout S] [PATH...]
 #
 # Output:
-#   CSV to stdout: instance,set,ng_size,cost,paths,time_ms,status
+#   CSV to stdout: instance,set,ng_size,cost,paths,time_ms,fw_ms,bw_ms,concat_ms,label_state_bytes,n_labels_created,status
 set -euo pipefail
 
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
@@ -43,7 +43,7 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
   exit 1
 fi
 
-echo "instance,set,ng_size,cost,paths,time_ms,status"
+echo "instance,set,ng_size,cost,paths,time_ms,fw_ms,bw_ms,concat_ms,label_state_bytes,n_labels_created,status"
 
 for file in "${FILES[@]}"; do
   stem="$(instance_stem "$file")"
@@ -53,6 +53,8 @@ for file in "${FILES[@]}"; do
     run_solver "$TIMEOUT" --ng "$ng" --stage exact -- "$file"
     parse_cost_time "$OUT" "$STATUS"
     parse_paths "$OUT"
-    echo "${stem},${iset},${ng},${COST},${PATHS_COUNT},${TIME_MS},${STATUS}"
+    parse_timing "$OUT"
+    parse_stats "$OUT"
+    echo "${stem},${iset},${ng},${COST},${PATHS_COUNT},${TIME_MS},${FW_MS},${BW_MS},${CONCAT_MS},${LABEL_STATE_BYTES},${N_LABELS_CREATED},${STATUS}"
   done
 done

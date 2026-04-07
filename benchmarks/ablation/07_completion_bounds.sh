@@ -9,7 +9,7 @@
 #   ./benchmarks/ablation/07_completion_bounds.sh [--timeout S] [PATH...]
 #
 # Output:
-#   CSV to stdout: instance,set,theta,cost,paths,time_ms,status
+#   CSV to stdout: instance,set,theta,cost,paths,time_ms,fw_ms,bw_ms,concat_ms,n_fixed_buckets,n_eliminated_arcs,status
 set -euo pipefail
 
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
@@ -44,7 +44,7 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
   exit 1
 fi
 
-echo "instance,set,theta,cost,paths,time_ms,status"
+echo "instance,set,theta,cost,paths,time_ms,fw_ms,bw_ms,concat_ms,n_fixed_buckets,n_eliminated_arcs,status"
 
 for file in "${FILES[@]}"; do
   stem="$(instance_stem "$file")"
@@ -54,6 +54,8 @@ for file in "${FILES[@]}"; do
     run_solver "$TIMEOUT" --theta "$theta" --stage exact -- "$file"
     parse_cost_time "$OUT" "$STATUS"
     parse_paths "$OUT"
-    echo "${stem},${iset},${theta},${COST},${PATHS_COUNT},${TIME_MS},${STATUS}"
+    parse_timing "$OUT"
+    parse_stats "$OUT"
+    echo "${stem},${iset},${theta},${COST},${PATHS_COUNT},${TIME_MS},${FW_MS},${BW_MS},${CONCAT_MS},${N_FIXED_BUCKETS},${N_ELIMINATED_ARCS},${STATUS}"
   done
 done

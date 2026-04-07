@@ -8,7 +8,7 @@
 #   ./benchmarks/ablation/05_stage_progression.sh [--timeout S] [PATH...]
 #
 # Output:
-#   CSV to stdout: instance,set,stage,cost,paths,time_ms,status
+#   CSV to stdout: instance,set,stage,cost,paths,time_ms,fw_ms,bw_ms,concat_ms,n_labels_created,n_non_dominated,status
 set -euo pipefail
 
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
@@ -42,7 +42,7 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
   exit 1
 fi
 
-echo "instance,set,stage,cost,paths,time_ms,status"
+echo "instance,set,stage,cost,paths,time_ms,fw_ms,bw_ms,concat_ms,n_labels_created,n_non_dominated,status"
 
 for file in "${FILES[@]}"; do
   stem="$(instance_stem "$file")"
@@ -52,6 +52,8 @@ for file in "${FILES[@]}"; do
     run_solver "$TIMEOUT" --stage "$stage" -- "$file"
     parse_cost_time "$OUT" "$STATUS"
     parse_paths "$OUT"
-    echo "${stem},${iset},${stage},${COST},${PATHS_COUNT},${TIME_MS},${STATUS}"
+    parse_timing "$OUT"
+    parse_stats "$OUT"
+    echo "${stem},${iset},${stage},${COST},${PATHS_COUNT},${TIME_MS},${FW_MS},${BW_MS},${CONCAT_MS},${N_LABELS_CREATED},${N_NON_DOMINATED},${STATUS}"
   done
 done

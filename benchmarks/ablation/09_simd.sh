@@ -10,7 +10,7 @@
 #   ./benchmarks/ablation/09_simd.sh [--timeout S] [--skip-build] [PATH...]
 #
 # Output:
-#   CSV to stdout: instance,set,simd,cost,paths,time_ms,status
+#   CSV to stdout: instance,set,simd,cost,paths,time_ms,fw_ms,bw_ms,concat_ms,status
 set -euo pipefail
 
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
@@ -69,7 +69,7 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
   exit 1
 fi
 
-echo "instance,set,simd,cost,paths,time_ms,status"
+echo "instance,set,simd,cost,paths,time_ms,fw_ms,bw_ms,concat_ms,status"
 
 for file in "${FILES[@]}"; do
   stem="$(instance_stem "$file")"
@@ -81,13 +81,15 @@ for file in "${FILES[@]}"; do
   run_solver "$TIMEOUT" --stage exact -- "$file"
   parse_cost_time "$OUT" "$STATUS"
   parse_paths "$OUT"
-  echo "${stem},${iset},on,${COST},${PATHS_COUNT},${TIME_MS},${STATUS}"
+  parse_timing "$OUT"
+  echo "${stem},${iset},on,${COST},${PATHS_COUNT},${TIME_MS},${FW_MS},${BW_MS},${CONCAT_MS},${STATUS}"
 
   # Without SIMD
   SOLVE="$SOLVE_NOSIMD"
   run_solver "$TIMEOUT" --stage exact -- "$file"
   parse_cost_time "$OUT" "$STATUS"
   parse_paths "$OUT"
-  echo "${stem},${iset},off,${COST},${PATHS_COUNT},${TIME_MS},${STATUS}"
+  parse_timing "$OUT"
+  echo "${stem},${iset},off,${COST},${PATHS_COUNT},${TIME_MS},${FW_MS},${BW_MS},${CONCAT_MS},${STATUS}"
   SOLVE="$saved_solve"
 done

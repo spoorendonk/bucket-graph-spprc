@@ -9,7 +9,7 @@
 #   ./benchmarks/ablation/08_instance_structure.sh [--timeout S] [PATH...]
 #
 # Output:
-#   CSV to stdout: instance,set,class,step,mode,cost,paths,time_ms,status
+#   CSV to stdout: instance,set,class,step,mode,cost,paths,time_ms,fw_ms,bw_ms,concat_ms,status
 set -euo pipefail
 
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
@@ -53,7 +53,7 @@ infer_class() {
   fi
 }
 
-echo "instance,set,class,step,mode,cost,paths,time_ms,status"
+echo "instance,set,class,step,mode,cost,paths,time_ms,fw_ms,bw_ms,concat_ms,status"
 
 for file in "${FILES[@]}"; do
   stem="$(instance_stem "$file")"
@@ -68,7 +68,8 @@ for file in "${FILES[@]}"; do
       run_solver "$TIMEOUT" "${mode_flag[@]}" --steps "${step},${step}" --stage exact -- "$file"
       parse_cost_time "$OUT" "$STATUS"
       parse_paths "$OUT"
-      echo "${stem},${iset},${iclass},${step},${mode},${COST},${PATHS_COUNT},${TIME_MS},${STATUS}"
+      parse_timing "$OUT"
+      echo "${stem},${iset},${iclass},${step},${mode},${COST},${PATHS_COUNT},${TIME_MS},${FW_MS},${BW_MS},${CONCAT_MS},${STATUS}"
     done
   done
 done

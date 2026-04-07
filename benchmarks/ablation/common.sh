@@ -40,9 +40,10 @@ default_instance_paths() {
 # ── Run solver and capture output ──
 # Usage: run_solver TIMEOUT EXTRA_FLAGS... -- FILE
 # Sets: OUT (stdout+stderr), STATUS (OK|TIMEOUT|ERROR(N))
+# Always passes --stats --timing for richer metrics.
 run_solver() {
   local timeout_s="$1"; shift
-  local args=()
+  local args=(--stats --timing)
   while [[ $# -gt 0 && "$1" != "--" ]]; do
     args+=("$1"); shift
   done
@@ -87,6 +88,41 @@ parse_paths() {
     local line
     line="$(echo "$output" | head -1)"
     if [[ "$line" =~ paths=([0-9]+) ]]; then PATHS_COUNT="${BASH_REMATCH[1]}"; fi
+  fi
+}
+
+# ── Parse solve statistics from --stats output ──
+# Usage: parse_stats "$OUT"
+# Sets: N_BUCKETS, N_LABELS_CREATED, N_DOMINANCE_CHECKS, N_NON_DOMINATED,
+#       N_FIXED_BUCKETS, N_ELIMINATED_ARCS, LABEL_STATE_BYTES
+parse_stats() {
+  local output="$1"
+  N_BUCKETS="" N_LABELS_CREATED="" N_DOMINANCE_CHECKS="" N_NON_DOMINATED=""
+  N_FIXED_BUCKETS="" N_ELIMINATED_ARCS="" LABEL_STATE_BYTES=""
+  if [[ -n "$output" ]]; then
+    if [[ "$output" =~ n_buckets=([0-9]+) ]]; then N_BUCKETS="${BASH_REMATCH[1]}"; fi
+    if [[ "$output" =~ n_labels_created=([0-9]+) ]]; then N_LABELS_CREATED="${BASH_REMATCH[1]}"; fi
+    if [[ "$output" =~ n_dominance_checks=([0-9]+) ]]; then N_DOMINANCE_CHECKS="${BASH_REMATCH[1]}"; fi
+    if [[ "$output" =~ n_non_dominated=([0-9]+) ]]; then N_NON_DOMINATED="${BASH_REMATCH[1]}"; fi
+    if [[ "$output" =~ n_fixed_buckets=([0-9]+) ]]; then N_FIXED_BUCKETS="${BASH_REMATCH[1]}"; fi
+    if [[ "$output" =~ n_eliminated_arcs=([0-9]+) ]]; then N_ELIMINATED_ARCS="${BASH_REMATCH[1]}"; fi
+    if [[ "$output" =~ label_state_bytes=([0-9]+) ]]; then LABEL_STATE_BYTES="${BASH_REMATCH[1]}"; fi
+  fi
+}
+
+# ── Parse phase timing from --timing output ──
+# Usage: parse_timing "$OUT"
+# Sets: FW_MS, BW_MS, COMPLETION_MS, CONCAT_MS, PATHS_MS, SUM_MS
+parse_timing() {
+  local output="$1"
+  FW_MS="" BW_MS="" COMPLETION_MS="" CONCAT_MS="" PATHS_MS="" SUM_MS=""
+  if [[ -n "$output" ]]; then
+    if [[ "$output" =~ fw=([0-9.]+)ms ]]; then FW_MS="${BASH_REMATCH[1]}"; fi
+    if [[ "$output" =~ bw=([0-9.]+)ms ]]; then BW_MS="${BASH_REMATCH[1]}"; fi
+    if [[ "$output" =~ completion=([0-9.]+)ms ]]; then COMPLETION_MS="${BASH_REMATCH[1]}"; fi
+    if [[ "$output" =~ concat=([0-9.]+)ms ]]; then CONCAT_MS="${BASH_REMATCH[1]}"; fi
+    if [[ "$output" =~ paths=([0-9.]+)ms ]]; then PATHS_MS="${BASH_REMATCH[1]}"; fi
+    if [[ "$output" =~ sum=([0-9.]+)ms ]]; then SUM_MS="${BASH_REMATCH[1]}"; fi
   fi
 }
 

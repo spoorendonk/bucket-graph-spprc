@@ -9,7 +9,7 @@
 #   ./benchmarks/ablation/06_dominance.sh [--timeout S] [PATH...]
 #
 # Output:
-#   CSV to stdout: instance,set,ng_size,mode,cost,paths,time_ms,status
+#   CSV to stdout: instance,set,ng_size,mode,cost,paths,time_ms,fw_ms,bw_ms,concat_ms,n_dominance_checks,n_non_dominated,status
 set -euo pipefail
 
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
@@ -43,7 +43,7 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
   exit 1
 fi
 
-echo "instance,set,ng_size,mode,cost,paths,time_ms,status"
+echo "instance,set,ng_size,mode,cost,paths,time_ms,fw_ms,bw_ms,concat_ms,n_dominance_checks,n_non_dominated,status"
 
 for file in "${FILES[@]}"; do
   stem="$(instance_stem "$file")"
@@ -54,12 +54,16 @@ for file in "${FILES[@]}"; do
     run_solver "$TIMEOUT" --ng "$ng" --mono --stage exact -- "$file"
     parse_cost_time "$OUT" "$STATUS"
     parse_paths "$OUT"
-    echo "${stem},${iset},${ng},mono,${COST},${PATHS_COUNT},${TIME_MS},${STATUS}"
+    parse_timing "$OUT"
+    parse_stats "$OUT"
+    echo "${stem},${iset},${ng},mono,${COST},${PATHS_COUNT},${TIME_MS},${FW_MS},${BW_MS},${CONCAT_MS},${N_DOMINANCE_CHECKS},${N_NON_DOMINATED},${STATUS}"
 
     # Bidir — bidirectional dominance
     run_solver "$TIMEOUT" --ng "$ng" --stage exact -- "$file"
     parse_cost_time "$OUT" "$STATUS"
     parse_paths "$OUT"
-    echo "${stem},${iset},${ng},bidir,${COST},${PATHS_COUNT},${TIME_MS},${STATUS}"
+    parse_timing "$OUT"
+    parse_stats "$OUT"
+    echo "${stem},${iset},${ng},bidir,${COST},${PATHS_COUNT},${TIME_MS},${FW_MS},${BW_MS},${CONCAT_MS},${N_DOMINANCE_CHECKS},${N_NON_DOMINATED},${STATUS}"
   done
 done
