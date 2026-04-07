@@ -104,7 +104,7 @@ build_pathwyse
 # ── Convert instances to Pathwyse format ──
 echo
 echo "Converting instances to Pathwyse format..."
-python3 "$SCRIPTDIR/convert_to_pathwyse.py" --ng "$NG" --outdir "$CONVERTED_DIR" "${PATHS[@]}"
+python3 "$SCRIPTDIR/convert_to_pathwyse.py" --outdir "$CONVERTED_DIR" "${PATHS[@]}"
 
 # ── Collect instance files ──
 collect_files() {
@@ -208,7 +208,6 @@ for file in "${FILES[@]}"; do
   IDX=$((IDX + 1))
   stem="$(basename "$file")"
   stem="${stem%.*}"
-  ext="${file##*.}"
 
   # Determine Pathwyse converted file
   parent="$(basename "$(dirname "$file")")"

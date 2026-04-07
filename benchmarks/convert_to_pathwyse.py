@@ -2,11 +2,10 @@
 """Convert bgspprc instance files (.sppcc, .vrp, .graph) to Pathwyse format.
 
 Usage:
-    python3 benchmarks/convert_to_pathwyse.py [--ng K] [--outdir DIR] PATH...
+    python3 benchmarks/convert_to_pathwyse.py [--outdir DIR] PATH...
 
 Arguments:
     PATH            Instance file or directory of instances.
-    --ng K          ng-neighborhood size for Pathwyse (default: 8).
     --outdir DIR    Output directory (default: benchmarks/instances/pathwyse).
 
 Converts:
@@ -17,7 +16,7 @@ Converts:
 The conversion models the same graph structure as bgspprc's loaders:
     - Source/sink split: depot becomes source (vertex 0), sink is added as last vertex.
     - Arc costs include duals/profits as per bgspprc's instance_io.h.
-    - Ng-neighborhoods are computed identically (nearest neighbors by cost).
+    - Ng-neighborhoods are computed by Pathwyse internally via algo/default/ng/set_size.
 """
 import math
 import os
@@ -106,12 +105,6 @@ def parse_sppcc(filepath):
         "tw_lb": None,
         "tw_ub": None,
         "arc_times": None,
-        # For ng-cost computation
-        "ng_cost_matrix": [
-            [dist_matrix[ii][jj] + node_weights[jj] for jj in range(N)]
-            for ii in range(N)
-        ],
-        "n_orig": N,
     }
 
 
@@ -212,10 +205,6 @@ def parse_vrp(filepath):
         "tw_lb": None,
         "tw_ub": None,
         "arc_times": None,
-        "ng_cost_matrix": [
-            [dist(ii, jj) - profits[jj] for jj in range(N)] for ii in range(N)
-        ],
-        "n_orig": N,
     }
 
 
@@ -225,8 +214,6 @@ def parse_graph(filepath):
         lines = f.readlines()
 
     n_vertices = 0
-    n_edges = 0
-    ng_size = 0
     name = ""
     vertices = []
     arcs = []
@@ -240,8 +227,6 @@ def parse_graph(filepath):
             parts = line.split()
             name = parts[1]
             n_vertices = int(parts[2])
-            n_edges = int(parts[3])
-            ng_size = int(parts[4])
             vertices = [None] * n_vertices
         elif line.startswith("v "):
             parts = line.split()
@@ -279,12 +264,10 @@ def parse_graph(filepath):
         "tw_lb": tw_lb,
         "tw_ub": tw_ub,
         "arc_times": [a[4] for a in arcs],
-        "ng_cost_matrix": None,
-        "n_orig": n_vertices,
     }
 
 
-def write_pathwyse(inst, outpath, ng_k=8):
+def write_pathwyse(inst, outpath):
     """Write instance in Pathwyse format."""
     nv = inst["n_vertices"]
     source = inst["source"]
@@ -372,7 +355,7 @@ def write_pathwyse(inst, outpath, ng_k=8):
             f.write("END\n")
 
 
-def convert_file(filepath, outdir, ng_k=8):
+def convert_file(filepath, outdir):
     """Convert a single instance file to Pathwyse format."""
     filepath = Path(filepath)
     ext = filepath.suffix
@@ -393,7 +376,7 @@ def convert_file(filepath, outdir, ng_k=8):
     os.makedirs(outsubdir, exist_ok=True)
 
     outpath = outsubdir / (filepath.stem + ".txt")
-    write_pathwyse(inst, str(outpath), ng_k=ng_k)
+    write_pathwyse(inst, str(outpath))
     return str(outpath)
 
 
@@ -404,7 +387,6 @@ def main():
         description="Convert bgspprc instances to Pathwyse format"
     )
     parser.add_argument("paths", nargs="+", help="Instance files or directories")
-    parser.add_argument("--ng", type=int, default=8, help="ng-neighborhood size (default: 8)")
     parser.add_argument(
         "--outdir",
         default=None,
@@ -421,14 +403,14 @@ def main():
     for path in args.paths:
         p = Path(path)
         if p.is_file():
-            out = convert_file(str(p), args.outdir, args.ng)
+            out = convert_file(str(p), args.outdir)
             if out:
                 print(f"  {p.name} -> {out}")
                 converted += 1
         elif p.is_dir():
             for ext in ("*.sppcc", "*.vrp", "*.graph"):
                 for f in sorted(p.rglob(ext)):
-                    out = convert_file(str(f), args.outdir, args.ng)
+                    out = convert_file(str(f), args.outdir)
                     if out:
                         print(f"  {f.name} -> {out}")
                         converted += 1
