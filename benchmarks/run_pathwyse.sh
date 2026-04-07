@@ -3,8 +3,7 @@
 #
 # Clones, builds, and runs Pathwyse (https://github.com/pathwyse/pathwyse) on
 # benchmark instances alongside bgspprc-solve. Produces a comparison CSV with
-# runtime, label count (bgspprc only — Pathwyse does not expose label counts),
-# and cost verification.
+# runtime and cost verification. Pathwyse does not expose label counts.
 #
 # Usage:
 #   ./benchmarks/run_pathwyse.sh [--ng K] [--timeout S] [--skip-build] [PATH...]
@@ -22,8 +21,8 @@
 #
 # Output:
 #   benchmarks/comparison_pathwyse.csv — CSV with columns:
-#     instance, ng, bgspprc_s, pathwyse_s, bgspprc_labels, pathwyse_labels,
-#     bgspprc_cost, pathwyse_cost, cost_match, ratio
+#     instance, ng, bgspprc_s, pathwyse_s, bgspprc_cost, pathwyse_cost,
+#     cost_match, ratio
 #
 # Prerequisites:
 #   bgspprc-solve must be built:
@@ -184,7 +183,7 @@ SETTINGS
 }
 
 # ── Write CSV header ──
-echo "instance,ng,bgspprc_s,pathwyse_s,bgspprc_labels,pathwyse_labels,bgspprc_cost,pathwyse_cost,cost_match,ratio" > "$OUT_CSV"
+echo "instance,ng,bgspprc_s,pathwyse_s,bgspprc_cost,pathwyse_cost,cost_match,ratio" > "$OUT_CSV"
 
 # ── Run comparison ──
 echo
@@ -219,7 +218,7 @@ for file in "${FILES[@]}"; do
   fi
 
   # ── Run bgspprc-solve ──
-  bg_cost="" bg_time_s="" bg_labels="" bg_status="OK"
+  bg_cost="" bg_time_s="" bg_status="OK"
   if bg_output=$(timeout "${TIMEOUT}s" "$SOLVE" --ng "$NG" "$file" 2>&1); then
     bg_line="$(echo "$bg_output" | head -1)"
     if [[ "$bg_line" =~ cost=([0-9.eE+-]+) ]]; then
@@ -229,9 +228,7 @@ for file in "${FILES[@]}"; do
       bg_time_ms="${BASH_REMATCH[1]}"
       bg_time_s="$(awk "BEGIN{printf \"%.3f\", $bg_time_ms/1000}")"
     fi
-    if [[ "$bg_line" =~ paths=([0-9]+) ]]; then
-      bg_labels="${BASH_REMATCH[1]}"
-    fi
+    :  # paths count not needed for comparison
   else
     rc=$?
     if [[ $rc -eq 124 ]]; then
@@ -249,7 +246,7 @@ for file in "${FILES[@]}"; do
     write_pathwyse_settings "$NG"
   fi
 
-  pw_cost="" pw_time_s="" pw_labels="" pw_status="OK"
+  pw_cost="" pw_time_s="" pw_status="OK"
   # Run Pathwyse from its directory so it picks up pathwyse.set
   pw_raw=""
   if pw_raw=$(cd "$PATHWYSE_DIR" && timeout "${TIMEOUT}s" "$PATHWYSE_BIN" "$pw_file" 2>&1); then
@@ -278,9 +275,6 @@ for file in "${FILES[@]}"; do
     fi
   fi
 
-  # Labels: Pathwyse does not expose label counts at verbosity=0
-  pw_labels=""
-
   # Cost comparison
   cost_match=""
   if [[ -n "$bg_cost" && -n "$pw_cost" ]]; then
@@ -300,7 +294,7 @@ for file in "${FILES[@]}"; do
     "${bg_cost:--}" "${pw_cost:--}" "${ratio:--}" "${cost_match:--}" "$IDX" "$TOTAL"
 
   # Write CSV row
-  echo "${stem},${NG},${bg_time_s},${pw_time_s},${bg_labels},${pw_labels},${bg_cost},${pw_cost},${cost_match},${ratio}" >> "$OUT_CSV"
+  echo "${stem},${NG},${bg_time_s},${pw_time_s},${bg_cost},${pw_cost},${cost_match},${ratio}" >> "$OUT_CSV"
 
   # Accumulate for geometric mean (only if both have valid times)
   if [[ -n "$bg_time_s" && -n "$pw_time_s" && "$bg_status" == "OK" && "$pw_status" == "OK" ]]; then
