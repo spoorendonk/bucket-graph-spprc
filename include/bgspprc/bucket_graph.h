@@ -73,6 +73,16 @@ struct SolveTimings {
          + concatenation + path_extraction;
   }
 
+  /// Add another timing's durations to this one.
+  SolveTimings& operator+=(const SolveTimings& o) {
+    forward_labeling += o.forward_labeling;
+    backward_labeling += o.backward_labeling;
+    completion_bounds += o.completion_bounds;
+    concatenation += o.concatenation;
+    path_extraction += o.path_extraction;
+    return *this;
+  }
+
   /// Reset all durations to zero.
   void reset() { *this = SolveTimings{}; }
 };

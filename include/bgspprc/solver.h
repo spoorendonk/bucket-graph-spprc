@@ -57,8 +57,10 @@ class Solver {
   /// ξ-doubling: on CG convergence (empty exact pricing), checks if finer
   /// buckets would help and retries if so.
   std::vector<Path> solve() {
+    accumulated_timings_.reset();
     bg_.set_stage(stage_);
     auto paths = bg_.solve();
+    accumulated_timings_ += bg_.solve_timings();
 
     // Accumulate stats for A+ criterion during exact pricing
     if (stage_ == Stage::Exact) {
@@ -71,6 +73,7 @@ class Solver {
       if (paths.empty() && try_refine_buckets()) {
         bg_.set_stage(stage_);
         paths = bg_.solve();
+        accumulated_timings_ += bg_.solve_timings();
         total_dom_checks_ += bg_.dominance_checks();
         total_nondom_labels_ += bg_.non_dominated_labels();
         ++exact_pricing_calls_;
@@ -134,8 +137,9 @@ class Solver {
   /// Whether the last enumeration was complete (no caps hit).
   bool enumeration_complete() const { return bg_.enumeration_complete(); }
 
-  /// Phase timing breakdown from the last solve() call.
-  const SolveTimings& solve_timings() const { return bg_.solve_timings(); }
+  /// Phase timing breakdown accumulated across all solve iterations
+  /// (including A+ refinement retries).
+  const SolveTimings& solve_timings() const { return accumulated_timings_; }
 
   /// Stage management.
   void set_stage(Stage stage) { stage_ = stage; }
@@ -231,6 +235,9 @@ class Solver {
   int64_t total_dom_checks_ = 0;
   int64_t total_nondom_labels_ = 0;
   int exact_pricing_calls_ = 0;
+
+  // Accumulated timings across solve iterations (including A+ retries)
+  SolveTimings accumulated_timings_;
 };
 
 }  // namespace bgspprc

@@ -350,9 +350,15 @@ inline void compute_ng_neighbors(Instance& inst, int k = 8,
   int nv = inst.n_vertices;
   inst.ng_neighbors.resize(nv);
 
-  // Pick the metric: distance if requested and available, else cost.
-  const auto& metric =
-      (use_distance && !inst.ng_dist.empty()) ? inst.ng_dist : inst.ng_cost;
+  if (use_distance && inst.ng_dist.empty()) {
+    std::fprintf(stderr,
+                 "Error: --ng-metric distance requested but instance has no "
+                 "coordinate data (only sppcc/vrp formats support distance)\n");
+    std::exit(1);
+  }
+
+  // Pick the metric: distance if requested, else cost.
+  const auto& metric = use_distance ? inst.ng_dist : inst.ng_cost;
 
   if (!metric.empty()) {
     // Complete-graph instances: use pairwise metric over original N nodes.
