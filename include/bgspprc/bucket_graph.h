@@ -222,18 +222,6 @@ class BucketGraph {
     return count;
   }
 
-  /// Total bucket arc count (excluding jump arcs), both directions.
-  int64_t current_bucket_arc_count() const {
-    int64_t count = 0;
-    for (const auto& b : buckets_) {
-      count += static_cast<int64_t>(b.bucket_arcs.size());
-      if (opts_.bidirectional) {
-        count += static_cast<int64_t>(b.bw_bucket_arcs.size());
-      }
-    }
-    return count;
-  }
-
   /// BG2021 §6.3 A+: halve all bucket steps (doubles ξ).
   void halve_bucket_steps() {
     for (int r = 0; r < n_main_; ++r)
@@ -412,6 +400,18 @@ class BucketGraph {
   }
 
  private:
+  /// Total bucket arc count (excluding jump arcs), both directions.
+  int64_t current_bucket_arc_count() const {
+    int64_t count = 0;
+    for (const auto& b : buckets_) {
+      count += static_cast<int64_t>(b.bucket_arcs.size());
+      if (opts_.bidirectional) {
+        count += static_cast<int64_t>(b.bw_bucket_arcs.size());
+      }
+    }
+    return count;
+  }
+
   // ── SoA label storage ──
 
   static constexpr bool has_ng_ = detail::NgResourceIndex<Pack>::has_ng;
