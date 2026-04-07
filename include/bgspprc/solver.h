@@ -21,6 +21,7 @@ class Solver {
     std::array<double, 2> bucket_steps = {1.0, 1.0};
     bool bidirectional = true;
     bool symmetric = false;
+    bool no_jump_arcs = false;  // disable jump arcs (for ablation studies)
     int max_paths = 0;  // 0 = unlimited
     double theta = -1e-6;
     int max_enum_labels = 5000000;
@@ -37,6 +38,7 @@ class Solver {
                 .theta = opts_.theta,
                 .bidirectional = opts_.bidirectional,
                 .symmetric = opts_.symmetric,
+                .no_jump_arcs = opts_.no_jump_arcs,
                 .stage = Stage::Exact,
                 .max_enum_labels = opts_.max_enum_labels,
             }) {}

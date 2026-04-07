@@ -11,6 +11,7 @@
 ///   --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;
 ///                   from file or 8 for graph; 0 disables)
 ///   --steps S1,S2   Bucket step sizes (default: per-type)
+///   --no-jump-arcs  Disable jump arcs (for ablation studies)
 ///   --max-paths N   Number of paths to return (0=all, 1=best; default: 1)
 ///   --theta T       Pricing threshold θ (default: -1e-6 for CG)
 ///   --stats         Print solve statistics after each instance
@@ -45,6 +46,7 @@ struct Options {
   int ng = -1;      // -1 = use file default or 8, 0 = disable ng-path
   double step1 = 0, step2 = 0;  // 0 = per-type default
   bool auto_steps = false;       // use per-vertex auto-computed steps
+  bool no_jump_arcs = false;     // disable jump arcs (for ablation studies)
   double theta = NAN;             // NAN = use Solver default (-1e-6)
   int max_paths = 1;              // 0 = all, 1 = best only, N = top N
   bool stats = false;             // print solve statistics
@@ -83,6 +85,7 @@ typename Solver<Pack>::Options make_solver_opts(
   typename Solver<Pack>::Options so{
       .bucket_steps = {s1, s2},
       .bidirectional = opts.bidir,
+      .no_jump_arcs = opts.no_jump_arcs,
       .max_paths = opts.max_paths,
   };
   if (!std::isnan(opts.theta)) so.theta = opts.theta;
@@ -427,6 +430,8 @@ int main(int argc, char** argv) {
       parse_steps(argv[++i], opts.step1, opts.step2);
     } else if (std::strcmp(argv[i], "--auto-steps") == 0) {
       opts.auto_steps = true;
+    } else if (std::strcmp(argv[i], "--no-jump-arcs") == 0) {
+      opts.no_jump_arcs = true;
     } else if (std::strcmp(argv[i], "--theta") == 0 && i + 1 < argc) {
       opts.theta = std::atof(argv[++i]);
     } else if (std::strcmp(argv[i], "--max-paths") == 0 && i + 1 < argc) {
@@ -454,6 +459,7 @@ int main(int argc, char** argv) {
                  "  --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;\n"
                  "                  from file or 8 for graph; 0 disables)\n"
                  "  --steps S1,S2   Bucket step sizes\n"
+                 "  --no-jump-arcs  Disable jump arcs (for ablation studies)\n"
                  "  --max-paths N   Number of paths to return (0=all, 1=best; default: 1)\n"
                  "  --theta T       Pricing threshold θ (default: -1e-6)\n"
                  "  --stats         Print solve statistics after each instance\n"

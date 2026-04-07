@@ -16,7 +16,7 @@
 #include <unordered_map>
 #include <vector>
 
-#if __has_include(<experimental/simd>)
+#if !defined(BGSPPRC_DISABLE_SIMD) && __has_include(<experimental/simd>)
 #include <experimental/simd>
 #define BGSPPRC_HAS_SIMD 1
 #endif
@@ -89,6 +89,7 @@ class BucketGraph {
     double theta = -1e-6;
     bool bidirectional = false;
     bool symmetric = false;  // skip backward labeling, use fw labels as bw
+    bool no_jump_arcs = false;  // disable jump arcs (for ablation studies)
     Stage stage = Stage::Exact;
     int max_enum_labels =
         5000000;  // safety cap on total labels during enumeration
@@ -758,6 +759,9 @@ class BucketGraph {
       else
         b.bw_jump_arcs.clear();
     }
+
+    // When jump arcs are disabled, only clear existing ones (done above).
+    if (opts_.no_jump_arcs) return;
 
     int nb = static_cast<int>(buckets_.size());
     int na = pv_.n_arcs;

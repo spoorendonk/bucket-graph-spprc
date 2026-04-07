@@ -8,6 +8,12 @@ target_include_directories(bgspprc INTERFACE
     $<INSTALL_INTERFACE:include>)
 target_compile_features(bgspprc INTERFACE cxx_std_20)
 
+# Option to disable SIMD (for ablation studies)
+option(BGSPPRC_DISABLE_SIMD "Disable SIMD in dominance checks" OFF)
+if(BGSPPRC_DISABLE_SIMD)
+    target_compile_definitions(bgspprc INTERFACE BGSPPRC_DISABLE_SIMD)
+endif()
+
 # CLI solver (opt-in, off by default when consumed as submodule)
 option(BGSPPRC_BUILD_CLI "Build bgspprc-solve CLI" ${PROJECT_IS_TOP_LEVEL})
 
