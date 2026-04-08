@@ -132,4 +132,85 @@ class LabelPool {
   std::size_t count_ = 0;
 };
 
+/// Per-bucket arena allocator for labels.
+///
+/// Each bucket gets its own mini-arena of contiguous label blocks,
+/// so labels in the same bucket are physically adjacent in memory.
+/// This improves cache locality during dominance checks and
+/// concatenation, where labels from the same bucket are accessed
+/// sequentially.
+template <typename Pack>
+class BucketLabelPool {
+ public:
+  BucketLabelPool() = default;
+  ~BucketLabelPool() { clear(); }
+
+  BucketLabelPool(const BucketLabelPool&) = delete;
+  BucketLabelPool& operator=(const BucketLabelPool&) = delete;
+  BucketLabelPool(BucketLabelPool&&) = default;
+  BucketLabelPool& operator=(BucketLabelPool&&) = default;
+
+  /// (Re-)initialize for n_buckets. Clears all existing allocations.
+  void resize(int n_buckets) {
+    clear();
+    arenas_.assign(static_cast<std::size_t>(n_buckets), BucketArena{});
+  }
+
+  /// Allocate a label from bucket bi's arena.
+  Label<Pack>* allocate(int bi) {
+    assert(bi >= 0 && bi < static_cast<int>(arenas_.size()));
+    auto& arena = arenas_[static_cast<std::size_t>(bi)];
+    if (arena.free_pos >= arena.block_end) {
+      allocate_block(arena);
+    }
+    auto* label = reinterpret_cast<Label<Pack>*>(arena.free_pos);
+    new (label) Label<Pack>{};
+    arena.free_pos += label_size();
+    ++count_;
+    return label;
+  }
+
+  /// Release all memory and reset state.
+  void clear() {
+    for (auto* block : blocks_) {
+      std::free(block);
+    }
+    blocks_.clear();
+    arenas_.clear();
+    count_ = 0;
+  }
+
+  std::size_t count() const { return count_; }
+
+ private:
+  static constexpr std::size_t kBlockLabels = 64;  // labels per block (~8KB)
+  static constexpr std::size_t kCacheLine = 64;
+
+  struct BucketArena {
+    char* free_pos = nullptr;
+    char* block_end = nullptr;
+  };
+
+  static std::size_t label_size() {
+    std::size_t sz = sizeof(Label<Pack>);
+    return (sz + 7) & ~std::size_t{7};
+  }
+
+  void allocate_block(BucketArena& arena) {
+    std::size_t ls = label_size();
+    std::size_t bytes = ls * kBlockLabels;
+    std::size_t alignment = std::max(alignof(Label<Pack>), kCacheLine);
+    bytes = (bytes + alignment - 1) & ~(alignment - 1);
+    auto* block = static_cast<char*>(std::aligned_alloc(alignment, bytes));
+    assert(block);
+    blocks_.push_back(block);
+    arena.free_pos = block;
+    arena.block_end = block + bytes;
+  }
+
+  std::vector<BucketArena> arenas_;
+  std::vector<char*> blocks_;  // all allocated blocks (for cleanup)
+  std::size_t count_ = 0;
+};
+
 }  // namespace bgspprc

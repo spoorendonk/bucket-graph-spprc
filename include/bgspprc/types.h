@@ -3,6 +3,14 @@
 #include <cstdint>
 #include <limits>
 
+// Prefetch hint for read-only data with low temporal locality (L2 cache).
+// Used in dominance and concatenation loops to hide pointer-chase latency.
+#if defined(__GNUC__) || defined(__clang__)
+#define BGSPPRC_PREFETCH_R(addr) __builtin_prefetch(addr, 0, 1)
+#else
+#define BGSPPRC_PREFETCH_R(addr) ((void)0)
+#endif
+
 namespace bgspprc {
 
 enum class Direction : uint8_t { Forward, Backward };

@@ -504,7 +504,7 @@ class BucketGraph {
 
   /// Select the label pool for a direction. In parallel mode, backward
   /// labels use a separate pool to avoid contention.
-  LabelPool<Pack>& pool_for(Direction dir) {
+  BucketLabelPool<Pack>& pool_for(Direction dir) {
     if (parallel_ && dir == Direction::Backward) return bw_pool_;
     return pool_;
   }
@@ -1037,8 +1037,9 @@ class BucketGraph {
       new_cost += arc_cost + vtx_cost;
     }
 
-    // All checks passed — allocate and fill
-    auto* L = pool_for(dir).allocate();
+    // All checks passed — compute bucket before allocation for locality
+    int bi = vertex_bucket_index(new_v, new_q);
+    auto* L = pool_for(dir).allocate(bi);
     L->vertex = new_v;
     L->dir = dir;
     L->parent = const_cast<Label<Pack>*>(parent);
@@ -1051,7 +1052,7 @@ class BucketGraph {
     if constexpr (Pack::size > 0) {
       L->resource_states = new_resource_states;
     }
-    L->bucket = vertex_bucket_index(new_v, new_q);
+    L->bucket = bi;
     return L;
   }
 
@@ -1094,8 +1095,9 @@ class BucketGraph {
       new_cost += arc_cost + vtx_cost;
     }
 
-    // All checks passed — allocate and fill
-    auto* L = pool_for(dir).allocate();
+    // All checks passed — compute bucket before allocation for locality
+    int bi = vertex_bucket_index(new_v, new_q);
+    auto* L = pool_for(dir).allocate(bi);
     L->vertex = new_v;
     L->dir = dir;
     L->parent = const_cast<Label<Pack>*>(parent);
@@ -1108,7 +1110,7 @@ class BucketGraph {
     if constexpr (Pack::size > 0) {
       L->resource_states = new_resource_states;
     }
-    L->bucket = vertex_bucket_index(new_v, new_q);
+    L->bucket = bi;
     return L;
   }
 
@@ -1259,6 +1261,8 @@ class BucketGraph {
 
       for (std::size_t j = 0; j < W; ++j) {
         if (!mask[j]) continue;
+        // Prefetch the label we're about to dereference
+        BGSPPRC_PREFETCH_R(bucket[i + j]);
         // Scalar ng subset check from SoA — avoids chasing label pointer
         if (check_ng && (ng_data[i + j] & ~new_ng)) continue;
         // R1C SoA pre-filter: if existing has no disadvantage, tighten cost bound
@@ -1277,6 +1281,8 @@ class BucketGraph {
 
     for (; i < n; ++i) {
       if (bucket_costs[i] + min_dom_cost_ > threshold) break;
+      // Prefetch next label while processing current SoA filters
+      if (i + 1 < n) BGSPPRC_PREFETCH_R(bucket[i + 1]);
       if (check_ng && (ng_data[i] & ~new_ng)) continue;
       if (check_r1c) {
         uint64_t disadvantage = new_r1c & ~r1c_data[i];
@@ -1324,6 +1330,8 @@ class BucketGraph {
 
     for (std::size_t i = 0; i < bucket.size(); ++i) {
       if (bucket_costs[i] + min_dom_cost_ > threshold) break;  // sorted
+      // Prefetch next label while processing current SoA filters
+      if (i + 1 < bucket.size()) BGSPPRC_PREFETCH_R(bucket[i + 1]);
       if (check_ng && (ng_data[i] & ~new_ng)) continue;
       if (check_r1c) {
         uint64_t disadvantage = new_r1c & ~r1c_data[i];
@@ -1376,6 +1384,8 @@ class BucketGraph {
           auto& obucket = bl.labels[other];
           for (std::size_t idx = 0; idx < obucket.size(); ++idx) {
             if (ocosts[idx] + min_dom_cost_ > threshold) break;
+            // Prefetch next label while processing current SoA filters
+            if (idx + 1 < obucket.size()) BGSPPRC_PREFETCH_R(obucket[idx + 1]);
             if (check_ng && (bl.ng_bits[other][idx] & ~new_ng)) continue;
             if (check_r1c) {
               uint64_t disadvantage = new_r1c & ~bl.r1c_bits[other][idx];
@@ -1399,6 +1409,8 @@ class BucketGraph {
           auto& obucket = bl.labels[other];
           for (std::size_t idx = 0; idx < obucket.size(); ++idx) {
             if (ocosts[idx] + min_dom_cost_ > threshold) break;
+            // Prefetch next label while processing current SoA filters
+            if (idx + 1 < obucket.size()) BGSPPRC_PREFETCH_R(obucket[idx + 1]);
             if (check_ng && (bl.ng_bits[other][idx] & ~new_ng)) continue;
             if (check_r1c) {
               uint64_t disadvantage = new_r1c & ~bl.r1c_bits[other][idx];
@@ -2286,31 +2298,40 @@ class BucketGraph {
   }
 
   Label<Pack>* create_initial_label(Direction dir) {
-    auto* L = pool_for(dir).allocate();
+    // Compute vertex and q values on stack first for bucket-local allocation
+    int vertex;
+    std::array<double, 2> q{};
+    if (dir == Direction::Forward) {
+      vertex = pv_.source;
+      for (int r = 0; r < n_main_; ++r) q[r] = pv_.vertex_lb[r][pv_.source];
+    } else {
+      vertex = pv_.sink;
+      for (int r = 0; r < n_main_; ++r) q[r] = pv_.vertex_ub[r][pv_.sink];
+    }
+
+    // Compute resource states on stack before allocation
+    auto resource_states = pack_.init_states(dir);
+    double extra_cost = 0.0;
+    if constexpr (Pack::size > 0) {
+      auto [vtx_states, vtx_cost] =
+          pack_.extend_to_vertex(dir, resource_states, vertex);
+      if (vtx_cost >= INF) return nullptr;
+      resource_states = vtx_states;
+      extra_cost = vtx_cost;
+    }
+
+    int bi = vertex_bucket_index(vertex, q);
+    auto* L = pool_for(dir).allocate(bi);
+    L->vertex = vertex;
     L->dir = dir;
-    L->cost = 0.0;
+    L->cost = extra_cost;
     L->real_cost = 0.0;
+    L->q = q;
     L->parent = nullptr;
     L->parent_arc = -1;
     L->extended = false;
     L->dominated = false;
-
-    if (dir == Direction::Forward) {
-      L->vertex = pv_.source;
-      for (int r = 0; r < n_main_; ++r) L->q[r] = pv_.vertex_lb[r][pv_.source];
-    } else {
-      L->vertex = pv_.sink;
-      for (int r = 0; r < n_main_; ++r) L->q[r] = pv_.vertex_ub[r][pv_.sink];
-    }
-
-    L->resource_states = pack_.init_states(dir);
-    if constexpr (Pack::size > 0) {
-      auto [vtx_states, vtx_cost] =
-          pack_.extend_to_vertex(dir, L->resource_states, L->vertex);
-      if (vtx_cost >= INF) return nullptr;
-      L->resource_states = vtx_states;
-      L->cost += vtx_cost;
-    }
+    L->resource_states = resource_states;
     return L;
   }
 
@@ -2324,7 +2345,8 @@ class BucketGraph {
     non_dominated_labels_ = 0;
     fw_counters_.reset();
     bw_counters_.reset();
-    pool_.clear();
+    int nb = static_cast<int>(buckets_.size());
+    pool_.resize(nb);
     reset_label_storage(fw_labels_);
     reset_c_best();
     if constexpr (Pack::size > 0) {
@@ -2437,8 +2459,9 @@ class BucketGraph {
     non_dominated_labels_ = 0;
     fw_counters_.reset();
     bw_counters_.reset();
-    pool_.clear();
-    bw_pool_.clear();
+    int nb = static_cast<int>(buckets_.size());
+    pool_.resize(nb);
+    bw_pool_.resize(nb);
     reset_label_storage(fw_labels_);
     reset_label_storage(bw_labels_);
     reset_c_best();
@@ -2742,6 +2765,9 @@ class BucketGraph {
               auto& bw_labels = opts_.symmetric ? fw_labels_.labels[bbi]
                                                 : bw_labels_.labels[bbi];
               for (std::size_t li = 0; li < bw_labels.size(); ++li) {
+                // Prefetch next bw label while processing current one
+                if (li + 1 < bw_labels.size())
+                  BGSPPRC_PREFETCH_R(bw_labels[li + 1]);
                 // Sorted bw cost break
                 double total_cost = fw_arc + bw_costs[li];
                 if (total_cost + min_dom_cost_ >= opts_.theta) break;
@@ -3053,7 +3079,9 @@ class BucketGraph {
     for (const auto& wl : warm_labels_) {
       if (wl.dir != dir) continue;
 
-      auto* L = pool_for(dir).allocate();
+      // Compute bucket before allocation for locality
+      int bi = vertex_bucket_index(wl.vertex, wl.q);
+      auto* L = pool_for(dir).allocate(bi);
       L->vertex = wl.vertex;
       L->dir = dir;
       L->cost = wl.cost;
@@ -3064,8 +3092,6 @@ class BucketGraph {
       L->extended = false;
       L->dominated = false;
       L->resource_states = wl.resource_states;
-
-      int bi = vertex_bucket_index(wl.vertex, wl.q);
       L->bucket = bi;
 
       try_insert_label(L, bi, dir, bl, label_count);
@@ -3094,8 +3120,8 @@ class BucketGraph {
 
   int64_t initial_bucket_arc_count_ = 0;  // snapshot after build()
 
-  LabelPool<Pack> pool_;
-  LabelPool<Pack> bw_pool_;  // separate pool for backward labels in parallel mode
+  BucketLabelPool<Pack> pool_;
+  BucketLabelPool<Pack> bw_pool_;  // separate pool for backward labels in parallel mode
 
   bool parallel_ = false;  // true during parallel labeling section
 

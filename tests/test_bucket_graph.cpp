@@ -2726,3 +2726,103 @@ TEST_CASE("Solver: auto xi refinement on small instance") {
   // No crash — that's the main check. Paths may or may not be empty.
   (void)paths;
 }
+
+// ── BucketLabelPool tests ──
+
+TEST_CASE("BucketLabelPool basic allocation") {
+  using Pack = ResourcePack<>;
+  BucketLabelPool<Pack> pool;
+  pool.resize(4);
+
+  auto* L0 = pool.allocate(0);
+  REQUIRE(L0 != nullptr);
+  CHECK(L0->cost == INF);  // default-constructed
+  CHECK(pool.count() == 1);
+
+  auto* L1 = pool.allocate(0);
+  CHECK(L1 != nullptr);
+  CHECK(L1 != L0);
+  CHECK(pool.count() == 2);
+
+  // Different bucket
+  auto* L2 = pool.allocate(3);
+  CHECK(L2 != nullptr);
+  CHECK(pool.count() == 3);
+}
+
+TEST_CASE("BucketLabelPool same-bucket labels are contiguous") {
+  using Pack = ResourcePack<>;
+  BucketLabelPool<Pack> pool;
+  pool.resize(4);
+
+  // Allocate several labels from the same bucket
+  auto* L0 = pool.allocate(1);
+  auto* L1 = pool.allocate(1);
+  auto* L2 = pool.allocate(1);
+
+  // Labels from the same bucket should be in the same block,
+  // so addresses should be close together
+  auto diff01 = std::abs(reinterpret_cast<char*>(L1) -
+                         reinterpret_cast<char*>(L0));
+  auto diff12 = std::abs(reinterpret_cast<char*>(L2) -
+                         reinterpret_cast<char*>(L1));
+
+  // Consecutive labels in a bucket should be exactly label_size apart
+  std::size_t label_sz = (sizeof(Label<Pack>) + 7) & ~std::size_t{7};
+  CHECK(diff01 == static_cast<decltype(diff01)>(label_sz));
+  CHECK(diff12 == static_cast<decltype(diff12)>(label_sz));
+}
+
+TEST_CASE("BucketLabelPool resize clears previous allocations") {
+  using Pack = ResourcePack<>;
+  BucketLabelPool<Pack> pool;
+  pool.resize(4);
+
+  pool.allocate(0);
+  pool.allocate(1);
+  CHECK(pool.count() == 2);
+
+  // Resize should clear everything
+  pool.resize(8);
+  CHECK(pool.count() == 0);
+
+  // Can allocate from new buckets
+  auto* L = pool.allocate(7);
+  CHECK(L != nullptr);
+  CHECK(pool.count() == 1);
+}
+
+TEST_CASE("BucketLabelPool block overflow allocates new block") {
+  using Pack = ResourcePack<>;
+  BucketLabelPool<Pack> pool;
+  pool.resize(2);
+
+  // Allocate more than 64 labels (block size) from one bucket
+  for (int i = 0; i < 100; ++i) {
+    auto* L = pool.allocate(0);
+    REQUIRE(L != nullptr);
+    L->cost = static_cast<double>(i);
+  }
+  CHECK(pool.count() == 100);
+
+  // Verify we can still read them back (labels are valid)
+  // (We can't easily re-traverse, but the count is correct)
+}
+
+TEST_CASE("BucketLabelPool with NgPathResource pack") {
+  using Pack = ResourcePack<NgPathResource>;
+
+  BucketLabelPool<Pack> pool;
+  pool.resize(10);
+
+  auto* L = pool.allocate(5);
+  REQUIRE(L != nullptr);
+  CHECK(L->vertex == -1);  // default
+  L->vertex = 3;
+  L->cost = 42.0;
+  L->q[0] = 5.0;
+
+  CHECK(L->vertex == 3);
+  CHECK(L->cost == 42.0);
+  CHECK(L->q[0] == 5.0);
+}
