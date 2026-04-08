@@ -1791,7 +1791,7 @@ class BucketGraph {
           if (label->extended || label->dominated) continue;
 
           // Midpoint cutoff for bidirectional. Read atomic midpoint once
-          // per label (relaxed load is essentially free on x86).
+          // per label (relaxed load has no barrier overhead).
           {
             double mid = midpoint_.load(std::memory_order_relaxed);
             if (dir == Direction::Forward && label->q[0] > mid) {
