@@ -55,6 +55,27 @@ struct NgResourceIndex<ResourcePack<Rs...>> {
   static constexpr bool has_ng = value < sizeof...(Rs);
 };
 
+// Detect an R1C resource via the is_r1c_resource tag.
+template <typename R>
+concept IsR1CResource = requires { requires R::is_r1c_resource; };
+
+// Find the index of the first R1C resource in a ResourcePack.
+// Returns sizeof...(Rs) if none found.
+template <typename Pack>
+struct R1CResourceIndex;
+
+template <Resource... Rs>
+struct R1CResourceIndex<ResourcePack<Rs...>> {
+  static constexpr std::size_t find() {
+    std::size_t idx = 0;
+    bool found = false;
+    ((found || (IsR1CResource<Rs> ? (found = true, true) : (++idx, false))), ...);
+    return found ? idx : sizeof...(Rs);
+  }
+  static constexpr std::size_t value = find();
+  static constexpr bool has_r1c = value < sizeof...(Rs);
+};
+
 }  // namespace detail
 
 /// Phase timing breakdown from a single solve() call.
@@ -117,6 +138,11 @@ class BucketGraph {
     n_main_ = std::min(pv_.n_main_resources, 2);
     if constexpr (Pack::size > 0) {
       min_dom_cost_ = pack_.min_domination_cost();
+      if constexpr (has_r1c_) {
+        min_dom_cost_excl_r1c_ = min_dom_cost_ - std::get<r1c_idx_>(pack_.resources).min_domination_cost();
+      } else {
+        min_dom_cost_excl_r1c_ = min_dom_cost_;
+      }
     }
     for (int r = 0; r < n_main_; ++r)
       main_nondisposable_[r] =
@@ -470,6 +496,8 @@ class BucketGraph {
 
   static constexpr bool has_ng_ = detail::NgResourceIndex<Pack>::has_ng;
   static constexpr std::size_t ng_idx_ = detail::NgResourceIndex<Pack>::value;
+  static constexpr bool has_r1c_ = detail::R1CResourceIndex<Pack>::has_r1c;
+  static constexpr std::size_t r1c_idx_ = detail::R1CResourceIndex<Pack>::value;
 
   struct BucketLabels {
     std::vector<std::vector<Label<Pack>*>> labels;
@@ -477,6 +505,7 @@ class BucketGraph {
     std::vector<std::vector<double>> q0;
     std::vector<std::vector<double>> q1;
     std::vector<std::vector<uint32_t>> ng_bits;  // self-bit-stripped ng states
+    std::vector<std::vector<uint64_t>> r1c_bits;  // R1C cut states
 
     void resize(std::size_t n) {
       labels.resize(n);
@@ -484,6 +513,7 @@ class BucketGraph {
       q0.resize(n);
       q1.resize(n);
       if constexpr (has_ng_) ng_bits.resize(n);
+      if constexpr (has_r1c_) r1c_bits.resize(n);
     }
 
     std::size_t size() const { return labels.size(); }
@@ -1097,6 +1127,15 @@ class BucketGraph {
     }
   }
 
+  /// Extract R1C bit state from a label.
+  uint64_t label_r1c_bits(const Label<Pack>* L) const {
+    if constexpr (has_r1c_) {
+      return std::get<r1c_idx_>(L->resource_states);
+    } else {
+      return 0;
+    }
+  }
+
   void insert_sorted(BucketLabels& bl, int bi, Label<Pack>* L) const {
     auto& bucket_costs = bl.costs[bi];
     auto pos = std::lower_bound(bucket_costs.begin(), bucket_costs.end(), L->cost);
@@ -1107,6 +1146,9 @@ class BucketGraph {
     bl.q1[bi].insert(bl.q1[bi].begin() + idx, L->q[1]);
     if constexpr (has_ng_) {
       bl.ng_bits[bi].insert(bl.ng_bits[bi].begin() + idx, label_ng_bits(L));
+    }
+    if constexpr (has_r1c_) {
+      bl.r1c_bits[bi].insert(bl.r1c_bits[bi].begin() + idx, label_r1c_bits(L));
     }
   }
 
@@ -1133,9 +1175,20 @@ class BucketGraph {
       ng_data = bl.ng_bits[bi].data();
     }
 
-    // In heuristic stages, ng check is skipped (cost-only dominance)
+    // Precompute new label's R1C bits for dominance pre-filter
+    [[maybe_unused]] uint64_t new_r1c = 0;
+    [[maybe_unused]] const uint64_t* r1c_data = nullptr;
+    if constexpr (has_r1c_) {
+      new_r1c = label_r1c_bits(L);
+      r1c_data = bl.r1c_bits[bi].data();
+    }
+
+    // In heuristic stages, ng/r1c checks are skipped (cost-only dominance)
     [[maybe_unused]] const bool check_ng =
         has_ng_ && opts_.stage != Stage::Heuristic1 &&
+        opts_.stage != Stage::Heuristic2;
+    [[maybe_unused]] const bool check_r1c =
+        has_r1c_ && opts_.stage != Stage::Heuristic1 &&
         opts_.stage != Stage::Heuristic2;
 
     std::size_t i = 0;
@@ -1169,10 +1222,17 @@ class BucketGraph {
 
       for (std::size_t j = 0; j < W; ++j) {
         if (!mask[j]) continue;
-        auto* existing = bucket[i + j];
-        if (existing->dominated) continue;
         // Scalar ng subset check from SoA — avoids chasing label pointer
         if (check_ng && (ng_data[i + j] & ~new_ng)) continue;
+        // R1C SoA pre-filter: if existing has no disadvantage, tighten cost bound
+        if (check_r1c) {
+          uint64_t disadvantage = new_r1c & ~r1c_data[i + j];
+          if (disadvantage == 0) {
+            if (bucket_costs[i + j] + min_dom_cost_excl_r1c_ > threshold) continue;
+          }
+        }
+        auto* existing = bucket[i + j];
+        if (existing->dominated) continue;
         ++dominance_checks_;
         if (dominates(existing, L, dir)) return true;
       }
@@ -1180,9 +1240,15 @@ class BucketGraph {
 
     for (; i < n; ++i) {
       if (bucket_costs[i] + min_dom_cost_ > threshold) break;
+      if (check_ng && (ng_data[i] & ~new_ng)) continue;
+      if (check_r1c) {
+        uint64_t disadvantage = new_r1c & ~r1c_data[i];
+        if (disadvantage == 0) {
+          if (bucket_costs[i] + min_dom_cost_excl_r1c_ > threshold) continue;
+        }
+      }
       auto* existing = bucket[i];
       if (existing->dominated) continue;
-      if (check_ng && (ng_data[i] & ~new_ng)) continue;
       ++dominance_checks_;
       if (dominates(existing, L, dir)) return true;
     }
@@ -1206,15 +1272,30 @@ class BucketGraph {
       new_ng = label_ng_bits(L);
       ng_data = bl.ng_bits[bi].data();
     }
+    [[maybe_unused]] uint64_t new_r1c = 0;
+    [[maybe_unused]] const uint64_t* r1c_data = nullptr;
+    if constexpr (has_r1c_) {
+      new_r1c = label_r1c_bits(L);
+      r1c_data = bl.r1c_bits[bi].data();
+    }
     [[maybe_unused]] const bool check_ng =
         has_ng_ && opts_.stage != Stage::Heuristic1 &&
+        opts_.stage != Stage::Heuristic2;
+    [[maybe_unused]] const bool check_r1c =
+        has_r1c_ && opts_.stage != Stage::Heuristic1 &&
         opts_.stage != Stage::Heuristic2;
 
     for (std::size_t i = 0; i < bucket.size(); ++i) {
       if (bucket_costs[i] + min_dom_cost_ > threshold) break;  // sorted
+      if (check_ng && (ng_data[i] & ~new_ng)) continue;
+      if (check_r1c) {
+        uint64_t disadvantage = new_r1c & ~r1c_data[i];
+        if (disadvantage == 0) {
+          if (bucket_costs[i] + min_dom_cost_excl_r1c_ > threshold) continue;
+        }
+      }
       auto* existing = bucket[i];
       if (existing->dominated) continue;
-      if (check_ng && (ng_data[i] & ~new_ng)) continue;
       ++dominance_checks_;
       if (dominates(existing, L, dir)) return true;
     }
@@ -1233,6 +1314,21 @@ class BucketGraph {
     int k1 = (bi - start) % nb[1];
     const double threshold = L->cost + EPS;
 
+    [[maybe_unused]] uint32_t new_ng = 0;
+    if constexpr (has_ng_) {
+      new_ng = label_ng_bits(L);
+    }
+    [[maybe_unused]] uint64_t new_r1c = 0;
+    if constexpr (has_r1c_) {
+      new_r1c = label_r1c_bits(L);
+    }
+    [[maybe_unused]] const bool check_ng =
+        has_ng_ && opts_.stage != Stage::Heuristic1 &&
+        opts_.stage != Stage::Heuristic2;
+    [[maybe_unused]] const bool check_r1c =
+        has_r1c_ && opts_.stage != Stage::Heuristic1 &&
+        opts_.stage != Stage::Heuristic2;
+
     if (dir == Direction::Forward) {
       for (int i0 = 0; i0 <= k0; ++i0) {
         for (int i1 = 0; i1 <= k1; ++i1) {
@@ -1243,6 +1339,11 @@ class BucketGraph {
           auto& obucket = bl.labels[other];
           for (std::size_t idx = 0; idx < obucket.size(); ++idx) {
             if (ocosts[idx] + min_dom_cost_ > threshold) break;
+            if (check_ng && (bl.ng_bits[other][idx] & ~new_ng)) continue;
+            if (check_r1c) {
+              uint64_t disadvantage = new_r1c & ~bl.r1c_bits[other][idx];
+              if (disadvantage == 0 && ocosts[idx] + min_dom_cost_excl_r1c_ > threshold) continue;
+            }
             auto* existing = obucket[idx];
             if (existing->dominated) continue;
             if (dominates(existing, L, dir)) return true;
@@ -1260,6 +1361,11 @@ class BucketGraph {
           auto& obucket = bl.labels[other];
           for (std::size_t idx = 0; idx < obucket.size(); ++idx) {
             if (ocosts[idx] + min_dom_cost_ > threshold) break;
+            if (check_ng && (bl.ng_bits[other][idx] & ~new_ng)) continue;
+            if (check_r1c) {
+              uint64_t disadvantage = new_r1c & ~bl.r1c_bits[other][idx];
+              if (disadvantage == 0 && ocosts[idx] + min_dom_cost_excl_r1c_ > threshold) continue;
+            }
             auto* existing = obucket[idx];
             if (existing->dominated) continue;
             if (dominates(existing, L, dir)) return true;
@@ -1283,9 +1389,34 @@ class BucketGraph {
                          min_victim_cost);
     std::size_t start =
         static_cast<std::size_t>(start_it - bucket_costs.begin());
+
+    // Precompute SoA pre-filter data (direction reversed vs dominated_in_bucket)
+    [[maybe_unused]] uint32_t new_ng = 0;
+    if constexpr (has_ng_) {
+      new_ng = label_ng_bits(new_label);
+    }
+    [[maybe_unused]] uint64_t new_r1c = 0;
+    if constexpr (has_r1c_) {
+      new_r1c = label_r1c_bits(new_label);
+    }
+    [[maybe_unused]] const bool check_ng =
+        has_ng_ && opts_.stage != Stage::Heuristic1 &&
+        opts_.stage != Stage::Heuristic2;
+    [[maybe_unused]] const bool check_r1c =
+        has_r1c_ && opts_.stage != Stage::Heuristic1 &&
+        opts_.stage != Stage::Heuristic2;
+
     for (std::size_t i = start; i < bl.labels[bi].size(); ++i) {
       auto* existing = bl.labels[bi][i];
       if (!existing->dominated) {
+        // Reversed ng check: new_label dominates existing only if
+        // new_label's ng is a subset of existing's ng
+        if (check_ng && (new_ng & ~bl.ng_bits[bi][i])) continue;
+        // Reversed R1C check: existing_r1c & ~new_r1c is the disadvantage
+        if (check_r1c) {
+          uint64_t disadvantage = bl.r1c_bits[bi][i] & ~new_r1c;
+          if (disadvantage == 0 && new_label->cost + min_dom_cost_excl_r1c_ > bucket_costs[i] + EPS) continue;
+        }
         ++dominance_checks_;
         if (dominates(new_label, existing, dir)) {
           existing->dominated = true;
@@ -1316,6 +1447,9 @@ class BucketGraph {
       if constexpr (has_ng_) {
         bl.ng_bits[actual_bi].push_back(label_ng_bits(new_label));
       }
+      if constexpr (has_r1c_) {
+        bl.r1c_bits[actual_bi].push_back(label_r1c_bits(new_label));
+      }
       ++label_count;
       ++total_enum_labels_;
       if (buckets_[actual_bi].vertex == pv_.sink) ++enum_sink_labels_;
@@ -1344,6 +1478,9 @@ class BucketGraph {
         bl.q1[actual_bi][0] = new_label->q[1];
         if constexpr (has_ng_) {
           bl.ng_bits[actual_bi][0] = label_ng_bits(new_label);
+        }
+        if constexpr (has_r1c_) {
+          bl.r1c_bits[actual_bi][0] = label_r1c_bits(new_label);
         }
         return true;
       }
@@ -2025,6 +2162,7 @@ class BucketGraph {
       bl.q0[i].clear();
       bl.q1[i].clear();
       if constexpr (has_ng_) bl.ng_bits[i].clear();
+      if constexpr (has_r1c_) bl.r1c_bits[i].clear();
     }
   }
 
@@ -2049,6 +2187,12 @@ class BucketGraph {
       ng.resize(surviving.size());
       for (std::size_t i = 0; i < surviving.size(); ++i)
         ng[i] = label_ng_bits(surviving[i]);
+    }
+    if constexpr (has_r1c_) {
+      auto& r1c = bl.r1c_bits[bi];
+      r1c.resize(surviving.size());
+      for (std::size_t i = 0; i < surviving.size(); ++i)
+        r1c[i] = label_r1c_bits(surviving[i]);
     }
   }
 
@@ -2111,8 +2255,14 @@ class BucketGraph {
     pool_.clear();
     reset_label_storage(fw_labels_);
     reset_c_best();
-    if constexpr (Pack::size > 0)
+    if constexpr (Pack::size > 0) {
       min_dom_cost_ = pack_.min_domination_cost();
+      if constexpr (has_r1c_) {
+        min_dom_cost_excl_r1c_ = min_dom_cost_ - std::get<r1c_idx_>(pack_.resources).min_domination_cost();
+      } else {
+        min_dom_cost_excl_r1c_ = min_dom_cost_;
+      }
+    }
 
     total_enum_labels_ = 0;
     enum_complete_ = true;
@@ -2138,6 +2288,7 @@ class BucketGraph {
     fw_labels_.q0[src_bi].push_back(src->q[0]);
     fw_labels_.q1[src_bi].push_back(src->q[1]);
     if constexpr (has_ng_) fw_labels_.ng_bits[src_bi].push_back(label_ng_bits(src));
+    if constexpr (has_r1c_) fw_labels_.r1c_bits[src_bi].push_back(label_r1c_bits(src));
     if (opts_.stage == Stage::Enumerate) ++total_enum_labels_;
 
     // Inject warm labels from previous solve
@@ -2208,8 +2359,14 @@ class BucketGraph {
     reset_label_storage(fw_labels_);
     reset_label_storage(bw_labels_);
     reset_c_best();
-    if constexpr (Pack::size > 0)
+    if constexpr (Pack::size > 0) {
       min_dom_cost_ = pack_.min_domination_cost();
+      if constexpr (has_r1c_) {
+        min_dom_cost_excl_r1c_ = min_dom_cost_ - std::get<r1c_idx_>(pack_.resources).min_domination_cost();
+      } else {
+        min_dom_cost_excl_r1c_ = min_dom_cost_;
+      }
+    }
 
     fw_label_count_ = 0;
     bw_label_count_ = 0;
@@ -2243,6 +2400,7 @@ class BucketGraph {
       bw_labels_.q0[snk_bi].push_back(snk->q[0]);
       bw_labels_.q1[snk_bi].push_back(snk->q[1]);
       if constexpr (has_ng_) bw_labels_.ng_bits[snk_bi].push_back(label_ng_bits(snk));
+      if constexpr (has_r1c_) bw_labels_.r1c_bits[snk_bi].push_back(label_r1c_bits(snk));
       if (opts_.stage == Stage::Enumerate) {
         ++total_enum_labels_;
         ++enum_sink_labels_;  // seed label is at sink
@@ -2267,6 +2425,7 @@ class BucketGraph {
     fw_labels_.q0[src_bi].push_back(src->q[0]);
     fw_labels_.q1[src_bi].push_back(src->q[1]);
     if constexpr (has_ng_) fw_labels_.ng_bits[src_bi].push_back(label_ng_bits(src));
+    if constexpr (has_r1c_) fw_labels_.r1c_bits[src_bi].push_back(label_r1c_bits(src));
     if (opts_.stage == Stage::Enumerate) ++total_enum_labels_;
 
     if (!warm_labels_.empty()) {
@@ -2759,6 +2918,7 @@ class BucketGraph {
   bool midpoint_initialized_ = false;
 
   double min_dom_cost_ = 0.0;  // cached pack_.min_domination_cost()
+  double min_dom_cost_excl_r1c_ = 0.0;  // min_dom_cost_ excluding R1C contribution
 
   // BG2021 §6.3 A+: dominance check counters (reset per solve)
   mutable int64_t dominance_checks_ = 0;   // same-bucket dominates() calls

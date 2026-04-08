@@ -28,6 +28,7 @@ struct R1Cut {
 /// extend_along_arc: memory reset (keep bits for cuts where arc ∈ AM)
 /// extend_to_vertex: toggle bits for cuts where vertex ∈ C, cost from overflow
 struct R1CResource {
+  static constexpr bool is_r1c_resource = true;
   using State = uint64_t;
 
   /// Set the active cuts. Rebuilds all lookup masks.
