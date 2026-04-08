@@ -144,6 +144,29 @@ class BucketGraph {
     reduced_costs_ = reduced_costs;
   }
 
+  /// Refresh inlined cost fields on all bucket arcs and jump arcs.
+  /// Called automatically at the start of each solve().
+  void refresh_arc_costs() {
+    for (auto& b : buckets_) {
+      for (auto& ba : b.bucket_arcs) {
+        ba.cost = reduced_costs_ ? reduced_costs_[ba.arc_id]
+                                 : pv_.arc_base_cost[ba.arc_id];
+      }
+      for (auto& ba : b.bw_bucket_arcs) {
+        ba.cost = reduced_costs_ ? reduced_costs_[ba.arc_id]
+                                 : pv_.arc_base_cost[ba.arc_id];
+      }
+      for (auto& ja : b.jump_arcs) {
+        ja.cost = reduced_costs_ ? reduced_costs_[ja.arc_id]
+                                 : pv_.arc_base_cost[ja.arc_id];
+      }
+      for (auto& ja : b.bw_jump_arcs) {
+        ja.cost = reduced_costs_ ? reduced_costs_[ja.arc_id]
+                                 : pv_.arc_base_cost[ja.arc_id];
+      }
+    }
+  }
+
   /// Access a resource in the pack (for runtime reconfiguration).
   template <typename R>
   R& resource() {
@@ -314,9 +337,7 @@ class BucketGraph {
     for (int bi = 0; bi < nb; ++bi) {
       auto& b = buckets_[bi];
       std::erase_if(b.bucket_arcs, [&](const BucketArc& ba) {
-        double arc_cost = reduced_costs_ ? reduced_costs_[ba.arc_id]
-                                         : pv_.arc_base_cost[ba.arc_id];
-        return b.c_best + arc_cost + fw_completion_[ba.to_bucket] > theta + EPS;
+        return b.c_best + ba.cost + fw_completion_[ba.to_bucket] > theta + EPS;
       });
     }
     obtain_jump_arcs(Direction::Forward);
@@ -328,9 +349,7 @@ class BucketGraph {
       for (int bi = 0; bi < nb; ++bi) {
         auto& b = buckets_[bi];
         std::erase_if(b.bw_bucket_arcs, [&](const BucketArc& ba) {
-          double arc_cost = reduced_costs_ ? reduced_costs_[ba.arc_id]
-                                           : pv_.arc_base_cost[ba.arc_id];
-          return b.bw_c_best + arc_cost + bw_completion_[ba.to_bucket] >
+          return b.bw_c_best + ba.cost + bw_completion_[ba.to_bucket] >
                  theta + EPS;
         });
       }
@@ -621,7 +640,15 @@ class BucketGraph {
           }
           if (!feasible) continue;
           int target_bi = vertex_bucket_index(to_v, q_target);
-          buckets_[bi].bucket_arcs.push_back({target_bi, a});
+          BucketArc ba;
+          ba.to_bucket = target_bi;
+          ba.arc_id = a;
+          ba.to_vertex = to_v;
+          ba.real_cost = pv_.arc_base_cost[a];
+          ba.cost = ba.real_cost;  // refreshed before each solve
+          ba.resource[0] = pv_.arc_resource[0][a];
+          ba.resource[1] = (n_main_ >= 2) ? pv_.arc_resource[1][a] : 0.0;
+          buckets_[bi].bucket_arcs.push_back(ba);
         }
       } else {
         auto [start, end] = vertex_bucket_range(to_v);
@@ -639,7 +666,15 @@ class BucketGraph {
           }
           if (!feasible) continue;
           int target_bi = vertex_bucket_index(from_v, q_target);
-          buckets_[bi].bw_bucket_arcs.push_back({target_bi, a});
+          BucketArc ba;
+          ba.to_bucket = target_bi;
+          ba.arc_id = a;
+          ba.to_vertex = from_v;
+          ba.real_cost = pv_.arc_base_cost[a];
+          ba.cost = ba.real_cost;  // refreshed before each solve
+          ba.resource[0] = pv_.arc_resource[0][a];
+          ba.resource[1] = (n_main_ >= 2) ? pv_.arc_resource[1][a] : 0.0;
+          buckets_[bi].bw_bucket_arcs.push_back(ba);
         }
       }
     }
@@ -859,7 +894,15 @@ class BucketGraph {
             int min_k1 = std::numeric_limits<int>::max();
             for (auto& c : candidates) {
               if (c.k1 < min_k1) {
-                buckets_[bi].jump_arcs.push_back({c.bi, a});
+                JumpArc ja;
+                ja.jump_bucket = c.bi;
+                ja.arc_id = a;
+                ja.to_vertex = pv_.arc_to[a];  // fw: head vertex
+                ja.real_cost = pv_.arc_base_cost[a];
+                ja.cost = reduced_costs_ ? reduced_costs_[a] : ja.real_cost;
+                ja.resource[0] = pv_.arc_resource[0][a];
+                ja.resource[1] = (n_main_ >= 2) ? pv_.arc_resource[1][a] : 0.0;
+                buckets_[bi].jump_arcs.push_back(ja);
                 min_k1 = c.k1;
               }
             }
@@ -872,7 +915,15 @@ class BucketGraph {
             int max_k1 = std::numeric_limits<int>::min();
             for (auto& c : candidates) {
               if (c.k1 > max_k1) {
-                buckets_[bi].bw_jump_arcs.push_back({c.bi, a});
+                JumpArc ja;
+                ja.jump_bucket = c.bi;
+                ja.arc_id = a;
+                ja.to_vertex = pv_.arc_from[a];  // bw: tail vertex
+                ja.real_cost = pv_.arc_base_cost[a];
+                ja.cost = reduced_costs_ ? reduced_costs_[a] : ja.real_cost;
+                ja.resource[0] = pv_.arc_resource[0][a];
+                ja.resource[1] = (n_main_ >= 2) ? pv_.arc_resource[1][a] : 0.0;
+                buckets_[bi].bw_jump_arcs.push_back(ja);
                 max_k1 = c.k1;
               }
             }
@@ -884,34 +935,24 @@ class BucketGraph {
 
   // ── Label extension (direction-aware) ──
 
-  Label<Pack>* extend_label(const Label<Pack>* parent, int arc_id,
-                            Direction dir,
-                            const std::array<double, 2>* q_boost = nullptr) {
-    int new_v =
-        (dir == Direction::Forward) ? pv_.arc_to[arc_id] : pv_.arc_from[arc_id];
+  /// Extend a label along a BucketArc. Reads inlined fields directly.
+  Label<Pack>* extend_label(const Label<Pack>* parent,
+                            const BucketArc& arc, Direction dir) {
+    int new_v = arc.to_vertex;
 
-    // Cost — compute on stack before allocating
-    double extra_arc_cost =
-        reduced_costs_ ? reduced_costs_[arc_id] : pv_.arc_base_cost[arc_id];
-    double new_cost = parent->cost + extra_arc_cost;
-    double new_real_cost = parent->real_cost + pv_.arc_base_cost[arc_id];
+    // Cost — from inlined fields, no pointer chasing
+    double new_cost = parent->cost + arc.cost;
+    double new_real_cost = parent->real_cost + arc.real_cost;
 
-    // Main resource update — modified for jump arcs (paper §4.1)
+    // Main resource update
     std::array<double, 2> new_q{};
     for (int r = 0; r < n_main_; ++r) {
-      double d = pv_.arc_resource[r][arc_id];
-      double q_base = parent->q[r];
-      if (q_boost) {
-        if (dir == Direction::Forward)
-          q_base = std::max(q_base, (*q_boost)[r]);
-        else
-          q_base = std::min(q_base, (*q_boost)[r]);
-      }
+      double d = arc.resource[r];
       if (dir == Direction::Forward) {
-        new_q[r] = std::max(q_base + d, pv_.vertex_lb[r][new_v]);
+        new_q[r] = std::max(parent->q[r] + d, pv_.vertex_lb[r][new_v]);
         if (new_q[r] > pv_.vertex_ub[r][new_v]) return nullptr;
       } else {
-        new_q[r] = std::min(q_base - d, pv_.vertex_ub[r][new_v]);
+        new_q[r] = std::min(parent->q[r] - d, pv_.vertex_ub[r][new_v]);
         if (new_q[r] < pv_.vertex_lb[r][new_v]) return nullptr;
       }
     }
@@ -920,7 +961,7 @@ class BucketGraph {
     typename Pack::StatesTuple new_resource_states{};
     if constexpr (Pack::size > 0) {
       auto [arc_states, arc_cost] =
-          pack_.extend_along_arc(dir, parent->resource_states, arc_id);
+          pack_.extend_along_arc(dir, parent->resource_states, arc.arc_id);
       if (arc_cost >= INF) return nullptr;
       auto [vtx_states, vtx_cost] =
           pack_.extend_to_vertex(dir, arc_states, new_v);
@@ -934,7 +975,64 @@ class BucketGraph {
     L->vertex = new_v;
     L->dir = dir;
     L->parent = const_cast<Label<Pack>*>(parent);
-    L->parent_arc = arc_id;
+    L->parent_arc = arc.arc_id;
+    L->cost = new_cost;
+    L->real_cost = new_real_cost;
+    L->q = new_q;
+    L->extended = false;
+    L->dominated = false;
+    if constexpr (Pack::size > 0) {
+      L->resource_states = new_resource_states;
+    }
+    L->bucket = vertex_bucket_index(new_v, new_q);
+    return L;
+  }
+
+  /// Extend a label along a JumpArc with resource boost (paper section 4.1).
+  Label<Pack>* extend_label(const Label<Pack>* parent,
+                            const JumpArc& arc, Direction dir,
+                            const Bucket& jump_bucket) {
+    int new_v = arc.to_vertex;
+
+    // Cost — from inlined fields, no pointer chasing
+    double new_cost = parent->cost + arc.cost;
+    double new_real_cost = parent->real_cost + arc.real_cost;
+
+    // Main resource update — with jump boost
+    std::array<double, 2> new_q{};
+    for (int r = 0; r < n_main_; ++r) {
+      double d = arc.resource[r];
+      double q_base = parent->q[r];
+      if (dir == Direction::Forward) {
+        q_base = std::max(q_base, jump_bucket.lb[r]);
+        new_q[r] = std::max(q_base + d, pv_.vertex_lb[r][new_v]);
+        if (new_q[r] > pv_.vertex_ub[r][new_v]) return nullptr;
+      } else {
+        q_base = std::min(q_base, jump_bucket.ub[r]);
+        new_q[r] = std::min(q_base - d, pv_.vertex_ub[r][new_v]);
+        if (new_q[r] < pv_.vertex_lb[r][new_v]) return nullptr;
+      }
+    }
+
+    // Meta-Solver resource extension: extendAlongArc + extendToVertex
+    typename Pack::StatesTuple new_resource_states{};
+    if constexpr (Pack::size > 0) {
+      auto [arc_states, arc_cost] =
+          pack_.extend_along_arc(dir, parent->resource_states, arc.arc_id);
+      if (arc_cost >= INF) return nullptr;
+      auto [vtx_states, vtx_cost] =
+          pack_.extend_to_vertex(dir, arc_states, new_v);
+      if (vtx_cost >= INF) return nullptr;
+      new_resource_states = vtx_states;
+      new_cost += arc_cost + vtx_cost;
+    }
+
+    // All checks passed — allocate and fill
+    auto* L = pool_.allocate();
+    L->vertex = new_v;
+    L->dir = dir;
+    L->parent = const_cast<Label<Pack>*>(parent);
+    L->parent_arc = arc.arc_id;
     L->cost = new_cost;
     L->real_cost = new_real_cost;
     L->q = new_q;
@@ -1353,7 +1451,7 @@ class BucketGraph {
                            : buckets_[bi].bw_bucket_arcs;
 
           for (const auto& ba : arcs) {
-            try_insert(extend_label(label, ba.arc_id, dir));
+            try_insert(extend_label(label, ba, dir));
           }
 
           // Jump arcs (paper §4.1): extend with resource boost
@@ -1362,10 +1460,8 @@ class BucketGraph {
           auto& jarcs = (dir == Direction::Forward) ? buckets_[bi].jump_arcs
                                                     : buckets_[bi].bw_jump_arcs;
           for (const auto& ja : jarcs) {
-            std::array<double, 2> boost = (dir == Direction::Forward)
-                                              ? buckets_[ja.jump_bucket].lb
-                                              : buckets_[ja.jump_bucket].ub;
-            try_insert(extend_label(label, ja.arc_id, dir, &boost));
+            try_insert(extend_label(label, ja, dir,
+                                    buckets_[ja.jump_bucket]));
           }
 
           label->extended = true;
@@ -1501,9 +1597,7 @@ class BucketGraph {
                            : buckets_[bi].bw_bucket_arcs;
           for (const auto& ba : arcs) {
             if (completion[ba.to_bucket] >= INF) continue;
-            double arc_cost = reduced_costs_ ? reduced_costs_[ba.arc_id]
-                                             : pv_.arc_base_cost[ba.arc_id];
-            double candidate = arc_cost + completion[ba.to_bucket];
+            double candidate = ba.cost + completion[ba.to_bucket];
             if (candidate < completion[bi] - EPS) {
               completion[bi] = candidate;
               changed = true;
@@ -1639,14 +1733,15 @@ class BucketGraph {
   /// For forward: q_arr = max(src_lb + arc_resource, vertex_lb of head)
   ///   then find which backward bucket at head contains q_arr.
   /// Returns -1 if infeasible.
-  int compute_arrival_bucket(int src_bi, int arc_id, Direction dir,
+  /// Uses inlined to_vertex and resource fields from the arc struct.
+  int compute_arrival_bucket(int src_bi, int to_vertex,
+                             const double (&arc_resource)[2], Direction dir,
                              bool is_jump, int jump_bi = -1) const {
-    int head_v =
-        (dir == Direction::Forward) ? pv_.arc_to[arc_id] : pv_.arc_from[arc_id];
+    int head_v = to_vertex;
 
     std::array<double, 2> q_arr = {};
     for (int r = 0; r < n_main_; ++r) {
-      double d = pv_.arc_resource[r][arc_id];
+      double d = arc_resource[r];
       double base_q;
       if (dir == Direction::Forward) {
         base_q = is_jump ? buckets_[jump_bi].lb[r] : buckets_[src_bi].lb[r];
@@ -1677,8 +1772,8 @@ class BucketGraph {
     visited[local] = 1;
 
     // Cost bound prune: c̄^L + c̄_{arc} + c̃^best_{b̃} ≥ θ
-    double arc_cost =
-        reduced_costs_ ? reduced_costs_[arc_id] : pv_.arc_base_cost[arc_id];
+    double arc_cost = reduced_costs_ ? reduced_costs_[arc_id]
+                                     : pv_.arc_base_cost[arc_id];
     double opp_c_best = (dir == Direction::Forward)
                             ? buckets_[b_tilde].bw_c_best
                             : buckets_[b_tilde].c_best;
@@ -1789,7 +1884,8 @@ class BucketGraph {
                                               : buckets_[bi].bw_jump_arcs;
     for (const auto& ja : jarcs) {
       int arr_bi =
-          compute_arrival_bucket(bi, ja.arc_id, dir, true, ja.jump_bucket);
+          compute_arrival_bucket(bi, ja.to_vertex, ja.resource, dir,
+                                 true, ja.jump_bucket);
       if (arr_bi < 0) continue;
 
       for (const auto* L : labels_b) {
@@ -1806,7 +1902,8 @@ class BucketGraph {
     int write = 0;
     for (int read = 0; read < static_cast<int>(bucket_arcs.size()); ++read) {
       const auto& ba = bucket_arcs[read];
-      int arr_bi = compute_arrival_bucket(bi, ba.arc_id, dir, false);
+      int arr_bi = compute_arrival_bucket(bi, ba.to_vertex, ba.resource,
+                                          dir, false);
 
       bool eliminate = (arr_bi < 0);
       if (!eliminate) {
@@ -2007,6 +2104,7 @@ class BucketGraph {
 
   std::vector<Path> solve_mono() {
     timings_.reset();
+    refresh_arc_costs();
 
     dominance_checks_ = 0;
     non_dominated_labels_ = 0;
@@ -2102,6 +2200,7 @@ class BucketGraph {
 
   std::vector<Path> solve_bidirectional() {
     timings_.reset();
+    refresh_arc_costs();
 
     dominance_checks_ = 0;
     non_dominated_labels_ = 0;
