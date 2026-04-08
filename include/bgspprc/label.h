@@ -16,7 +16,8 @@ namespace bgspprc {
 /// Label for the SPPRC labeling algorithm.
 ///
 /// Template parameter Pack is a ResourcePack<Rs...>.
-/// Labels are allocated from a pool (LabelPool) for cache efficiency.
+/// Labels are allocated from a per-bucket pool (BucketLabelPool) for cache
+/// locality — labels in the same bucket are physically contiguous in memory.
 template <typename Pack>
 struct Label {
   int vertex = -1;
@@ -160,7 +161,7 @@ class BucketLabelPool {
   Label<Pack>* allocate(int bi) {
     assert(bi >= 0 && bi < static_cast<int>(arenas_.size()));
     auto& arena = arenas_[static_cast<std::size_t>(bi)];
-    if (arena.free_pos >= arena.block_end) {
+    if (arena.free_pos >= arena.block_end) [[unlikely]] {
       allocate_block(arena);
     }
     auto* label = reinterpret_cast<Label<Pack>*>(arena.free_pos);

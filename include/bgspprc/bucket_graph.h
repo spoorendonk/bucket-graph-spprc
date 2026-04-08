@@ -1232,6 +1232,12 @@ class BucketGraph {
 
     std::size_t i = 0;
     for (; i + W <= n; i += W) {
+      // Prefetch label pointers for this chunk before SIMD filtering.
+      // The ~20 cycles of SIMD cost/q0/q1 filtering hide the prefetch
+      // latency, so labels are warm when we dereference in the scalar tail.
+      for (std::size_t pf = 0; pf < W; ++pf)
+        BGSPPRC_PREFETCH_R(bucket[i + pf]);
+
       // Direct SIMD load from contiguous cost array — no gather needed
       simd_d cost_vec(bucket_costs.data() + i, stdx::element_aligned);
       auto mask = (cost_vec + min_dom_cost_) <= threshold;
@@ -1261,8 +1267,6 @@ class BucketGraph {
 
       for (std::size_t j = 0; j < W; ++j) {
         if (!mask[j]) continue;
-        // Prefetch the label we're about to dereference
-        BGSPPRC_PREFETCH_R(bucket[i + j]);
         // Scalar ng subset check from SoA — avoids chasing label pointer
         if (check_ng && (ng_data[i + j] & ~new_ng)) continue;
         // R1C SoA pre-filter: if existing has no disadvantage, tighten cost bound
@@ -1560,6 +1564,7 @@ class BucketGraph {
   void batch_try_insert(Label<Pack>** batch, int batch_size, int target_bi,
                         Direction dir, BucketLabels& bl, int& label_count,
                         bool& changed) {
+    assert(opts_.stage == Stage::Exact);
     if (batch_size <= 0) return;
     if (fixed_.test(target_bi)) return;
 
@@ -1604,11 +1609,11 @@ class BucketGraph {
     [[maybe_unused]] uint64_t batch_r1c[128];
     if constexpr (has_ng_) {
       for (int i = 0; i < batch_size; ++i)
-        batch_ng[i] = label_ng_bits(batch[i]);
+        batch_ng[i] = batch[i]->dominated ? 0 : label_ng_bits(batch[i]);
     }
     if constexpr (has_r1c_) {
       for (int i = 0; i < batch_size; ++i)
-        batch_r1c[i] = label_r1c_bits(batch[i]);
+        batch_r1c[i] = batch[i]->dominated ? 0 : label_r1c_bits(batch[i]);
     }
 
     // 3. Fused single pass: each existing label loaded once, checked vs
@@ -1791,15 +1796,14 @@ class BucketGraph {
           if (label->extended || label->dominated) continue;
 
           // Midpoint cutoff for bidirectional. Read atomic midpoint once
-          // per label (relaxed load has no barrier overhead).
-          {
-            double mid = midpoint_.load(std::memory_order_relaxed);
-            if (dir == Direction::Forward && label->q[0] > mid) {
-              continue;
-            }
-            if (dir == Direction::Backward && label->q[0] < mid) {
-              continue;
-            }
+          // per label (relaxed load has no barrier overhead). Reused by
+          // pre_filter lambda below.
+          double mid = midpoint_.load(std::memory_order_relaxed);
+          if (dir == Direction::Forward && label->q[0] > mid) {
+            continue;
+          }
+          if (dir == Direction::Backward && label->q[0] < mid) {
+            continue;
           }
 
           if (enumerating) {
@@ -1854,9 +1858,7 @@ class BucketGraph {
           // completion-bound pruning on a freshly extended label.
           auto pre_filter = [&](Label<Pack>* new_label) -> bool {
             if (!new_label) return false;
-            if (prune_past_mid &&
-                new_label->q[0] >
-                    midpoint_.load(std::memory_order_relaxed) &&
+            if (prune_past_mid && new_label->q[0] > mid &&
                 !has_compatible_opposite(new_label, opts_.theta))
               return false;
             if (use_completion_prune) {
@@ -2569,6 +2571,7 @@ class BucketGraph {
     L->extended = false;
     L->dominated = false;
     L->resource_states = resource_states;
+    L->bucket = bi;
     return L;
   }
 
@@ -2612,8 +2615,7 @@ class BucketGraph {
 
     auto* src = create_initial_label(Direction::Forward);
     if (!src) return {};  // infeasible source state
-    int src_bi = vertex_bucket_index(pv_.source, src->q);
-    src->bucket = src_bi;
+    int src_bi = src->bucket;
     fw_labels_.labels[src_bi].push_back(src);
     fw_labels_.costs[src_bi].push_back(src->cost);
     fw_labels_.q0[src_bi].push_back(src->q[0]);
@@ -2663,12 +2665,14 @@ class BucketGraph {
 
   double get_midpoint() {
     if (!midpoint_initialized_) {
-      double min_lb = INF, max_ub = -INF;
+      resource_min_lb_ = INF;
+      resource_max_ub_ = -INF;
       for (int v = 0; v < pv_.n_vertices; ++v) {
-        min_lb = std::min(min_lb, pv_.vertex_lb[0][v]);
-        max_ub = std::max(max_ub, pv_.vertex_ub[0][v]);
+        resource_min_lb_ = std::min(resource_min_lb_, pv_.vertex_lb[0][v]);
+        resource_max_ub_ = std::max(resource_max_ub_, pv_.vertex_ub[0][v]);
       }
-      midpoint_.store((min_lb + max_ub) / 2.0, std::memory_order_relaxed);
+      midpoint_.store((resource_min_lb_ + resource_max_ub_) / 2.0,
+                      std::memory_order_relaxed);
       midpoint_initialized_ = true;
     }
     return midpoint_.load(std::memory_order_relaxed);
@@ -2678,16 +2682,13 @@ class BucketGraph {
     int fw_lc = fw_counters_.label_count;
     int bw_lc = bw_counters_.label_count;
     if (fw_lc == 0 && bw_lc == 0) return;
-    double min_lb = INF, max_ub = -INF;
-    for (int v = 0; v < pv_.n_vertices; ++v) {
-      min_lb = std::min(min_lb, pv_.vertex_lb[0][v]);
-      max_ub = std::max(max_ub, pv_.vertex_ub[0][v]);
-    }
     double mu = midpoint_.load(std::memory_order_relaxed);
     if (fw_lc > 1.2 * bw_lc) {
-      midpoint_.store(mu + 0.05 * (max_ub - mu), std::memory_order_relaxed);
+      midpoint_.store(mu + 0.05 * (resource_max_ub_ - mu),
+                      std::memory_order_relaxed);
     } else if (bw_lc > 1.2 * fw_lc) {
-      midpoint_.store(mu - 0.05 * (mu - min_lb), std::memory_order_relaxed);
+      midpoint_.store(mu - 0.05 * (mu - resource_min_lb_),
+                      std::memory_order_relaxed);
     }
   }
 
@@ -2804,15 +2805,7 @@ class BucketGraph {
       compute_completion_bounds(Direction::Backward);
     }
 
-    get_midpoint();  // ensure midpoint_ is initialized
-
-    // Cache resource bounds for dynamic midpoint adjustment.
-    resource_min_lb_ = INF;
-    resource_max_ub_ = -INF;
-    for (int v = 0; v < pv_.n_vertices; ++v) {
-      resource_min_lb_ = std::min(resource_min_lb_, pv_.vertex_lb[0][v]);
-      resource_max_ub_ = std::max(resource_max_ub_, pv_.vertex_ub[0][v]);
-    }
+    get_midpoint();  // ensure midpoint_ and resource bounds are initialized
 
     if (run_parallel) {
       // ── Parallel bidirectional labeling ──
@@ -2826,8 +2819,7 @@ class BucketGraph {
       // but bw seed goes to bw_pool_ when parallel_ is true).
       auto* src = create_initial_label(Direction::Forward);
       if (!src) return {};
-      int src_bi = vertex_bucket_index(pv_.source, src->q);
-      src->bucket = src_bi;
+      int src_bi = src->bucket;
       fw_labels_.labels[src_bi].push_back(src);
       fw_labels_.costs[src_bi].push_back(src->cost);
       fw_labels_.q0[src_bi].push_back(src->q[0]);
@@ -2840,8 +2832,7 @@ class BucketGraph {
 
       auto* snk = create_initial_label(Direction::Backward);
       if (!snk) { parallel_ = false; return {}; }
-      int snk_bi = vertex_bucket_index(pv_.sink, snk->q);
-      snk->bucket = snk_bi;
+      int snk_bi = snk->bucket;
       bw_labels_.labels[snk_bi].push_back(snk);
       bw_labels_.costs[snk_bi].push_back(snk->cost);
       bw_labels_.q0[snk_bi].push_back(snk->q[0]);
@@ -2892,8 +2883,7 @@ class BucketGraph {
       // ── Sequential backward-first labeling ──
       auto* snk = create_initial_label(Direction::Backward);
       if (!snk) return {};  // infeasible sink state
-      int snk_bi = vertex_bucket_index(pv_.sink, snk->q);
-      snk->bucket = snk_bi;
+      int snk_bi = snk->bucket;
       bw_labels_.labels[snk_bi].push_back(snk);
       bw_labels_.costs[snk_bi].push_back(snk->cost);
       bw_labels_.q0[snk_bi].push_back(snk->q[0]);
@@ -2919,8 +2909,7 @@ class BucketGraph {
     if (!run_parallel) {
       auto* src = create_initial_label(Direction::Forward);
       if (!src) return {};  // infeasible source state
-      int src_bi = vertex_bucket_index(pv_.source, src->q);
-      src->bucket = src_bi;
+      int src_bi = src->bucket;
       fw_labels_.labels[src_bi].push_back(src);
       fw_labels_.costs[src_bi].push_back(src->cost);
       fw_labels_.q0[src_bi].push_back(src->q[0]);
@@ -3441,7 +3430,7 @@ class BucketGraph {
   // Monotonicity direction: 0 = undecided, +1 = toward upper bound,
   // -1 = toward lower bound.  Set on first intra-solve adjustment
   // and locked for the remainder of the solve.
-  std::atomic<int> midpoint_direction_{0};
+  alignas(64) std::atomic<int> midpoint_direction_{0};
   // Cached resource bounds for midpoint adjustment (set before labeling).
   double resource_min_lb_ = 0.0;
   double resource_max_ub_ = 0.0;
