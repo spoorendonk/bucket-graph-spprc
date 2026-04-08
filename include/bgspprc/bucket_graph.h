@@ -233,7 +233,7 @@ class BucketGraph {
   bool enumeration_complete() const { return enum_complete_; }
 
   void reset_midpoint() { midpoint_initialized_ = false; }
-  double midpoint() const { return midpoint_; }
+  double midpoint() const { return midpoint_.load(std::memory_order_relaxed); }
 
   /// Phase timing breakdown from the last solve() call.
   const SolveTimings& solve_timings() const { return timings_; }
@@ -1738,8 +1738,7 @@ class BucketGraph {
 
   void process_scc(int scc_id, Direction dir,
                    const std::vector<std::vector<int>>& scc_buckets,
-                   BucketLabels& bl,
-                   double midpoint) {
+                   BucketLabels& bl) {
     auto& scc_bs = scc_buckets[scc_id];
     if (scc_bs.empty()) return;
 
@@ -1791,12 +1790,16 @@ class BucketGraph {
           auto* label = bucket_labels[li];
           if (label->extended || label->dominated) continue;
 
-          // Midpoint cutoff for bidirectional
-          if (dir == Direction::Forward && label->q[0] > midpoint) {
-            continue;
-          }
-          if (dir == Direction::Backward && label->q[0] < midpoint) {
-            continue;
+          // Midpoint cutoff for bidirectional. Read atomic midpoint once
+          // per label (relaxed load is essentially free on x86).
+          {
+            double mid = midpoint_.load(std::memory_order_relaxed);
+            if (dir == Direction::Forward && label->q[0] > mid) {
+              continue;
+            }
+            if (dir == Direction::Backward && label->q[0] < mid) {
+              continue;
+            }
           }
 
           if (enumerating) {
@@ -1851,7 +1854,9 @@ class BucketGraph {
           // completion-bound pruning on a freshly extended label.
           auto pre_filter = [&](Label<Pack>* new_label) -> bool {
             if (!new_label) return false;
-            if (prune_past_mid && new_label->q[0] > midpoint &&
+            if (prune_past_mid &&
+                new_label->q[0] >
+                    midpoint_.load(std::memory_order_relaxed) &&
                 !has_compatible_opposite(new_label, opts_.theta))
               return false;
             if (use_completion_prune) {
@@ -2622,11 +2627,13 @@ class BucketGraph {
       inject_warm_labels(fw_labels_, Direction::Forward);
     }
 
+    // Mono solve: set midpoint to INF so forward labels are never skipped.
+    midpoint_.store(INF, std::memory_order_relaxed);
+
     // Forward labeling
     auto t_fw_start = Clock_::now();
     for (int scc : fw_scc_topo_order_) {
-      process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_labels_,
-                  INF);
+      process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_labels_);
     }
     timings_.forward_labeling = Clock_::now() - t_fw_start;
 
@@ -2661,10 +2668,10 @@ class BucketGraph {
         min_lb = std::min(min_lb, pv_.vertex_lb[0][v]);
         max_ub = std::max(max_ub, pv_.vertex_ub[0][v]);
       }
-      midpoint_ = (min_lb + max_ub) / 2.0;
+      midpoint_.store((min_lb + max_ub) / 2.0, std::memory_order_relaxed);
       midpoint_initialized_ = true;
     }
-    return midpoint_;
+    return midpoint_.load(std::memory_order_relaxed);
   }
 
   void adjust_midpoint() {
@@ -2676,11 +2683,73 @@ class BucketGraph {
       min_lb = std::min(min_lb, pv_.vertex_lb[0][v]);
       max_ub = std::max(max_ub, pv_.vertex_ub[0][v]);
     }
+    double mu = midpoint_.load(std::memory_order_relaxed);
     if (fw_lc > 1.2 * bw_lc) {
-      midpoint_ += 0.05 * (max_ub - midpoint_);
+      midpoint_.store(mu + 0.05 * (max_ub - mu), std::memory_order_relaxed);
     } else if (bw_lc > 1.2 * fw_lc) {
-      midpoint_ -= 0.05 * (midpoint_ - min_lb);
+      midpoint_.store(mu - 0.05 * (mu - min_lb), std::memory_order_relaxed);
     }
+  }
+
+  /// Intra-solve dynamic midpoint adjustment. Called after each
+  /// process_scc() in parallel bidir mode. Reads both atomic label
+  /// counters and adjusts midpoint proportionally to balance work.
+  /// Enforces monotonicity: the midpoint only moves in one direction
+  /// per solve (decided at first adjustment).
+  void checkpoint_midpoint() {
+    int fw_lc = fw_label_count_.load(std::memory_order_relaxed);
+    int bw_lc = bw_label_count_.load(std::memory_order_relaxed);
+    int total = fw_lc + bw_lc;
+    if (total < 100) return;  // too few labels to reliably judge imbalance
+
+    double ratio = static_cast<double>(fw_lc) / static_cast<double>(total);
+    // ratio > 0.5 means forward is producing more labels
+    // ratio < 0.5 means backward is producing more labels
+    // Target: ratio = 0.5 (balanced)
+
+    // Determine desired direction: +1 = shift toward upper bound
+    // (give backward more room), -1 = shift toward lower bound
+    // (give forward more room).
+    int desired = 0;
+    if (ratio > 0.55) {
+      desired = +1;  // fw producing more, shift midpoint up
+    } else if (ratio < 0.45) {
+      desired = -1;  // bw producing more, shift midpoint down
+    } else {
+      return;  // balanced enough, no adjustment needed
+    }
+
+    // Monotonicity: lock direction on first adjustment.
+    int current_dir = midpoint_direction_.load(std::memory_order_relaxed);
+    if (current_dir == 0) {
+      // Try to set direction. If another thread set it first, use theirs.
+      if (!midpoint_direction_.compare_exchange_strong(
+              current_dir, desired, std::memory_order_relaxed)) {
+        // current_dir now holds the value set by the other thread
+        if (current_dir != desired) return;  // wrong direction, skip
+      }
+    } else if (current_dir != desired) {
+      return;  // direction locked in opposite way, skip
+    }
+
+    // Proportional adjustment: shift midpoint by a fraction proportional
+    // to the imbalance. Scale: (ratio - 0.5) gives raw imbalance in
+    // [-0.5, 0.5], multiply by available range to get shift magnitude.
+    // This is more aggressive than the 5% post-solve step but bounded
+    // by the actual imbalance magnitude.
+    double mu = midpoint_.load(std::memory_order_relaxed);
+    double imbalance = ratio - 0.5;  // in [-0.5, 0.5]
+    double shift = 0.0;
+    if (desired > 0) {
+      shift = imbalance * (resource_max_ub_ - mu);
+    } else {
+      shift = imbalance * (mu - resource_min_lb_);
+    }
+    double new_mu = mu + shift;
+    // Clamp to valid range
+    new_mu = std::max(new_mu, resource_min_lb_);
+    new_mu = std::min(new_mu, resource_max_ub_);
+    midpoint_.store(new_mu, std::memory_order_relaxed);
   }
 
   std::vector<Path> solve_bidirectional() {
@@ -2735,10 +2804,23 @@ class BucketGraph {
       compute_completion_bounds(Direction::Backward);
     }
 
-    double mu = get_midpoint();
+    get_midpoint();  // ensure midpoint_ is initialized
+
+    // Cache resource bounds for dynamic midpoint adjustment.
+    resource_min_lb_ = INF;
+    resource_max_ub_ = -INF;
+    for (int v = 0; v < pv_.n_vertices; ++v) {
+      resource_min_lb_ = std::min(resource_min_lb_, pv_.vertex_lb[0][v]);
+      resource_max_ub_ = std::max(resource_max_ub_, pv_.vertex_ub[0][v]);
+    }
 
     if (run_parallel) {
       // ── Parallel bidirectional labeling ──
+      // Reset dynamic midpoint adjustment state for this solve.
+      fw_label_count_.store(0, std::memory_order_relaxed);
+      bw_label_count_.store(0, std::memory_order_relaxed);
+      midpoint_direction_.store(0, std::memory_order_relaxed);
+
       // Create initial labels before spawning threads (pool_for needs
       // parallel_ = false during seed creation on main thread for fw,
       // but bw seed goes to bw_pool_ when parallel_ is true).
@@ -2773,13 +2855,18 @@ class BucketGraph {
 
       auto t_parallel_start = Clock_::now();
 
-      // Spawn backward thread (captures its own timing)
+      // Spawn backward thread (captures its own timing).
+      // After each SCC, checkpoint label counts and adjust midpoint.
       SolveTimings::Duration bw_duration{};
-      std::thread bw_thread([this, mu, &bw_duration]() {
+      std::thread bw_thread([this, &bw_duration]() {
         auto t_bw = Clock_::now();
         for (int scc : bw_scc_topo_order_) {
           process_scc(scc, Direction::Backward, bw_scc_buckets_,
-                      bw_labels_, mu);
+                      bw_labels_);
+          // Checkpoint: update atomic label counter and adjust midpoint
+          bw_label_count_.store(bw_counters_.label_count,
+                                std::memory_order_relaxed);
+          checkpoint_midpoint();
         }
         bw_duration = Clock_::now() - t_bw;
       });
@@ -2787,8 +2874,11 @@ class BucketGraph {
       // Forward labeling on main thread
       auto t_fw_start = Clock_::now();
       for (int scc : fw_scc_topo_order_) {
-        process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_labels_,
-                    mu);
+        process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_labels_);
+        // Checkpoint: update atomic label counter and adjust midpoint
+        fw_label_count_.store(fw_counters_.label_count,
+                              std::memory_order_relaxed);
+        checkpoint_midpoint();
       }
       timings_.forward_labeling = Clock_::now() - t_fw_start;
 
@@ -2819,7 +2909,7 @@ class BucketGraph {
       auto t_bw_start = Clock_::now();
       for (int scc : bw_scc_topo_order_) {
         process_scc(scc, Direction::Backward, bw_scc_buckets_,
-                    bw_labels_, mu);
+                    bw_labels_);
       }
       timings_.backward_labeling = Clock_::now() - t_bw_start;
 
@@ -2845,8 +2935,7 @@ class BucketGraph {
 
       auto t_fw_start = Clock_::now();
       for (int scc : fw_scc_topo_order_) {
-        process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_labels_,
-                    mu);
+        process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_labels_);
       }
       timings_.forward_labeling = Clock_::now() - t_fw_start;
     }
@@ -3340,8 +3429,22 @@ class BucketGraph {
 
   // Adaptive midpoint for bidirectional labeling
   int bw_labels_pruned_ = 0;
-  double midpoint_ = 0.0;
+  std::atomic<double> midpoint_{0.0};
   bool midpoint_initialized_ = false;
+
+  // Dynamic midpoint adjustment state (parallel bidir only).
+  // Atomic label counters for intra-solve checkpointing. Separate from
+  // DirCounters::label_count which is non-atomic and used by post-solve
+  // adjust_midpoint().
+  alignas(64) std::atomic<int> fw_label_count_{0};
+  alignas(64) std::atomic<int> bw_label_count_{0};
+  // Monotonicity direction: 0 = undecided, +1 = toward upper bound,
+  // -1 = toward lower bound.  Set on first intra-solve adjustment
+  // and locked for the remainder of the solve.
+  std::atomic<int> midpoint_direction_{0};
+  // Cached resource bounds for midpoint adjustment (set before labeling).
+  double resource_min_lb_ = 0.0;
+  double resource_max_ub_ = 0.0;
 
   double min_dom_cost_ = 0.0;  // cached pack_.min_domination_cost()
   double min_dom_cost_excl_r1c_ = 0.0;  // min_dom_cost_ excluding R1C contribution
