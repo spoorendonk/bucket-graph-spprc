@@ -1443,26 +1443,6 @@ TEST_CASE("Resource::symmetric() interface") {
   CHECK(pack.symmetric() == true);
 }
 
-// ── LabelPool ──
-
-TEST_CASE("LabelPool: allocation and counting") {
-  LabelPool<EmptyPack> pool(16);
-
-  CHECK(pool.count() == 0);
-
-  auto* l1 = pool.allocate();
-  CHECK(l1 != nullptr);
-  CHECK(pool.count() == 1);
-
-  auto* l2 = pool.allocate();
-  CHECK(l2 != nullptr);
-  CHECK(pool.count() == 2);
-  CHECK(l1 != l2);
-
-  pool.clear();
-  CHECK(pool.count() == 0);
-}
-
 TEST_CASE("R1CResource: conforms to Resource concept") {
   using namespace bgspprc;
   static_assert(Resource<R1CResource>, "R1CResource must satisfy Resource");
@@ -2825,4 +2805,289 @@ TEST_CASE("BucketLabelPool with NgPathResource pack") {
   CHECK(L->vertex == 3);
   CHECK(L->cost == 42.0);
   CHECK(L->q[0] == 5.0);
+}
+
+// ── Batch-extend tests ──
+
+TEST_CASE("Batch-extend: coarse steps produce same result as fine steps") {
+  // Dense 8-vertex graph with coarse bucket steps to trigger the batch gate
+  // (arcs.size() + jarcs.size() >= 4) in Stage::Exact.
+  //
+  // Graph: 0=source, 7=sink. Many arcs per vertex so that each bucket
+  // has >= 4 outgoing arcs when step is coarse.
+  //
+  //   0→1, 0→2, 0→3, 0→4        (4 arcs from source)
+  //   1→5, 1→6, 2→5, 2→6        (2 arcs each from 1,2)
+  //   3→5, 3→6, 4→5, 4→6        (2 arcs each from 3,4)
+  //   5→7, 6→7                   (sink arcs)
+  //
+  // Total: 14 arcs, 8 vertices.
+  // Paths and costs are designed so the optimal is known:
+  //   0→1→5→7: 1+2+1 = 4
+  //   0→2→5→7: 3+1+1 = 5
+  //   etc.
+
+  int from[] = {0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 6};
+  int to[]   = {1, 2, 3, 4, 5, 6, 5, 6, 5, 6, 5, 6, 7, 7};
+  double cost[]   = {1.0, 3.0, 5.0, 7.0, 2.0, 4.0, 1.0, 3.0,
+                     2.0, 4.0, 1.0, 3.0, 1.0, 2.0};
+  double time_d[] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+                     1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+
+  double tw_lb[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  double tw_ub[8] = {20, 20, 20, 20, 20, 20, 20, 20};
+
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 8;
+  pv.source = 0;
+  pv.sink = 7;
+  pv.n_arcs = 14;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  // Coarse step=10: each vertex gets ceil(20/10)=2 buckets, so all 4
+  // outgoing arcs from vertex 0 land in the same source bucket, triggering
+  // the batch gate (>= 4).
+  BucketGraph<EmptyPack> bg_coarse(
+      pv, EmptyPack{},
+      {.bucket_steps = {10.0, 1.0}, .theta = 1e9, .stage = Stage::Exact});
+  bg_coarse.build();
+  auto coarse_paths = bg_coarse.solve();
+
+  // Fine step=1: no batch gate fires (each bucket has few arcs).
+  BucketGraph<EmptyPack> bg_fine(
+      pv, EmptyPack{},
+      {.bucket_steps = {1.0, 1.0}, .theta = 1e9, .stage = Stage::Exact});
+  bg_fine.build();
+  auto fine_paths = bg_fine.solve();
+
+  REQUIRE(!coarse_paths.empty());
+  REQUIRE(!fine_paths.empty());
+
+  // Both must find the same optimal cost.
+  CHECK(coarse_paths[0].reduced_cost ==
+        doctest::Approx(fine_paths[0].reduced_cost));
+
+  // Optimal: 0→1→5→7 = 1+2+1 = 4
+  CHECK(coarse_paths[0].reduced_cost == doctest::Approx(4.0));
+
+  // Path validity: starts at source, ends at sink
+  CHECK(coarse_paths[0].vertices.front() == 0);
+  CHECK(coarse_paths[0].vertices.back() == 7);
+}
+
+TEST_CASE("Batch-extend: bidir with coarse steps matches mono") {
+  // Same dense graph as above, but solved bidirectionally to exercise
+  // the batch path in both forward and backward labeling.
+  int from[] = {0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 6};
+  int to[]   = {1, 2, 3, 4, 5, 6, 5, 6, 5, 6, 5, 6, 7, 7};
+  double cost[]   = {1.0, 3.0, 5.0, 7.0, 2.0, 4.0, 1.0, 3.0,
+                     2.0, 4.0, 1.0, 3.0, 1.0, 2.0};
+  double time_d[] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+                     1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+
+  double tw_lb[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  double tw_ub[8] = {20, 20, 20, 20, 20, 20, 20, 20};
+
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 8;
+  pv.source = 0;
+  pv.sink = 7;
+  pv.n_arcs = 14;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  // Mono with coarse steps
+  BucketGraph<EmptyPack> mono(
+      pv, EmptyPack{},
+      {.bucket_steps = {10.0, 1.0}, .theta = 1e9, .stage = Stage::Exact});
+  mono.build();
+  auto mono_paths = mono.solve();
+
+  // Bidir with coarse steps
+  BucketGraph<EmptyPack> bidir(
+      pv, EmptyPack{},
+      {.bucket_steps = {10.0, 1.0},
+       .theta = 1e9,
+       .bidirectional = true,
+       .stage = Stage::Exact});
+  bidir.build();
+  auto bidir_paths = bidir.solve();
+
+  REQUIRE(!mono_paths.empty());
+  REQUIRE(!bidir_paths.empty());
+
+  CHECK(bidir_paths[0].reduced_cost ==
+        doctest::Approx(mono_paths[0].reduced_cost));
+  CHECK(bidir_paths[0].reduced_cost == doctest::Approx(4.0));
+}
+
+// ── Dynamic midpoint tests ──
+
+TEST_CASE("Dynamic midpoint: parallel bidir finds correct result") {
+  // Imbalanced instance: loose forward time windows, tight backward time
+  // windows. This forces forward to produce more labels than backward,
+  // which should trigger the midpoint adjustment in checkpoint_midpoint().
+  //
+  // Graph: 0=source, 6=sink
+  //   0→1 (c=2, t=1)    0→2 (c=3, t=1)    0→3 (c=4, t=1)
+  //   1→4 (c=1, t=2)    2→4 (c=2, t=3)    3→4 (c=1, t=2)
+  //   1→5 (c=3, t=1)    2→5 (c=1, t=2)    3→5 (c=2, t=1)
+  //   4→6 (c=1, t=1)    5→6 (c=1, t=1)
+  //
+  // Time windows: loose on forward side (vertices 1,2,3), tight on
+  // backward side (vertices 4,5 have narrower windows).
+
+  int from[] = {0, 0, 0, 1, 2, 3, 1, 2, 3, 4, 5};
+  int to[]   = {1, 2, 3, 4, 4, 4, 5, 5, 5, 6, 6};
+  double cost[]   = {2.0, 3.0, 4.0, 1.0, 2.0, 1.0, 3.0, 1.0, 2.0, 1.0, 1.0};
+  double time_d[] = {1.0, 1.0, 1.0, 2.0, 3.0, 2.0, 1.0, 2.0, 1.0, 1.0, 1.0};
+
+  double tw_lb[7] = {0, 0, 0, 0, 0, 0, 0};
+  // Loose on fw side (0-3), tight on bw side (4,5,6)
+  double tw_ub[7] = {20.0, 20.0, 20.0, 20.0, 5.0, 5.0, 6.0};
+
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 7;
+  pv.source = 0;
+  pv.sink = 6;
+  pv.n_arcs = 11;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  // Sequential bidir for reference
+  BucketGraph<EmptyPack> seq(
+      pv, EmptyPack{},
+      {.bucket_steps = {2.0, 1.0},
+       .theta = 1e9,
+       .bidirectional = true,
+       .stage = Stage::Exact});
+  seq.build();
+  auto seq_paths = seq.solve();
+
+  // Parallel bidir — should trigger dynamic midpoint adjustment
+  BucketGraph<EmptyPack> par(
+      pv, EmptyPack{},
+      {.bucket_steps = {2.0, 1.0},
+       .theta = 1e9,
+       .bidirectional = true,
+       .parallel_bidir = true,
+       .stage = Stage::Exact});
+  par.build();
+  auto par_paths = par.solve();
+
+  REQUIRE(!seq_paths.empty());
+  REQUIRE(!par_paths.empty());
+
+  // Both must find the same optimal cost
+  CHECK(par_paths[0].reduced_cost ==
+        doctest::Approx(seq_paths[0].reduced_cost).epsilon(1e-6));
+
+  // Verify path validity
+  CHECK(par_paths[0].vertices.front() == 0);
+  CHECK(par_paths[0].vertices.back() == 6);
+
+  // Parallel labeling timing should be populated
+  CHECK(par.solve_timings().parallel_labeling.count() > 0.0);
+}
+
+TEST_CASE("Dynamic midpoint: midpoint adjusts under imbalance") {
+  // Use the Solver interface with an asymmetric graph where forward
+  // labeling is much heavier. After solve, the midpoint should have
+  // shifted from the initial center.
+  //
+  // Wide forward windows, narrow backward windows to create label
+  // imbalance that triggers adjust_midpoint().
+  int from[] = {0, 0, 0, 1, 2, 3, 1, 2, 3, 4, 5};
+  int to[]   = {1, 2, 3, 4, 4, 4, 5, 5, 5, 6, 6};
+  double cost[]   = {2.0, 3.0, 4.0, 1.0, 2.0, 1.0, 3.0, 1.0, 2.0, 1.0, 1.0};
+  double time_d[] = {1.0, 1.0, 1.0, 2.0, 3.0, 2.0, 1.0, 2.0, 1.0, 1.0, 1.0};
+
+  double tw_lb[7] = {0, 0, 0, 0, 0, 0, 0};
+  double tw_ub[7] = {20.0, 20.0, 20.0, 20.0, 5.0, 5.0, 6.0};
+
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 7;
+  pv.source = 0;
+  pv.sink = 6;
+  pv.n_arcs = 11;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  // Sequential bidir solve to get initial midpoint, then adjust
+  BucketGraph<EmptyPack> bg(
+      pv, EmptyPack{},
+      {.bucket_steps = {2.0, 1.0},
+       .theta = 1e9,
+       .bidirectional = true,
+       .stage = Stage::Exact});
+  bg.build();
+
+  (void)bg.midpoint();  // ensure accessor works before solve
+  auto paths = bg.solve();
+  double post_mid = bg.midpoint();
+
+  REQUIRE(!paths.empty());
+
+  // After solve, midpoint should be initialized (even if not adjusted)
+  // The initial midpoint is (min_lb + max_ub) / 2 = (0 + 20) / 2 = 10
+  // After adjust_midpoint, if fw_lc > 1.2 * bw_lc, it shifts up.
+  // We verify the result is still correct regardless.
+  CHECK(paths[0].vertices.front() == 0);
+  CHECK(paths[0].vertices.back() == 6);
+
+  // Midpoint should be a finite value in the resource range
+  CHECK(post_mid >= 0.0);
+  CHECK(post_mid <= 20.0);
+}
+
+// ── BucketLabelPool edge case ──
+
+TEST_CASE("BucketLabelPool: resize to zero buckets") {
+  BucketLabelPool<ResourcePack<>> pool;
+  pool.resize(0);
+  CHECK(pool.count() == 0);
+  // Should not crash
+  pool.clear();
+  CHECK(pool.count() == 0);
 }

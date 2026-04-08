@@ -1604,6 +1604,13 @@ class BucketGraph {
         has_r1c_ && opts_.stage != Stage::Heuristic1 &&
         opts_.stage != Stage::Heuristic2;
 
+    // Precompute q0/q1 for batch survivors.
+    double batch_q0[128], batch_q1[128];
+    for (int i = 0; i < batch_size; ++i) {
+      batch_q0[i] = batch[i]->q[0];
+      batch_q1[i] = batch[i]->q[1];
+    }
+
     // Precompute ng/r1c bits for batch survivors.
     [[maybe_unused]] uint32_t batch_ng[128];
     [[maybe_unused]] uint64_t batch_r1c[128];
@@ -1638,6 +1645,16 @@ class BucketGraph {
         for (int j = 0; j < batch_size; ++j) {
           if (batch[j]->dominated) continue;
           if (ec + min_dom_cost_ > batch[j]->cost + EPS) continue;
+          // SoA q0/q1 pre-filter: existing can only dominate batch[j]
+          // if existing's resource <= batch's resource (forward) or >= (backward).
+          if (n_main_ >= 1) {
+            if (dir == Direction::Forward && bl.q0[target_bi][ei] > batch_q0[j] + EPS) continue;
+            if (dir == Direction::Backward && bl.q0[target_bi][ei] < batch_q0[j] - EPS) continue;
+          }
+          if (n_main_ >= 2) {
+            if (dir == Direction::Forward && bl.q1[target_bi][ei] > batch_q1[j] + EPS) continue;
+            if (dir == Direction::Backward && bl.q1[target_bi][ei] < batch_q1[j] - EPS) continue;
+          }
           // SoA ng filter: existing_ng & ~batch_ng[j] means existing
           // has ng bits that batch[j] doesn't -- can't dominate.
           if constexpr (has_ng_) {
@@ -1664,6 +1681,16 @@ class BucketGraph {
       for (int j = 0; j < batch_size; ++j) {
         if (batch[j]->dominated) continue;
         if (batch[j]->cost + min_dom_cost_ > ec + EPS) continue;
+        // SoA q0/q1 pre-filter (reversed): batch[j] can only dominate
+        // existing if batch's resource <= existing's resource (forward) or >= (backward).
+        if (n_main_ >= 1) {
+          if (dir == Direction::Forward && batch_q0[j] > bl.q0[target_bi][ei] + EPS) continue;
+          if (dir == Direction::Backward && batch_q0[j] < bl.q0[target_bi][ei] - EPS) continue;
+        }
+        if (n_main_ >= 2) {
+          if (dir == Direction::Forward && batch_q1[j] > bl.q1[target_bi][ei] + EPS) continue;
+          if (dir == Direction::Backward && batch_q1[j] < bl.q1[target_bi][ei] - EPS) continue;
+        }
         // Reversed ng: batch dominates existing only if batch's ng
         // is a subset of existing's ng.
         if constexpr (has_ng_) {
