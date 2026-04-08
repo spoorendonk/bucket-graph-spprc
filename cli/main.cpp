@@ -56,6 +56,7 @@ struct Options {
   bool stats = false;             // print solve statistics
   bool csv = false;               // machine-readable CSV output
   bool timing = false;            // print phase timing breakdown
+  bool parallel = false;          // parallel bidir labeling
 };
 
 struct Result {
@@ -89,6 +90,7 @@ typename Solver<Pack>::Options make_solver_opts(
   typename Solver<Pack>::Options so{
       .bucket_steps = {s1, s2},
       .bidirectional = opts.bidir,
+      .parallel_bidir = opts.parallel,
       .no_jump_arcs = opts.no_jump_arcs,
       .max_paths = opts.max_paths,
   };
@@ -457,6 +459,8 @@ int main(int argc, char** argv) {
       opts.csv = true;
     } else if (std::strcmp(argv[i], "--timing") == 0) {
       opts.timing = true;
+    } else if (std::strcmp(argv[i], "--parallel") == 0) {
+      opts.parallel = true;
     } else if (argv[i][0] == '-') {
       std::fprintf(stderr, "Unknown option: %s\n", argv[i]);
       return 1;
@@ -481,7 +485,8 @@ int main(int argc, char** argv) {
                  "  --theta T       Pricing threshold θ (default: -1e-6)\n"
                  "  --stats         Print solve statistics after each instance\n"
                  "  --csv           Machine-readable CSV output (all fields)\n"
-                 "  --timing        Print phase timing breakdown\n");
+                 "  --timing        Print phase timing breakdown\n"
+                 "  --parallel      Use parallel bidir labeling (two threads)\n");
     return 1;
   }
 
