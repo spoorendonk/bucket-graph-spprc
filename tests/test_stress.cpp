@@ -17,6 +17,48 @@ using namespace bgspprc;
 // Helpers
 // ════════════════════════════════════════════════════════════════════
 
+/// Compare sequential bidir and parallel bidir: same best cost and
+/// same set of path vertex-sequences.
+static void check_parallel_bidir_agree(const ProblemView& pv, double tol = 1e9,
+                                       double step = 5.0) {
+  BucketGraph<EmptyPack> seq(pv, EmptyPack{},
+                             {.bucket_steps = {step, 1.0},
+                              .theta = tol,
+                              .bidirectional = true,
+                              .stage = Stage::Exact});
+  seq.build();
+  auto sp = seq.solve();
+
+  BucketGraph<EmptyPack> par(pv, EmptyPack{},
+                             {.bucket_steps = {step, 1.0},
+                              .theta = tol,
+                              .bidirectional = true,
+                              .parallel_bidir = true,
+                              .stage = Stage::Exact});
+  par.build();
+  auto pp = par.solve();
+
+  if (!sp.empty() && !pp.empty()) {
+    CHECK(sp[0].reduced_cost == doctest::Approx(pp[0].reduced_cost).epsilon(1e-6));
+  } else {
+    CHECK(sp.empty() == pp.empty());
+  }
+
+  // Verify all sequential paths appear in parallel results
+  auto to_set = [](const auto& paths) {
+    std::vector<std::vector<int>> vs;
+    for (auto& p : paths) vs.push_back(p.vertices);
+    std::sort(vs.begin(), vs.end());
+    vs.erase(std::unique(vs.begin(), vs.end()), vs.end());
+    return vs;
+  };
+  auto seq_set = to_set(sp);
+  auto par_set = to_set(pp);
+  for (auto& path : seq_set) {
+    CHECK(std::find(par_set.begin(), par_set.end(), path) != par_set.end());
+  }
+}
+
 /// Compare mono and bidir: same best cost, and both produce the same
 /// set of path vertex-sequences (order-independent).
 static void check_mono_bidir_agree(const ProblemView& pv, double tol = 1e9,
@@ -1420,4 +1462,321 @@ TEST_CASE("Stress: warm labels with ng-path resource across stages") {
   auto paths2 = solver.solve();
   REQUIRE(!paths2.empty());
   CHECK(paths2[0].reduced_cost == doctest::Approx(exact_best).epsilon(1e-6));
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Parallel bidirectional labeling
+// ════════════════════════════════════════════════════════════════════
+
+TEST_CASE("Parallel bidir: single-arc source→sink") {
+  int from[] = {0};
+  int to[] = {1};
+  double cost[] = {7.0};
+  double time_d[] = {3.0};
+  double tw_lb[] = {0.0, 0.0};
+  double tw_ub[] = {10.0, 10.0};
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 2;
+  pv.source = 0;
+  pv.sink = 1;
+  pv.n_arcs = 1;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  check_parallel_bidir_agree(pv);
+}
+
+TEST_CASE("Parallel bidir: 5-vertex diamond graph") {
+  int from[] = {0, 0, 1, 2, 1, 3, 2};
+  int to[] = {1, 2, 3, 3, 4, 4, 4};
+  double cost[] = {10.0, 3.0, 5.0, 4.0, 8.0, 2.0, 7.0};
+  double time_d[] = {2.0, 4.0, 3.0, 2.0, 5.0, 1.0, 3.0};
+  double tw_lb[] = {0.0, 0.0, 0.0, 0.0, 0.0};
+  double tw_ub[] = {20.0, 20.0, 20.0, 20.0, 20.0};
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 5;
+  pv.source = 0;
+  pv.sink = 4;
+  pv.n_arcs = 7;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  check_parallel_bidir_agree(pv, 1e9, 5.0);
+  check_parallel_bidir_agree(pv, 1e9, 1.0);
+}
+
+TEST_CASE("Parallel bidir: 6-vertex with cross arcs") {
+  int from[] = {0, 0, 1, 2, 3, 4, 1, 2};
+  int to[] = {1, 2, 3, 4, 5, 5, 4, 3};
+  double cost[] = {5.0, 3.0, 4.0, 6.0, 2.0, 1.0, 7.0, 8.0};
+  double time_d[] = {1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 3.0, 2.0};
+  double tw_lb[] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  double tw_ub[] = {20.0, 20.0, 20.0, 20.0, 20.0, 20.0};
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 6;
+  pv.source = 0;
+  pv.sink = 5;
+  pv.n_arcs = 8;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  check_parallel_bidir_agree(pv, 1e9, 1.0);
+}
+
+TEST_CASE("Parallel bidir: random 8-vertex graph") {
+  constexpr int N = 8;
+  std::vector<int> from_v, to_v;
+  std::vector<double> cost_v, time_v;
+  for (int i = 0; i < N; ++i) {
+    for (int j = i + 1; j < N; ++j) {
+      from_v.push_back(i);
+      to_v.push_back(j);
+      cost_v.push_back(1.0 + (i * 7 + j * 3) % 10);
+      time_v.push_back(1.0 + (i + j) % 4);
+    }
+  }
+  int n_arcs = static_cast<int>(from_v.size());
+  std::vector<double> tw_lb(N, 0.0);
+  std::vector<double> tw_ub(N, 30.0);
+  const double* arc_res[] = {time_v.data()};
+  const double* v_lb[] = {tw_lb.data()};
+  const double* v_ub[] = {tw_ub.data()};
+
+  ProblemView pv;
+  pv.n_vertices = N;
+  pv.source = 0;
+  pv.sink = N - 1;
+  pv.n_arcs = n_arcs;
+  pv.arc_from = from_v.data();
+  pv.arc_to = to_v.data();
+  pv.arc_base_cost = cost_v.data();
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  check_parallel_bidir_agree(pv, 1e9, 3.0);
+  check_parallel_bidir_agree(pv, 1e9, 1.0);
+}
+
+TEST_CASE("Parallel bidir: with NgPathResource") {
+  constexpr int N = 6;
+  int from[] = {0, 0, 1, 2, 3, 4, 1, 2};
+  int to[] = {1, 2, 3, 4, 5, 5, 4, 3};
+  double cost[] = {5.0, 3.0, 4.0, 6.0, 2.0, 1.0, 7.0, 8.0};
+  double time_d[] = {1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 3.0, 2.0};
+  double tw_lb[] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  double tw_ub[] = {20.0, 20.0, 20.0, 20.0, 20.0, 20.0};
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = N;
+  pv.source = 0;
+  pv.sink = N - 1;
+  pv.n_arcs = 8;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  // Build ng-neighborhoods: 3 nearest neighbors per vertex
+  std::vector<std::vector<int>> neighbors = {
+      {0, 1, 2}, {1, 0, 3}, {2, 0, 4}, {3, 1, 4}, {4, 2, 3}, {5, 3, 4}};
+  NgPathResource ng(N, 8, from, to, neighbors);
+  using Pack = ResourcePack<NgPathResource>;
+
+  BucketGraph<Pack> seq(pv, Pack(ng),
+                        {.bucket_steps = {1.0, 1.0},
+                         .theta = 1e9,
+                         .bidirectional = true,
+                         .stage = Stage::Exact});
+  seq.build();
+  auto sp = seq.solve();
+
+  BucketGraph<Pack> par(pv, Pack(ng),
+                        {.bucket_steps = {1.0, 1.0},
+                         .theta = 1e9,
+                         .bidirectional = true,
+                         .parallel_bidir = true,
+                         .stage = Stage::Exact});
+  par.build();
+  auto pp = par.solve();
+
+  REQUIRE(!sp.empty());
+  REQUIRE(!pp.empty());
+  CHECK(sp[0].reduced_cost == doctest::Approx(pp[0].reduced_cost).epsilon(1e-6));
+}
+
+TEST_CASE("Parallel bidir: via Solver API") {
+  int from[] = {0, 0, 1, 2, 1, 3, 2};
+  int to[] = {1, 2, 3, 3, 4, 4, 4};
+  double cost[] = {10.0, 3.0, 5.0, 4.0, 8.0, 2.0, 7.0};
+  double time_d[] = {2.0, 4.0, 3.0, 2.0, 5.0, 1.0, 3.0};
+  double tw_lb[] = {0.0, 0.0, 0.0, 0.0, 0.0};
+  double tw_ub[] = {20.0, 20.0, 20.0, 20.0, 20.0};
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 5;
+  pv.source = 0;
+  pv.sink = 4;
+  pv.n_arcs = 7;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  Solver<EmptyPack> seq_solver(pv, EmptyPack{},
+                               {.bucket_steps = {5.0, 1.0},
+                                .bidirectional = true,
+                                .theta = 1e9});
+  seq_solver.set_stage(Stage::Exact);
+  seq_solver.build();
+  auto sp = seq_solver.solve();
+
+  Solver<EmptyPack> par_solver(pv, EmptyPack{},
+                               {.bucket_steps = {5.0, 1.0},
+                                .bidirectional = true,
+                                .parallel_bidir = true,
+                                .theta = 1e9});
+  par_solver.set_stage(Stage::Exact);
+  par_solver.build();
+  auto pp = par_solver.solve();
+
+  REQUIRE(!sp.empty());
+  REQUIRE(!pp.empty());
+  CHECK(sp[0].reduced_cost == doctest::Approx(pp[0].reduced_cost).epsilon(1e-6));
+
+  // Check timing field is populated
+  CHECK(par_solver.solve_timings().parallel_labeling.count() > 0.0);
+}
+
+TEST_CASE("Parallel bidir: infeasible instance") {
+  int from[] = {0};
+  int to[] = {1};
+  double cost[] = {1.0};
+  double time_d[] = {15.0};
+  double tw_lb[] = {0.0, 0.0};
+  double tw_ub[] = {10.0, 10.0};
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 2;
+  pv.source = 0;
+  pv.sink = 1;
+  pv.n_arcs = 1;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  BucketGraph<EmptyPack> par(pv, EmptyPack{},
+                             {.bucket_steps = {5.0, 1.0},
+                              .theta = 1e9,
+                              .bidirectional = true,
+                              .parallel_bidir = true,
+                              .stage = Stage::Exact});
+  par.build();
+  auto pp = par.solve();
+  CHECK(pp.empty());
+}
+
+TEST_CASE("Parallel bidir: with reduced costs") {
+  int from[] = {0, 0, 1, 2, 1, 3, 2};
+  int to[] = {1, 2, 3, 3, 4, 4, 4};
+  double cost[] = {10.0, 3.0, 5.0, 4.0, 8.0, 2.0, 7.0};
+  double time_d[] = {2.0, 4.0, 3.0, 2.0, 5.0, 1.0, 3.0};
+  double tw_lb[] = {0.0, 0.0, 0.0, 0.0, 0.0};
+  double tw_ub[] = {20.0, 20.0, 20.0, 20.0, 20.0};
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 5;
+  pv.source = 0;
+  pv.sink = 4;
+  pv.n_arcs = 7;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  double reduced[] = {-5.0, 3.0, 5.0, 4.0, -3.0, 2.0, 7.0};
+
+  BucketGraph<EmptyPack> seq(pv, EmptyPack{},
+                             {.bucket_steps = {5.0, 1.0},
+                              .theta = 1e9,
+                              .bidirectional = true,
+                              .stage = Stage::Exact});
+  seq.build();
+  seq.update_arc_costs(reduced);
+  auto sp = seq.solve();
+
+  BucketGraph<EmptyPack> par(pv, EmptyPack{},
+                             {.bucket_steps = {5.0, 1.0},
+                              .theta = 1e9,
+                              .bidirectional = true,
+                              .parallel_bidir = true,
+                              .stage = Stage::Exact});
+  par.build();
+  par.update_arc_costs(reduced);
+  auto pp = par.solve();
+
+  REQUIRE(!sp.empty());
+  REQUIRE(!pp.empty());
+  CHECK(sp[0].reduced_cost == doctest::Approx(pp[0].reduced_cost).epsilon(1e-6));
 }

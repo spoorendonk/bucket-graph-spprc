@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -12,6 +13,7 @@
 #include <numeric>
 #include <span>
 #include <stack>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -84,6 +86,7 @@ struct SolveTimings {
 
   Duration forward_labeling{};
   Duration backward_labeling{};    // bidir only
+  Duration parallel_labeling{};    // wall-clock time of parallel fw+bw section
   Duration completion_bounds{};
   Duration concatenation{};        // bidir only
   Duration path_extraction{};
@@ -98,6 +101,7 @@ struct SolveTimings {
   SolveTimings& operator+=(const SolveTimings& o) {
     forward_labeling += o.forward_labeling;
     backward_labeling += o.backward_labeling;
+    parallel_labeling += o.parallel_labeling;
     completion_bounds += o.completion_bounds;
     concatenation += o.concatenation;
     path_extraction += o.path_extraction;
@@ -119,6 +123,7 @@ class BucketGraph {
     int max_paths = 0;  // 0 = unlimited
     double theta = -1e-6;
     bool bidirectional = false;
+    bool parallel_bidir = false;  // run fw/bw labeling on two threads
     bool symmetric = false;  // skip backward labeling, use fw labels as bw
     bool no_jump_arcs = false;  // disable jump arcs (for ablation studies)
     Stage stage = Stage::Exact;
@@ -281,9 +286,9 @@ class BucketGraph {
   int64_t dominance_checks() const { return dominance_checks_; }
   int64_t non_dominated_labels() const { return non_dominated_labels_; }
 
-  /// Total labels allocated by the pool during the last solve.
+  /// Total labels allocated by the pool(s) during the last solve.
   int64_t labels_created() const {
-    return static_cast<int64_t>(pool_.count());
+    return static_cast<int64_t>(pool_.count() + bw_pool_.count());
   }
 
   /// Number of bucket arcs eliminated since last build.
@@ -480,6 +485,32 @@ class BucketGraph {
   }
 
  private:
+  // Per-direction counters for parallel mode. Separate structs with
+  // cache-line padding to avoid false sharing between fw/bw threads.
+  struct alignas(64) DirCounters {
+    mutable int64_t dominance_checks = 0;
+    int64_t non_dominated_labels = 0;
+    int total_enum_labels = 0;
+    int enum_sink_labels = 0;
+    void reset() { dominance_checks = 0; non_dominated_labels = 0;
+                    total_enum_labels = 0; enum_sink_labels = 0; }
+  };
+
+  /// Select the label pool for a direction. In parallel mode, backward
+  /// labels use a separate pool to avoid contention.
+  LabelPool<Pack>& pool_for(Direction dir) {
+    if (parallel_ && dir == Direction::Backward) return bw_pool_;
+    return pool_;
+  }
+
+  /// Per-direction counter struct for the given direction.
+  DirCounters& counters_for(Direction dir) {
+    return dir == Direction::Forward ? fw_counters_ : bw_counters_;
+  }
+  const DirCounters& counters_for(Direction dir) const {
+    return dir == Direction::Forward ? fw_counters_ : bw_counters_;
+  }
+
   /// Total bucket arc count (excluding jump arcs), both directions.
   int64_t current_bucket_arc_count() const {
     int64_t count = 0;
@@ -1001,7 +1032,7 @@ class BucketGraph {
     }
 
     // All checks passed — allocate and fill
-    auto* L = pool_.allocate();
+    auto* L = pool_for(dir).allocate();
     L->vertex = new_v;
     L->dir = dir;
     L->parent = const_cast<Label<Pack>*>(parent);
@@ -1233,7 +1264,7 @@ class BucketGraph {
         }
         auto* existing = bucket[i + j];
         if (existing->dominated) continue;
-        ++dominance_checks_;
+        ++counters_for(dir).dominance_checks;
         if (dominates(existing, L, dir)) return true;
       }
     }
@@ -1249,7 +1280,7 @@ class BucketGraph {
       }
       auto* existing = bucket[i];
       if (existing->dominated) continue;
-      ++dominance_checks_;
+      ++counters_for(dir).dominance_checks;
       if (dominates(existing, L, dir)) return true;
     }
     return false;
@@ -1296,7 +1327,7 @@ class BucketGraph {
       }
       auto* existing = bucket[i];
       if (existing->dominated) continue;
-      ++dominance_checks_;
+      ++counters_for(dir).dominance_checks;
       if (dominates(existing, L, dir)) return true;
     }
     return false;
@@ -1417,7 +1448,7 @@ class BucketGraph {
           uint64_t disadvantage = bl.r1c_bits[bi][i] & ~new_r1c;
           if (disadvantage == 0 && new_label->cost + min_dom_cost_excl_r1c_ > bucket_costs[i] + EPS) continue;
         }
-        ++dominance_checks_;
+        ++counters_for(dir).dominance_checks;
         if (dominates(new_label, existing, dir)) {
           existing->dominated = true;
         }
@@ -1451,8 +1482,9 @@ class BucketGraph {
         bl.r1c_bits[actual_bi].push_back(label_r1c_bits(new_label));
       }
       ++label_count;
-      ++total_enum_labels_;
-      if (buckets_[actual_bi].vertex == pv_.sink) ++enum_sink_labels_;
+      auto& dc = counters_for(dir);
+      ++dc.total_enum_labels;
+      if (buckets_[actual_bi].vertex == pv_.sink) ++dc.enum_sink_labels;
       return true;
     }
 
@@ -1492,7 +1524,7 @@ class BucketGraph {
       remove_dominated(new_label, actual_bi, dir, bl);
       insert_sorted(bl, actual_bi, new_label);
       ++label_count;
-      ++non_dominated_labels_;
+      ++counters_for(dir).non_dominated_labels;
       if (dir == Direction::Forward)
         ++fw_label_count_;
       else
@@ -1513,23 +1545,36 @@ class BucketGraph {
     // Enumeration needs more labels per SCC since dominance is disabled.
     const int scc_cap = enumerating ? 2000000 : 500000;
     int label_count = 0;
+    auto& dc = counters_for(dir);
 
     // Check all label caps; marks enumeration incomplete on hit.
+    // In parallel mode, per-direction counters avoid data races.
+    // enum_complete_ is atomic to allow safe concurrent writes.
     auto at_label_cap = [&]() -> bool {
       if (label_count >= scc_cap) {
-        if (enumerating) enum_complete_ = false;
+        if (enumerating) enum_complete_.store(false, std::memory_order_relaxed);
         return true;
       }
-      if (enumerating && total_enum_labels_ >= opts_.max_enum_labels) {
-        enum_complete_ = false;
+      if (enumerating &&
+          dc.total_enum_labels >= opts_.max_enum_labels) {
+        enum_complete_.store(false, std::memory_order_relaxed);
         return true;
       }
-      if (enumerating && opts_.max_paths > 0 && enum_sink_labels_ >= opts_.max_paths) {
-        enum_complete_ = false;
+      if (enumerating && opts_.max_paths > 0 &&
+          dc.enum_sink_labels >= opts_.max_paths) {
+        enum_complete_.store(false, std::memory_order_relaxed);
         return true;
       }
       return false;
     };
+
+    // Completion-bound pruning: available in enumerate stage always,
+    // and in parallel Exact mode to compensate for lost
+    // has_compatible_opposite() pruning.
+    const auto& completion =
+        (dir == Direction::Forward) ? fw_completion_ : bw_completion_;
+    const bool use_completion_prune =
+        parallel_ && !enumerating && !completion.empty();
 
     bool changed = true;
     while (changed) {
@@ -1554,10 +1599,10 @@ class BucketGraph {
 
           if (enumerating) {
             // Completion-bound pruning on label before extending
-            auto& completion =
+            auto& comp =
                 (dir == Direction::Forward) ? fw_completion_ : bw_completion_;
-            if (!completion.empty() && completion[bi] < INF &&
-                label->cost + completion[bi] >= opts_.theta) {
+            if (!comp.empty() && comp[bi] < INF &&
+                label->cost + comp[bi] >= opts_.theta) {
               label->extended = true;
               continue;
             }
@@ -1566,17 +1611,34 @@ class BucketGraph {
               label->dominated = true;
               continue;
             }
+            // Completion-bound pruning in parallel Exact mode:
+            // compensates for skipping has_compatible_opposite().
+            if (use_completion_prune && completion[bi] < INF &&
+                label->cost + completion[bi] >= opts_.theta) {
+              label->extended = true;
+              continue;
+            }
           }
 
           // Exact completion bound pruning (§5): discard fw labels
           // past q* that have no θ-compatible bw label.
+          // Skipped in parallel mode since bw labels aren't available yet.
           const bool prune_past_mid = opts_.bidirectional && !opts_.symmetric &&
-                                      !enumerating && dir == Direction::Forward;
+                                      !enumerating && !parallel_ &&
+                                      dir == Direction::Forward;
           auto try_insert = [&](Label<Pack>* new_label) {
             if (!new_label) return;
             if (prune_past_mid && new_label->q[0] > midpoint &&
                 !has_compatible_opposite(new_label, opts_.theta))
               return;
+            // Completion-bound pruning on newly created labels in
+            // parallel mode
+            if (use_completion_prune) {
+              int nbi = new_label->bucket;
+              if (completion[nbi] < INF &&
+                  new_label->cost + completion[nbi] >= opts_.theta)
+                return;
+            }
             if (try_insert_label(new_label, new_label->bucket, dir, bl,
                                  label_count))
               changed = true;
@@ -2216,7 +2278,7 @@ class BucketGraph {
   }
 
   Label<Pack>* create_initial_label(Direction dir) {
-    auto* L = pool_.allocate();
+    auto* L = pool_for(dir).allocate();
     L->dir = dir;
     L->cost = 0.0;
     L->real_cost = 0.0;
@@ -2252,6 +2314,8 @@ class BucketGraph {
 
     dominance_checks_ = 0;
     non_dominated_labels_ = 0;
+    fw_counters_.reset();
+    bw_counters_.reset();
     pool_.clear();
     reset_label_storage(fw_labels_);
     reset_c_best();
@@ -2289,7 +2353,7 @@ class BucketGraph {
     fw_labels_.q1[src_bi].push_back(src->q[1]);
     if constexpr (has_ng_) fw_labels_.ng_bits[src_bi].push_back(label_ng_bits(src));
     if constexpr (has_r1c_) fw_labels_.r1c_bits[src_bi].push_back(label_r1c_bits(src));
-    if (opts_.stage == Stage::Enumerate) ++total_enum_labels_;
+    if (opts_.stage == Stage::Enumerate) ++fw_counters_.total_enum_labels;
 
     // Inject warm labels from previous solve
     if (!warm_labels_.empty()) {
@@ -2303,6 +2367,12 @@ class BucketGraph {
                   INF);
     }
     timings_.forward_labeling = Clock_::now() - t_fw_start;
+
+    // Aggregate per-direction counters
+    dominance_checks_ = fw_counters_.dominance_checks;
+    non_dominated_labels_ = fw_counters_.non_dominated_labels;
+    total_enum_labels_ = fw_counters_.total_enum_labels;
+    enum_sink_labels_ = fw_counters_.enum_sink_labels;
 
     // Completion bounds for arc elimination and bucket fixing (BG2021 §4).
     auto t_comp_start = Clock_::now();
@@ -2355,7 +2425,10 @@ class BucketGraph {
 
     dominance_checks_ = 0;
     non_dominated_labels_ = 0;
+    fw_counters_.reset();
+    bw_counters_.reset();
     pool_.clear();
+    bw_pool_.clear();
     reset_label_storage(fw_labels_);
     reset_label_storage(bw_labels_);
     reset_c_best();
@@ -2373,6 +2446,10 @@ class BucketGraph {
     total_enum_labels_ = 0;
     enum_complete_ = true;
     enum_sink_labels_ = 0;
+
+    // Decide whether to run parallel
+    const bool run_parallel = opts_.parallel_bidir && !opts_.symmetric;
+
     if (opts_.stage == Stage::Enumerate) {
       compute_completion_bounds(Direction::Forward);
       compute_completion_bounds(Direction::Backward);
@@ -2386,11 +2463,85 @@ class BucketGraph {
       }
     }
 
+    // For parallel mode, pre-compute structural completion bounds
+    // so process_scc can use them for pruning in lieu of
+    // has_compatible_opposite()
+    if (run_parallel && opts_.stage != Stage::Enumerate) {
+      compute_completion_bounds(Direction::Forward);
+      compute_completion_bounds(Direction::Backward);
+    }
+
     double mu = get_midpoint();
 
-    if (!opts_.symmetric) {
-      // Backward labeling (run first so bw labels exist for fw
-      // exact completion bound pruning — BucketGraph 2021 §5)
+    if (run_parallel) {
+      // ── Parallel bidirectional labeling ──
+      // Create initial labels before spawning threads (pool_for needs
+      // parallel_ = false during seed creation on main thread for fw,
+      // but bw seed goes to bw_pool_ when parallel_ is true).
+      auto* src = create_initial_label(Direction::Forward);
+      if (!src) return {};
+      int src_bi = vertex_bucket_index(pv_.source, src->q);
+      src->bucket = src_bi;
+      fw_labels_.labels[src_bi].push_back(src);
+      fw_labels_.costs[src_bi].push_back(src->cost);
+      fw_labels_.q0[src_bi].push_back(src->q[0]);
+      fw_labels_.q1[src_bi].push_back(src->q[1]);
+      if constexpr (has_ng_) fw_labels_.ng_bits[src_bi].push_back(label_ng_bits(src));
+      if constexpr (has_r1c_) fw_labels_.r1c_bits[src_bi].push_back(label_r1c_bits(src));
+
+      // Set parallel_ before creating bw seed so it uses bw_pool_
+      parallel_ = true;
+
+      auto* snk = create_initial_label(Direction::Backward);
+      if (!snk) { parallel_ = false; return {}; }
+      int snk_bi = vertex_bucket_index(pv_.sink, snk->q);
+      snk->bucket = snk_bi;
+      bw_labels_.labels[snk_bi].push_back(snk);
+      bw_labels_.costs[snk_bi].push_back(snk->cost);
+      bw_labels_.q0[snk_bi].push_back(snk->q[0]);
+      bw_labels_.q1[snk_bi].push_back(snk->q[1]);
+      if constexpr (has_ng_) bw_labels_.ng_bits[snk_bi].push_back(label_ng_bits(snk));
+      if constexpr (has_r1c_) bw_labels_.r1c_bits[snk_bi].push_back(label_r1c_bits(snk));
+
+      if (!warm_labels_.empty()) {
+        inject_warm_labels(fw_labels_, Direction::Forward);
+      }
+
+      auto t_parallel_start = Clock_::now();
+
+      // Spawn backward thread (captures its own timing)
+      SolveTimings::Duration bw_duration{};
+      std::thread bw_thread([this, mu, &bw_duration]() {
+        auto t_bw = Clock_::now();
+        for (int scc : bw_scc_topo_order_) {
+          process_scc(scc, Direction::Backward, bw_scc_buckets_,
+                      bw_labels_, mu);
+        }
+        bw_duration = Clock_::now() - t_bw;
+      });
+
+      // Forward labeling on main thread
+      auto t_fw_start = Clock_::now();
+      for (int scc : fw_scc_topo_order_) {
+        process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_labels_,
+                    mu);
+      }
+      timings_.forward_labeling = Clock_::now() - t_fw_start;
+
+      // Barrier: join backward thread
+      bw_thread.join();
+      timings_.backward_labeling = bw_duration;
+
+      timings_.parallel_labeling = Clock_::now() - t_parallel_start;
+      parallel_ = false;
+
+      // Aggregate per-direction counters
+      dominance_checks_ = fw_counters_.dominance_checks + bw_counters_.dominance_checks;
+      non_dominated_labels_ = fw_counters_.non_dominated_labels + bw_counters_.non_dominated_labels;
+      total_enum_labels_ = fw_counters_.total_enum_labels + bw_counters_.total_enum_labels;
+      enum_sink_labels_ = fw_counters_.enum_sink_labels + bw_counters_.enum_sink_labels;
+    } else if (!opts_.symmetric) {
+      // ── Sequential backward-first labeling ──
       auto* snk = create_initial_label(Direction::Backward);
       if (!snk) return {};  // infeasible sink state
       int snk_bi = vertex_bucket_index(pv_.sink, snk->q);
@@ -2402,8 +2553,8 @@ class BucketGraph {
       if constexpr (has_ng_) bw_labels_.ng_bits[snk_bi].push_back(label_ng_bits(snk));
       if constexpr (has_r1c_) bw_labels_.r1c_bits[snk_bi].push_back(label_r1c_bits(snk));
       if (opts_.stage == Stage::Enumerate) {
-        ++total_enum_labels_;
-        ++enum_sink_labels_;  // seed label is at sink
+        ++bw_counters_.total_enum_labels;
+        ++bw_counters_.enum_sink_labels;
       }
 
       // Backward labeling
@@ -2413,35 +2564,47 @@ class BucketGraph {
                     bw_labels_, mu);
       }
       timings_.backward_labeling = Clock_::now() - t_bw_start;
+
     }
 
-    // Forward labeling
-    auto* src = create_initial_label(Direction::Forward);
-    if (!src) return {};  // infeasible source state
-    int src_bi = vertex_bucket_index(pv_.source, src->q);
-    src->bucket = src_bi;
-    fw_labels_.labels[src_bi].push_back(src);
-    fw_labels_.costs[src_bi].push_back(src->cost);
-    fw_labels_.q0[src_bi].push_back(src->q[0]);
-    fw_labels_.q1[src_bi].push_back(src->q[1]);
-    if constexpr (has_ng_) fw_labels_.ng_bits[src_bi].push_back(label_ng_bits(src));
-    if constexpr (has_r1c_) fw_labels_.r1c_bits[src_bi].push_back(label_r1c_bits(src));
-    if (opts_.stage == Stage::Enumerate) ++total_enum_labels_;
+    // Forward labeling (common to sequential-bidir and symmetric paths)
+    if (!run_parallel) {
+      auto* src = create_initial_label(Direction::Forward);
+      if (!src) return {};  // infeasible source state
+      int src_bi = vertex_bucket_index(pv_.source, src->q);
+      src->bucket = src_bi;
+      fw_labels_.labels[src_bi].push_back(src);
+      fw_labels_.costs[src_bi].push_back(src->cost);
+      fw_labels_.q0[src_bi].push_back(src->q[0]);
+      fw_labels_.q1[src_bi].push_back(src->q[1]);
+      if constexpr (has_ng_) fw_labels_.ng_bits[src_bi].push_back(label_ng_bits(src));
+      if constexpr (has_r1c_) fw_labels_.r1c_bits[src_bi].push_back(label_r1c_bits(src));
+      if (opts_.stage == Stage::Enumerate) ++fw_counters_.total_enum_labels;
 
-    if (!warm_labels_.empty()) {
-      inject_warm_labels(fw_labels_, Direction::Forward);
+      if (!warm_labels_.empty()) {
+        inject_warm_labels(fw_labels_, Direction::Forward);
+      }
+
+      auto t_fw_start = Clock_::now();
+      for (int scc : fw_scc_topo_order_) {
+        process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_labels_,
+                    mu);
+      }
+      timings_.forward_labeling = Clock_::now() - t_fw_start;
     }
 
-    auto t_fw_start = Clock_::now();
-    for (int scc : fw_scc_topo_order_) {
-      process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_labels_,
-                  mu);
-    }
-    timings_.forward_labeling = Clock_::now() - t_fw_start;
+    // Aggregate per-direction counters
+    dominance_checks_ = fw_counters_.dominance_checks + bw_counters_.dominance_checks;
+    non_dominated_labels_ = fw_counters_.non_dominated_labels + bw_counters_.non_dominated_labels;
+    total_enum_labels_ = fw_counters_.total_enum_labels + bw_counters_.total_enum_labels;
+    enum_sink_labels_ = fw_counters_.enum_sink_labels + bw_counters_.enum_sink_labels;
 
     // Completion bounds for arc elimination and bucket fixing (BG2021 §4).
     auto t_comp_start = Clock_::now();
     if (opts_.stage != Stage::Enumerate) {
+      // Recompute completion bounds using actual c_best from labels.
+      // (In parallel mode, structural bounds were pre-computed before
+      // labeling; now recompute with label-informed c_best.)
       compute_completion_bounds(Direction::Forward);
       compute_completion_bounds(Direction::Backward);
     }
@@ -2886,7 +3049,7 @@ class BucketGraph {
     for (const auto& wl : warm_labels_) {
       if (wl.dir != dir) continue;
 
-      auto* L = pool_.allocate();
+      auto* L = pool_for(dir).allocate();
       L->vertex = wl.vertex;
       L->dir = dir;
       L->cost = wl.cost;
@@ -2906,9 +3069,12 @@ class BucketGraph {
   }
 
   int total_enum_labels_ = 0;  // global label counter for enumeration
-  bool enum_complete_ = true;
+  std::atomic<bool> enum_complete_ = true;
   int enum_sink_labels_ = 0;   // labels that landed in sink buckets
   double fixing_theta_ = INF;  // theta used in last fix_buckets call
+
+  DirCounters fw_counters_;
+  DirCounters bw_counters_;
 
   // Adaptive midpoint for bidirectional labeling
   int fw_label_count_ = 0;
@@ -2927,6 +3093,9 @@ class BucketGraph {
   int64_t initial_bucket_arc_count_ = 0;  // snapshot after build()
 
   LabelPool<Pack> pool_;
+  LabelPool<Pack> bw_pool_;  // separate pool for backward labels in parallel mode
+
+  bool parallel_ = false;  // true during parallel labeling section
 
   // Scratch buffers — reused across calls
   std::vector<int> scratch_ba_count_;              // build_bucket_arcs reserve

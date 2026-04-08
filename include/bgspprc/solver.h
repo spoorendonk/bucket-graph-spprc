@@ -20,6 +20,7 @@ class Solver {
   struct Options {
     std::array<double, 2> bucket_steps = {1.0, 1.0};
     bool bidirectional = true;
+    bool parallel_bidir = false;  // run fw/bw labeling on two threads
     bool symmetric = false;
     bool no_jump_arcs = false;  // disable jump arcs (for ablation studies)
     int max_paths = 0;  // 0 = unlimited
@@ -37,6 +38,7 @@ class Solver {
                 .max_paths = opts_.max_paths,
                 .theta = opts_.theta,
                 .bidirectional = opts_.bidirectional,
+                .parallel_bidir = opts_.parallel_bidir,
                 .symmetric = opts_.symmetric,
                 .no_jump_arcs = opts_.no_jump_arcs,
                 .stage = Stage::Exact,
