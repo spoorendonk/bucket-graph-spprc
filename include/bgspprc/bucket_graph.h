@@ -1554,6 +1554,200 @@ class BucketGraph {
     return false;
   }
 
+  /// Fused dominance pass for a group of labels targeting the same bucket.
+  /// Performs intra-batch dominance, then a single pass through existing
+  /// labels checking all batch survivors at once (better cache behavior).
+  void batch_try_insert(Label<Pack>** batch, int batch_size, int target_bi,
+                        Direction dir, BucketLabels& bl, int& label_count,
+                        bool& changed) {
+    if (batch_size <= 0) return;
+    if (fixed_.test(target_bi)) return;
+
+    // Sort batch by cost ascending for intra-batch dominance.
+    std::sort(batch, batch + batch_size,
+              [](const Label<Pack>* a, const Label<Pack>* b) {
+                return a->cost < b->cost;
+              });
+
+    // 1. Intra-batch dominance (sorted by cost, i < j only).
+    for (int i = 0; i < batch_size; ++i) {
+      if (batch[i]->dominated) continue;
+      for (int j = i + 1; j < batch_size; ++j) {
+        if (batch[j]->dominated) continue;
+        ++counters_for(dir).dominance_checks;
+        if (dominates(batch[i], batch[j], dir)) batch[j]->dominated = true;
+      }
+    }
+
+    // 2. Precompute batch bounds for early-exit.
+    double max_survivor_cost = -INF;
+    double min_survivor_cost = INF;
+    int n_survivors = 0;
+    for (int i = 0; i < batch_size; ++i) {
+      if (batch[i]->dominated) continue;
+      max_survivor_cost = std::max(max_survivor_cost, batch[i]->cost);
+      min_survivor_cost = std::min(min_survivor_cost, batch[i]->cost);
+      ++n_survivors;
+    }
+    if (n_survivors == 0) return;
+
+    // Precompute SoA filter data for survivors.
+    [[maybe_unused]] const bool check_ng =
+        has_ng_ && opts_.stage != Stage::Heuristic1 &&
+        opts_.stage != Stage::Heuristic2;
+    [[maybe_unused]] const bool check_r1c =
+        has_r1c_ && opts_.stage != Stage::Heuristic1 &&
+        opts_.stage != Stage::Heuristic2;
+
+    // Precompute ng/r1c bits for batch survivors.
+    [[maybe_unused]] uint32_t batch_ng[128];
+    [[maybe_unused]] uint64_t batch_r1c[128];
+    if constexpr (has_ng_) {
+      for (int i = 0; i < batch_size; ++i)
+        batch_ng[i] = label_ng_bits(batch[i]);
+    }
+    if constexpr (has_r1c_) {
+      for (int i = 0; i < batch_size; ++i)
+        batch_r1c[i] = label_r1c_bits(batch[i]);
+    }
+
+    // 3. Fused single pass: each existing label loaded once, checked vs
+    //    all batch survivors in both directions.
+    auto& bucket = bl.labels[target_bi];
+    auto& bucket_costs = bl.costs[target_bi];
+    [[maybe_unused]] auto& bucket_ng = bl.ng_bits[target_bi];
+    [[maybe_unused]] auto& bucket_r1c = bl.r1c_bits[target_bi];
+
+    for (std::size_t ei = 0; ei < bucket.size(); ++ei) {
+      auto* existing = bucket[ei];
+      double ec = bucket_costs[ei];
+
+      // (a) Can existing dominate any survivor?
+      //     Early-exit: ec + min_dom_cost > max_survivor_cost + EPS
+      if (ec + min_dom_cost_ <= max_survivor_cost + EPS) {
+        [[maybe_unused]] uint32_t existing_ng = 0;
+        [[maybe_unused]] uint64_t existing_r1c = 0;
+        if constexpr (has_ng_) existing_ng = bucket_ng[ei];
+        if constexpr (has_r1c_) existing_r1c = bucket_r1c[ei];
+
+        if (!existing->dominated) {
+          for (int j = 0; j < batch_size; ++j) {
+            if (batch[j]->dominated) continue;
+            if (ec + min_dom_cost_ > batch[j]->cost + EPS) continue;
+            // SoA ng filter: existing_ng & ~batch_ng[j] means existing
+            // has ng bits that batch[j] doesn't — can't dominate.
+            if constexpr (has_ng_) {
+              if (check_ng && (existing_ng & ~batch_ng[j])) continue;
+            }
+            if constexpr (has_r1c_) {
+              if (check_r1c) {
+                uint64_t disadvantage = batch_r1c[j] & ~existing_r1c;
+                if (disadvantage == 0 &&
+                    ec + min_dom_cost_excl_r1c_ > batch[j]->cost + EPS)
+                  continue;
+              }
+            }
+            ++counters_for(dir).dominance_checks;
+            if (dominates(existing, batch[j], dir))
+              batch[j]->dominated = true;
+          }
+        }
+      }
+
+      // (b) Can any survivor dominate existing?
+      if (existing->dominated) continue;
+      if (min_survivor_cost + min_dom_cost_ > ec + EPS) continue;
+
+      {
+        [[maybe_unused]] uint32_t existing_ng = 0;
+        [[maybe_unused]] uint64_t existing_r1c = 0;
+        if constexpr (has_ng_) existing_ng = bucket_ng[ei];
+        if constexpr (has_r1c_) existing_r1c = bucket_r1c[ei];
+
+        for (int j = 0; j < batch_size; ++j) {
+          if (batch[j]->dominated) continue;
+          if (batch[j]->cost + min_dom_cost_ > ec + EPS) continue;
+          // Reversed ng: batch dominates existing only if batch's ng
+          // is a subset of existing's ng.
+          if constexpr (has_ng_) {
+            if (check_ng && (batch_ng[j] & ~existing_ng)) continue;
+          }
+          if constexpr (has_r1c_) {
+            if (check_r1c) {
+              uint64_t disadvantage = existing_r1c & ~batch_r1c[j];
+              if (disadvantage == 0 &&
+                  batch[j]->cost + min_dom_cost_excl_r1c_ > ec + EPS)
+                continue;
+            }
+          }
+          ++counters_for(dir).dominance_checks;
+          if (dominates(batch[j], existing, dir)) {
+            existing->dominated = true;
+            break;  // existing is dominated, move on
+          }
+        }
+      }
+
+      // Recompute survivor bounds after potential kills.
+      // Only needed if existing dominated some survivors.
+    }
+
+    // Recompute survivor count.
+    n_survivors = 0;
+    for (int i = 0; i < batch_size; ++i) {
+      if (!batch[i]->dominated) ++n_survivors;
+    }
+    if (n_survivors == 0) return;
+
+    // 4. Insert survivors.
+    for (int i = 0; i < batch_size; ++i) {
+      if (batch[i]->dominated) continue;
+      insert_sorted(bl, target_bi, batch[i]);
+      ++label_count;
+      ++counters_for(dir).non_dominated_labels;
+      if (dir == Direction::Forward)
+        ++fw_counters_.label_count;
+      else
+        ++bw_counters_.label_count;
+      changed = true;
+    }
+  }
+
+  /// Groups a flat buffer of labels by target bucket, dispatches
+  /// single-label groups to try_insert_label, multi-label groups
+  /// to batch_try_insert.
+  void process_batch(Label<Pack>** buf, int n, Direction dir,
+                     BucketLabels& bl, int& label_count, bool& changed) {
+    if (n <= 0) return;
+
+    // Sort by target bucket index.
+    std::sort(buf, buf + n, [](const Label<Pack>* a, const Label<Pack>* b) {
+      return a->bucket < b->bucket;
+    });
+
+    // Scan for groups with the same target bucket.
+    int group_start = 0;
+    while (group_start < n) {
+      int target_bi = buf[group_start]->bucket;
+      int group_end = group_start + 1;
+      while (group_end < n && buf[group_end]->bucket == target_bi) ++group_end;
+
+      int group_size = group_end - group_start;
+      if (group_size == 1) {
+        // Single label — use existing path.
+        if (try_insert_label(buf[group_start], target_bi, dir, bl,
+                             label_count))
+          changed = true;
+      } else {
+        // Multi-label group — fused dominance.
+        batch_try_insert(buf + group_start, group_size, target_bi, dir, bl,
+                         label_count, changed);
+      }
+
+      group_start = group_end;
+    }
+  }
+
   void process_scc(int scc_id, Direction dir,
                    const std::vector<std::vector<int>>& scc_buckets,
                    BucketLabels& bl,
@@ -1646,41 +1840,91 @@ class BucketGraph {
           const bool prune_past_mid = opts_.bidirectional && !opts_.symmetric &&
                                       !enumerating && !parallel_ &&
                                       dir == Direction::Forward;
-          auto try_insert = [&](Label<Pack>* new_label) {
-            if (!new_label) return;
-            if (prune_past_mid && new_label->q[0] > midpoint &&
-                !has_compatible_opposite(new_label, opts_.theta))
-              return;
-            // Completion-bound pruning on newly created labels in
-            // parallel mode
-            if (use_completion_prune) {
-              int nbi = new_label->bucket;
-              if (completion[nbi] < INF &&
-                  new_label->cost + completion[nbi] >= opts_.theta)
-                return;
-            }
-            if (try_insert_label(new_label, new_label->bucket, dir, bl,
-                                 label_count))
-              changed = true;
-          };
 
           // Extend along bucket arcs
           auto& arcs = (dir == Direction::Forward)
                            ? buckets_[bi].bucket_arcs
                            : buckets_[bi].bw_bucket_arcs;
 
-          for (const auto& ba : arcs) {
-            try_insert(extend_label(label, ba, dir));
-          }
-
           // Jump arcs (paper §4.1): extend with resource boost
           // Boost: fw → max(q, lb of jump bucket)
           //        bw → min(q, ub of jump bucket)
           auto& jarcs = (dir == Direction::Forward) ? buckets_[bi].jump_arcs
                                                     : buckets_[bi].bw_jump_arcs;
-          for (const auto& ja : jarcs) {
-            try_insert(extend_label(label, ja, dir,
-                                    buckets_[ja.jump_bucket]));
+
+          // Gate: use batch path when enough arcs to amortize overhead
+          // and in Exact stage (Heuristic/Enumerate have trivial or no
+          // dominance).
+          const bool use_batch =
+              (arcs.size() + jarcs.size()) >= 4 &&
+              opts_.stage == Stage::Exact;
+
+          // Pre-filter lambda shared by both paths: applies midpoint and
+          // completion-bound pruning on a freshly extended label.
+          auto pre_filter = [&](Label<Pack>* new_label) -> bool {
+            if (!new_label) return false;
+            if (prune_past_mid && new_label->q[0] > midpoint &&
+                !has_compatible_opposite(new_label, opts_.theta))
+              return false;
+            if (use_completion_prune) {
+              int nbi = new_label->bucket;
+              if (completion[nbi] < INF &&
+                  new_label->cost + completion[nbi] >= opts_.theta)
+                return false;
+            }
+            return true;
+          };
+
+          if (use_batch) {
+            // Batch path: collect all extended labels, then do fused
+            // dominance per target bucket.
+            Label<Pack>* batch_buf[128];
+            int batch_n = 0;
+
+            for (const auto& ba : arcs) {
+              auto* L = extend_label(label, ba, dir);
+              if (!pre_filter(L)) continue;
+              batch_buf[batch_n++] = L;
+              if (batch_n == 128) {
+                process_batch(batch_buf, batch_n, dir, bl, label_count,
+                              changed);
+                batch_n = 0;
+              }
+            }
+
+            for (const auto& ja : jarcs) {
+              auto* L = extend_label(label, ja, dir,
+                                     buckets_[ja.jump_bucket]);
+              if (!pre_filter(L)) continue;
+              batch_buf[batch_n++] = L;
+              if (batch_n == 128) {
+                process_batch(batch_buf, batch_n, dir, bl, label_count,
+                              changed);
+                batch_n = 0;
+              }
+            }
+
+            // Flush remaining
+            if (batch_n > 0)
+              process_batch(batch_buf, batch_n, dir, bl, label_count,
+                            changed);
+          } else {
+            // Original sequential path (unchanged).
+            auto try_insert = [&](Label<Pack>* new_label) {
+              if (!pre_filter(new_label)) return;
+              if (try_insert_label(new_label, new_label->bucket, dir, bl,
+                                   label_count))
+                changed = true;
+            };
+
+            for (const auto& ba : arcs) {
+              try_insert(extend_label(label, ba, dir));
+            }
+
+            for (const auto& ja : jarcs) {
+              try_insert(extend_label(label, ja, dir,
+                                      buckets_[ja.jump_bucket]));
+            }
           }
 
           label->extended = true;
