@@ -173,11 +173,15 @@ class BucketGraph {
   /// Update reduced costs (fast, O(1) — just stores the pointer).
   void update_arc_costs(const double* reduced_costs) {
     reduced_costs_ = reduced_costs;
+    arc_costs_dirty_ = true;
   }
 
   /// Refresh inlined cost fields on all bucket arcs and jump arcs.
-  /// Called automatically at the start of each solve().
+  /// Called automatically at the start of each solve(). Skips if
+  /// costs haven't changed since last refresh.
   void refresh_arc_costs() {
+    if (!arc_costs_dirty_) return;
+    arc_costs_dirty_ = false;
     for (auto& b : buckets_) {
       for (auto& ba : b.bucket_arcs) {
         ba.cost = reduced_costs_ ? reduced_costs_[ba.arc_id]
@@ -1089,7 +1093,7 @@ class BucketGraph {
     }
 
     // All checks passed — allocate and fill
-    auto* L = pool_.allocate();
+    auto* L = pool_for(dir).allocate();
     L->vertex = new_v;
     L->dir = dir;
     L->parent = const_cast<Label<Pack>*>(parent);
@@ -1377,6 +1381,7 @@ class BucketGraph {
             }
             auto* existing = obucket[idx];
             if (existing->dominated) continue;
+            ++counters_for(dir).dominance_checks;
             if (dominates(existing, L, dir)) return true;
           }
         }
@@ -1399,6 +1404,7 @@ class BucketGraph {
             }
             auto* existing = obucket[idx];
             if (existing->dominated) continue;
+            ++counters_for(dir).dominance_checks;
             if (dominates(existing, L, dir)) return true;
           }
         }
@@ -2534,12 +2540,6 @@ class BucketGraph {
 
       timings_.parallel_labeling = Clock_::now() - t_parallel_start;
       parallel_ = false;
-
-      // Aggregate per-direction counters
-      dominance_checks_ = fw_counters_.dominance_checks + bw_counters_.dominance_checks;
-      non_dominated_labels_ = fw_counters_.non_dominated_labels + bw_counters_.non_dominated_labels;
-      total_enum_labels_ = fw_counters_.total_enum_labels + bw_counters_.total_enum_labels;
-      enum_sink_labels_ = fw_counters_.enum_sink_labels + bw_counters_.enum_sink_labels;
     } else if (!opts_.symmetric) {
       // ── Sequential backward-first labeling ──
       auto* snk = create_initial_label(Direction::Backward);
@@ -2963,6 +2963,7 @@ class BucketGraph {
   std::array<bool, 2> main_nondisposable_ = {false, false};
 
   const double* reduced_costs_ = nullptr;
+  bool arc_costs_dirty_ = true;  // set by update_arc_costs, cleared by refresh_arc_costs
 
   std::vector<Bucket> buckets_;
   std::vector<std::array<double, 2>> vertex_bucket_steps_;  // per-vertex steps (optional)
