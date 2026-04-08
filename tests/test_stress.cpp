@@ -1,4 +1,5 @@
 #include <bgspprc/bucket_graph.h>
+#include <bgspprc/r1c.h>
 #include <bgspprc/resource.h>
 #include <bgspprc/resources/cumulative_cost.h>
 #include <bgspprc/resources/ng_path.h>
@@ -1779,4 +1780,162 @@ TEST_CASE("Parallel bidir: with reduced costs") {
   REQUIRE(!sp.empty());
   REQUIRE(!pp.empty());
   CHECK(sp[0].reduced_cost == doctest::Approx(pp[0].reduced_cost).epsilon(1e-6));
+}
+
+TEST_CASE("Parallel bidir: with R1CResource") {
+  constexpr int N = 6;
+  int from[] = {0, 0, 1, 2, 3, 4, 1, 2};
+  int to[] = {1, 2, 3, 4, 5, 5, 4, 3};
+  double cost[] = {5.0, 3.0, 4.0, 6.0, 2.0, 1.0, 7.0, 8.0};
+  double time_d[] = {1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 3.0, 2.0};
+  double tw_lb[] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  double tw_ub[] = {20.0, 20.0, 20.0, 20.0, 20.0, 20.0};
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = N;
+  pv.source = 0;
+  pv.sink = N - 1;
+  pv.n_arcs = 8;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  using R1CPack = ResourcePack<R1CResource>;
+
+  R1Cut cut;
+  cut.base_set = {3};
+  cut.multipliers = {0.5};
+  cut.memory_arcs = {{2, 0}, {7, 0}};
+  cut.dual_value = -5.0;
+
+  R1CResource r1c_seq;
+  BucketGraph<R1CPack> seq(pv, R1CPack{r1c_seq},
+                           {.bucket_steps = {5.0, 1.0},
+                            .theta = 1e9,
+                            .bidirectional = true,
+                            .stage = Stage::Exact});
+  seq.resource<R1CResource>().set_cuts({{cut}}, N, 8);
+  seq.build();
+  auto sp = seq.solve();
+
+  R1CResource r1c_par;
+  BucketGraph<R1CPack> par(pv, R1CPack{r1c_par},
+                           {.bucket_steps = {5.0, 1.0},
+                            .theta = 1e9,
+                            .bidirectional = true,
+                            .parallel_bidir = true,
+                            .stage = Stage::Exact});
+  par.resource<R1CResource>().set_cuts({{cut}}, N, 8);
+  par.build();
+  auto pp = par.solve();
+
+  REQUIRE(!sp.empty());
+  REQUIRE(!pp.empty());
+  CHECK(sp[0].reduced_cost == doctest::Approx(pp[0].reduced_cost).epsilon(1e-6));
+}
+
+TEST_CASE("Parallel bidir: symmetric + parallel_bidir falls back to sequential") {
+  int from[] = {0, 0, 1, 2};
+  int to[] = {1, 2, 3, 3};
+  double cost[] = {5.0, 3.0, 4.0, 6.0};
+  double time_d[] = {1.0, 2.0, 2.0, 1.0};
+  double tw_lb[] = {0.0, 0.0, 0.0, 0.0};
+  double tw_ub[] = {20.0, 20.0, 20.0, 20.0};
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 4;
+  pv.source = 0;
+  pv.sink = 3;
+  pv.n_arcs = 4;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  BucketGraph<EmptyPack> seq(pv, EmptyPack{},
+                             {.bucket_steps = {5.0, 1.0},
+                              .theta = 1e9,
+                              .bidirectional = true,
+                              .symmetric = true,
+                              .stage = Stage::Exact});
+  seq.build();
+  auto sp = seq.solve();
+
+  BucketGraph<EmptyPack> par(pv, EmptyPack{},
+                             {.bucket_steps = {5.0, 1.0},
+                              .theta = 1e9,
+                              .bidirectional = true,
+                              .parallel_bidir = true,
+                              .symmetric = true,
+                              .stage = Stage::Exact});
+  par.build();
+  auto pp = par.solve();
+
+  REQUIRE(!sp.empty());
+  REQUIRE(!pp.empty());
+  CHECK(sp[0].reduced_cost == doctest::Approx(pp[0].reduced_cost).epsilon(1e-6));
+  CHECK(par.solve_timings().parallel_labeling.count() == 0.0);
+}
+
+TEST_CASE("Parallel bidir: Enumerate stage") {
+  int from[] = {0, 0, 1, 2, 1};
+  int to[] = {1, 2, 3, 3, 2};
+  double cost[] = {2.0, 3.0, 4.0, 1.0, 5.0};
+  double time_d[] = {1.0, 2.0, 2.0, 1.0, 1.0};
+  double tw_lb[] = {0.0, 0.0, 0.0, 0.0};
+  double tw_ub[] = {20.0, 20.0, 20.0, 20.0};
+  const double* arc_res[] = {time_d};
+  const double* v_lb[] = {tw_lb};
+  const double* v_ub[] = {tw_ub};
+
+  ProblemView pv;
+  pv.n_vertices = 4;
+  pv.source = 0;
+  pv.sink = 3;
+  pv.n_arcs = 5;
+  pv.arc_from = from;
+  pv.arc_to = to;
+  pv.arc_base_cost = cost;
+  pv.n_resources = 1;
+  pv.arc_resource = arc_res;
+  pv.vertex_lb = v_lb;
+  pv.vertex_ub = v_ub;
+  pv.n_main_resources = 1;
+
+  BucketGraph<EmptyPack> seq(pv, EmptyPack{},
+                             {.bucket_steps = {5.0, 1.0},
+                              .theta = 1e9,
+                              .bidirectional = true,
+                              .stage = Stage::Enumerate});
+  seq.build();
+  auto sp = seq.solve();
+
+  BucketGraph<EmptyPack> par(pv, EmptyPack{},
+                             {.bucket_steps = {5.0, 1.0},
+                              .theta = 1e9,
+                              .bidirectional = true,
+                              .parallel_bidir = true,
+                              .stage = Stage::Enumerate});
+  par.build();
+  auto pp = par.solve();
+
+  REQUIRE(!sp.empty());
+  REQUIRE(!pp.empty());
+  CHECK(sp[0].reduced_cost == doctest::Approx(pp[0].reduced_cost).epsilon(1e-6));
+  CHECK(sp.size() == pp.size());
 }

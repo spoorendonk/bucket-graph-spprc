@@ -496,8 +496,10 @@ class BucketGraph {
     int64_t non_dominated_labels = 0;
     int total_enum_labels = 0;
     int enum_sink_labels = 0;
+    int label_count = 0;  // labels inserted (for midpoint balancing)
     void reset() { dominance_checks = 0; non_dominated_labels = 0;
-                    total_enum_labels = 0; enum_sink_labels = 0; }
+                    total_enum_labels = 0; enum_sink_labels = 0;
+                    label_count = 0; }
   };
 
   /// Select the label pool for a direction. In parallel mode, backward
@@ -1501,9 +1503,9 @@ class BucketGraph {
         insert_sorted(bl, actual_bi, new_label);
         ++label_count;
         if (dir == Direction::Forward)
-          ++fw_label_count_;
+          ++fw_counters_.label_count;
         else
-          ++bw_label_count_;
+          ++bw_counters_.label_count;
         return true;
       }
       // Bucket has exactly 1 label. Replace if new is cheaper.
@@ -1532,9 +1534,9 @@ class BucketGraph {
       ++label_count;
       ++counters_for(dir).non_dominated_labels;
       if (dir == Direction::Forward)
-        ++fw_label_count_;
+        ++fw_counters_.label_count;
       else
-        ++bw_label_count_;
+        ++bw_counters_.label_count;
       return true;
     }
     return false;
@@ -2412,15 +2414,17 @@ class BucketGraph {
   }
 
   void adjust_midpoint() {
-    if (fw_label_count_ == 0 && bw_label_count_ == 0) return;
+    int fw_lc = fw_counters_.label_count;
+    int bw_lc = bw_counters_.label_count;
+    if (fw_lc == 0 && bw_lc == 0) return;
     double min_lb = INF, max_ub = -INF;
     for (int v = 0; v < pv_.n_vertices; ++v) {
       min_lb = std::min(min_lb, pv_.vertex_lb[0][v]);
       max_ub = std::max(max_ub, pv_.vertex_ub[0][v]);
     }
-    if (fw_label_count_ > 1.2 * bw_label_count_) {
+    if (fw_lc > 1.2 * bw_lc) {
       midpoint_ += 0.05 * (max_ub - midpoint_);
-    } else if (bw_label_count_ > 1.2 * fw_label_count_) {
+    } else if (bw_lc > 1.2 * fw_lc) {
       midpoint_ -= 0.05 * (midpoint_ - min_lb);
     }
   }
@@ -2447,8 +2451,7 @@ class BucketGraph {
       }
     }
 
-    fw_label_count_ = 0;
-    bw_label_count_ = 0;
+    // label_count reset handled by fw_counters_.reset() / bw_counters_.reset()
     total_enum_labels_ = 0;
     enum_complete_ = true;
     enum_sink_labels_ = 0;
@@ -3078,8 +3081,6 @@ class BucketGraph {
   DirCounters bw_counters_;
 
   // Adaptive midpoint for bidirectional labeling
-  int fw_label_count_ = 0;
-  int bw_label_count_ = 0;
   int bw_labels_pruned_ = 0;
   double midpoint_ = 0.0;
   bool midpoint_initialized_ = false;
