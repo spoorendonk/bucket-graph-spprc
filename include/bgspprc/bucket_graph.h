@@ -1615,42 +1615,40 @@ class BucketGraph {
     //    all batch survivors in both directions.
     auto& bucket = bl.labels[target_bi];
     auto& bucket_costs = bl.costs[target_bi];
-    [[maybe_unused]] auto& bucket_ng = bl.ng_bits[target_bi];
-    [[maybe_unused]] auto& bucket_r1c = bl.r1c_bits[target_bi];
 
     for (std::size_t ei = 0; ei < bucket.size(); ++ei) {
       auto* existing = bucket[ei];
       double ec = bucket_costs[ei];
 
+      // Precompute existing label's ng/r1c bits once per iteration.
+      [[maybe_unused]] uint32_t existing_ng = 0;
+      [[maybe_unused]] uint64_t existing_r1c = 0;
+      if constexpr (has_ng_) existing_ng = bl.ng_bits[target_bi][ei];
+      if constexpr (has_r1c_) existing_r1c = bl.r1c_bits[target_bi][ei];
+
       // (a) Can existing dominate any survivor?
       //     Early-exit: ec + min_dom_cost > max_survivor_cost + EPS
-      if (ec + min_dom_cost_ <= max_survivor_cost + EPS) {
-        [[maybe_unused]] uint32_t existing_ng = 0;
-        [[maybe_unused]] uint64_t existing_r1c = 0;
-        if constexpr (has_ng_) existing_ng = bucket_ng[ei];
-        if constexpr (has_r1c_) existing_r1c = bucket_r1c[ei];
-
-        if (!existing->dominated) {
-          for (int j = 0; j < batch_size; ++j) {
-            if (batch[j]->dominated) continue;
-            if (ec + min_dom_cost_ > batch[j]->cost + EPS) continue;
-            // SoA ng filter: existing_ng & ~batch_ng[j] means existing
-            // has ng bits that batch[j] doesn't — can't dominate.
-            if constexpr (has_ng_) {
-              if (check_ng && (existing_ng & ~batch_ng[j])) continue;
-            }
-            if constexpr (has_r1c_) {
-              if (check_r1c) {
-                uint64_t disadvantage = batch_r1c[j] & ~existing_r1c;
-                if (disadvantage == 0 &&
-                    ec + min_dom_cost_excl_r1c_ > batch[j]->cost + EPS)
-                  continue;
-              }
-            }
-            ++counters_for(dir).dominance_checks;
-            if (dominates(existing, batch[j], dir))
-              batch[j]->dominated = true;
+      if (ec + min_dom_cost_ <= max_survivor_cost + EPS &&
+          !existing->dominated) {
+        for (int j = 0; j < batch_size; ++j) {
+          if (batch[j]->dominated) continue;
+          if (ec + min_dom_cost_ > batch[j]->cost + EPS) continue;
+          // SoA ng filter: existing_ng & ~batch_ng[j] means existing
+          // has ng bits that batch[j] doesn't -- can't dominate.
+          if constexpr (has_ng_) {
+            if (check_ng && (existing_ng & ~batch_ng[j])) continue;
           }
+          if constexpr (has_r1c_) {
+            if (check_r1c) {
+              uint64_t disadvantage = batch_r1c[j] & ~existing_r1c;
+              if (disadvantage == 0 &&
+                  ec + min_dom_cost_excl_r1c_ > batch[j]->cost + EPS)
+                continue;
+            }
+          }
+          ++counters_for(dir).dominance_checks;
+          if (dominates(existing, batch[j], dir))
+            batch[j]->dominated = true;
         }
       }
 
@@ -1658,38 +1656,28 @@ class BucketGraph {
       if (existing->dominated) continue;
       if (min_survivor_cost + min_dom_cost_ > ec + EPS) continue;
 
-      {
-        [[maybe_unused]] uint32_t existing_ng = 0;
-        [[maybe_unused]] uint64_t existing_r1c = 0;
-        if constexpr (has_ng_) existing_ng = bucket_ng[ei];
-        if constexpr (has_r1c_) existing_r1c = bucket_r1c[ei];
-
-        for (int j = 0; j < batch_size; ++j) {
-          if (batch[j]->dominated) continue;
-          if (batch[j]->cost + min_dom_cost_ > ec + EPS) continue;
-          // Reversed ng: batch dominates existing only if batch's ng
-          // is a subset of existing's ng.
-          if constexpr (has_ng_) {
-            if (check_ng && (batch_ng[j] & ~existing_ng)) continue;
-          }
-          if constexpr (has_r1c_) {
-            if (check_r1c) {
-              uint64_t disadvantage = existing_r1c & ~batch_r1c[j];
-              if (disadvantage == 0 &&
-                  batch[j]->cost + min_dom_cost_excl_r1c_ > ec + EPS)
-                continue;
-            }
-          }
-          ++counters_for(dir).dominance_checks;
-          if (dominates(batch[j], existing, dir)) {
-            existing->dominated = true;
-            break;  // existing is dominated, move on
+      for (int j = 0; j < batch_size; ++j) {
+        if (batch[j]->dominated) continue;
+        if (batch[j]->cost + min_dom_cost_ > ec + EPS) continue;
+        // Reversed ng: batch dominates existing only if batch's ng
+        // is a subset of existing's ng.
+        if constexpr (has_ng_) {
+          if (check_ng && (batch_ng[j] & ~existing_ng)) continue;
+        }
+        if constexpr (has_r1c_) {
+          if (check_r1c) {
+            uint64_t disadvantage = existing_r1c & ~batch_r1c[j];
+            if (disadvantage == 0 &&
+                batch[j]->cost + min_dom_cost_excl_r1c_ > ec + EPS)
+              continue;
           }
         }
+        ++counters_for(dir).dominance_checks;
+        if (dominates(batch[j], existing, dir)) {
+          existing->dominated = true;
+          break;  // existing is dominated, move on
+        }
       }
-
-      // Recompute survivor bounds after potential kills.
-      // Only needed if existing dominated some survivors.
     }
 
     // Recompute survivor count.
