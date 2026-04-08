@@ -191,7 +191,7 @@ class BucketLabelPool {
     char* block_end = nullptr;
   };
 
-  static std::size_t label_size() {
+  static constexpr std::size_t label_size() {
     std::size_t sz = sizeof(Label<Pack>);
     return (sz + 7) & ~std::size_t{7};
   }
