@@ -671,118 +671,81 @@ private:
 
     void build_bucket_arcs(Direction dir) {
         int nb = static_cast<int>(buckets_.size());
-        scratch_ba_count_.assign(nb, 0);
 
-        // Pass 1: count feasible arcs per source bucket
-        for (int a = 0; a < pv_.n_arcs; ++a) {
-            int from_v = pv_.arc_from[a];
-            int to_v = pv_.arc_to[a];
+        // Outer loop over buckets: each bucket independently scans arcs at its
+        // vertex, making the iteration data-race-free and parallelizable.
+        const auto& arcs_by_vertex = (dir == Direction::Forward) ? adj_.outgoing : adj_.incoming;
 
-            if (dir == Direction::Forward) {
-                auto [start, end] = vertex_bucket_range(from_v);
-                for (int bi = start; bi < end; ++bi) {
-                    const auto& src_b = buckets_[bi];
-                    bool feasible = true;
-                    for (int r = 0; r < n_main_; ++r) {
+        executor_.parallel_for(0, nb, [&](int bi) {
+            auto& b = buckets_[bi];
+            int v = b.vertex;
+            auto& ba_vec = (dir == Direction::Forward) ? b.bucket_arcs : b.bw_bucket_arcs;
+            ba_vec.clear();
+            b.jump_arcs.clear();
+
+            // Count feasible arcs for this bucket, then reserve and fill.
+            int count = 0;
+            for (int a : arcs_by_vertex[v]) {
+                int other_v = (dir == Direction::Forward) ? pv_.arc_to[a] : pv_.arc_from[a];
+                bool feasible = true;
+                for (int r = 0; r < n_main_; ++r) {
+                    if (dir == Direction::Forward) {
                         double q =
-                            std::max(src_b.lb[r] + pv_.arc_resource[r][a], pv_.vertex_lb[r][to_v]);
-                        if (q > pv_.vertex_ub[r][to_v]) {
+                            std::max(b.lb[r] + pv_.arc_resource[r][a], pv_.vertex_lb[r][other_v]);
+                        if (q > pv_.vertex_ub[r][other_v]) {
+                            feasible = false;
+                            break;
+                        }
+                    } else {
+                        double q =
+                            std::min(b.ub[r] - pv_.arc_resource[r][a], pv_.vertex_ub[r][other_v]);
+                        if (q < pv_.vertex_lb[r][other_v]) {
                             feasible = false;
                             break;
                         }
                     }
-                    if (feasible)
-                        ++scratch_ba_count_[bi];
                 }
-            } else {
-                auto [start, end] = vertex_bucket_range(to_v);
-                for (int bi = start; bi < end; ++bi) {
-                    const auto& src_b = buckets_[bi];
-                    bool feasible = true;
-                    for (int r = 0; r < n_main_; ++r) {
-                        double q = std::min(src_b.ub[r] - pv_.arc_resource[r][a],
-                                            pv_.vertex_ub[r][from_v]);
-                        if (q < pv_.vertex_lb[r][from_v]) {
-                            feasible = false;
-                            break;
-                        }
-                    }
-                    if (feasible)
-                        ++scratch_ba_count_[bi];
-                }
+                if (feasible)
+                    ++count;
             }
-        }
 
-        // Reserve + clear
-        for (int bi = 0; bi < nb; ++bi) {
-            auto& arcs = (dir == Direction::Forward) ? buckets_[bi].bucket_arcs
-                                                     : buckets_[bi].bw_bucket_arcs;
-            arcs.clear();
-            arcs.reserve(scratch_ba_count_[bi]);
-            buckets_[bi].jump_arcs.clear();
-        }
+            ba_vec.reserve(count);
 
-        // Pass 2: fill
-        for (int a = 0; a < pv_.n_arcs; ++a) {
-            int from_v = pv_.arc_from[a];
-            int to_v = pv_.arc_to[a];
-
-            if (dir == Direction::Forward) {
-                auto [start, end] = vertex_bucket_range(from_v);
-                for (int bi = start; bi < end; ++bi) {
-                    const auto& src_b = buckets_[bi];
-                    std::array<double, 2> q_target;
-                    bool feasible = true;
-                    for (int r = 0; r < n_main_; ++r) {
-                        double d = pv_.arc_resource[r][a];
-                        q_target[r] = std::max(src_b.lb[r] + d, pv_.vertex_lb[r][to_v]);
-                        if (q_target[r] > pv_.vertex_ub[r][to_v]) {
+            // Fill: same iteration, now constructing BucketArcs.
+            for (int a : arcs_by_vertex[v]) {
+                int other_v = (dir == Direction::Forward) ? pv_.arc_to[a] : pv_.arc_from[a];
+                std::array<double, 2> q_target;
+                bool feasible = true;
+                for (int r = 0; r < n_main_; ++r) {
+                    double d = pv_.arc_resource[r][a];
+                    if (dir == Direction::Forward) {
+                        q_target[r] = std::max(b.lb[r] + d, pv_.vertex_lb[r][other_v]);
+                        if (q_target[r] > pv_.vertex_ub[r][other_v]) {
+                            feasible = false;
+                            break;
+                        }
+                    } else {
+                        q_target[r] = std::min(b.ub[r] - d, pv_.vertex_ub[r][other_v]);
+                        if (q_target[r] < pv_.vertex_lb[r][other_v]) {
                             feasible = false;
                             break;
                         }
                     }
-                    if (!feasible)
-                        continue;
-                    int target_bi = vertex_bucket_index(to_v, q_target);
-                    BucketArc ba;
-                    ba.to_bucket = target_bi;
-                    ba.arc_id = a;
-                    ba.to_vertex = to_v;
-                    ba.real_cost = pv_.arc_base_cost[a];
-                    ba.cost = ba.real_cost;  // refreshed before each solve
-                    ba.resource[0] = pv_.arc_resource[0][a];
-                    ba.resource[1] = (n_main_ >= 2) ? pv_.arc_resource[1][a] : 0.0;
-                    buckets_[bi].bucket_arcs.push_back(ba);
                 }
-            } else {
-                auto [start, end] = vertex_bucket_range(to_v);
-                for (int bi = start; bi < end; ++bi) {
-                    const auto& src_b = buckets_[bi];
-                    std::array<double, 2> q_target;
-                    bool feasible = true;
-                    for (int r = 0; r < n_main_; ++r) {
-                        double d = pv_.arc_resource[r][a];
-                        q_target[r] = std::min(src_b.ub[r] - d, pv_.vertex_ub[r][from_v]);
-                        if (q_target[r] < pv_.vertex_lb[r][from_v]) {
-                            feasible = false;
-                            break;
-                        }
-                    }
-                    if (!feasible)
-                        continue;
-                    int target_bi = vertex_bucket_index(from_v, q_target);
-                    BucketArc ba;
-                    ba.to_bucket = target_bi;
-                    ba.arc_id = a;
-                    ba.to_vertex = from_v;
-                    ba.real_cost = pv_.arc_base_cost[a];
-                    ba.cost = ba.real_cost;  // refreshed before each solve
-                    ba.resource[0] = pv_.arc_resource[0][a];
-                    ba.resource[1] = (n_main_ >= 2) ? pv_.arc_resource[1][a] : 0.0;
-                    buckets_[bi].bw_bucket_arcs.push_back(ba);
-                }
+                if (!feasible)
+                    continue;
+                int target_bi = vertex_bucket_index(other_v, q_target);
+                BucketArc ba;
+                ba.to_bucket = target_bi;
+                ba.arc_id = a;
+                ba.to_vertex = other_v;
+                ba.real_cost = pv_.arc_base_cost[a];
+                ba.cost = ba.real_cost;  // refreshed before each solve
+                ba.resource[0] = pv_.arc_resource[0][a];
+                ba.resource[1] = (n_main_ >= 2) ? pv_.arc_resource[1][a] : 0.0;
+                ba_vec.push_back(ba);
             }
-        }
+        });
     }
 
     // ── SCC computation (Tarjan's) ──
@@ -3647,7 +3610,6 @@ private:
     bool parallel_ = false;  // true during parallel labeling section
 
     // Scratch buffers — reused across calls
-    std::vector<int> scratch_ba_count_;  // build_bucket_arcs reserve
     std::vector<uint8_t> scratch_visited_;
     std::vector<uint64_t> scratch_b_bar_;
     std::vector<int> scratch_arc_local_;
