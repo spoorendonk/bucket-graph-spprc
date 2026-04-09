@@ -2191,7 +2191,8 @@ private:
 
         // Within-vertex propagation: lower resource bucket has more slack,
         // so its cost-to-go is at least as good as higher resource buckets.
-        for (int v = 0; v < pv_.n_vertices; ++v) {
+        // Each vertex writes only its own bucket range, so vertices are independent.
+        executor_.parallel_for(0, pv_.n_vertices, [&](int v) {
             auto [start, end] = vertex_bucket_range(v);
             auto& vnb = vertex_n_buckets_[v];
             if (dir == Direction::Forward) {
@@ -2227,7 +2228,7 @@ private:
                     }
                 }
             }
-        }
+        });
     }
 
     // ── Label-based arc elimination (Section 4.2) ──
