@@ -428,6 +428,36 @@ public:
                "fix_buckets requires bw completion bounds from a prior solve()");
 
         int nb = static_cast<int>(buckets_.size());
+        bool bidir = opts_.bidirectional;
+
+        // Use parallel path for large bucket counts to amortize overhead.
+        if (nb > 1024) {
+            std::atomic<int> newly_fixed{0};
+
+            executor_.parallel_for(0, nb, [&](int bi) {
+                if (fixed_.test(bi))
+                    return;
+
+                bool fw_bad = (buckets_[bi].c_best + fw_completion_[bi] > theta + EPS);
+                bool should_fix = fw_bad;
+
+                if (bidir) {
+                    bool bw_bad = (buckets_[bi].bw_c_best + bw_completion_[bi] > theta + EPS);
+                    bool concat_bad = (buckets_[bi].c_best + buckets_[bi].bw_c_best > theta + EPS);
+                    should_fix = fw_bad && bw_bad && concat_bad;
+                }
+
+                if (should_fix) {
+                    if (fixed_.atomic_set(bi))
+                        newly_fixed.fetch_add(1, std::memory_order_relaxed);
+                }
+            });
+
+            int count = newly_fixed.load(std::memory_order_relaxed);
+            fixed_.add_fixed(count);
+            return count;
+        }
+
         int newly_fixed = 0;
 
         for (int bi = 0; bi < nb; ++bi) {
@@ -439,7 +469,7 @@ public:
 
             bool should_fix = fw_bad;
 
-            if (opts_.bidirectional) {
+            if (bidir) {
                 // Backward path bound
                 bool bw_bad = (buckets_[bi].bw_c_best + bw_completion_[bi] > theta + EPS);
                 // Concatenation bound: fw_cost_at_b + bw_cost_at_b > theta
