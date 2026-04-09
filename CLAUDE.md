@@ -82,8 +82,8 @@ Built-in resources:
 | `test_bucket_graph.cpp` | Bucket construction, arcs, labeling basics |
 | `test_small_instance.cpp` | End-to-end solver on 5-10 vertex instances |
 | `test_stress.cpp` | Larger instances, 2D buckets, bidir, ng-paths, elimination, fixing, enumeration |
-| `test_benchmarks.cpp` | Benchmark instance tests |
-| `test_instance_io.cpp` | Instance I/O parsing |
+| `test_benchmarks.cpp` | Solver vs benchmark instances, checks optimal values |
+| `test_instance_io.cpp` | Parser tests for `.sppcc` file format |
 
 ## Reference Papers
 
