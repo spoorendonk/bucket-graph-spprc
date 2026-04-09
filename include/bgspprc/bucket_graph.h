@@ -946,17 +946,20 @@ private:
         struct Candidate {
             int k0, k1, bi;
         };
-        std::vector<Candidate> candidates;
 
-        for (int v = 0; v < pv_.n_vertices; ++v) {
+        // Per-vertex loop: each vertex reads shared CSR (read-only) and writes
+        // only to its own buckets' jump_arcs/bw_jump_arcs — no synchronization needed.
+        executor_.parallel_for(0, pv_.n_vertices, [&](int v) {
             if (arcs_by_vertex[v].empty())
-                continue;
+                return;
 
             auto [vstart, vend] = vertex_bucket_range(v);
             auto& nb_v = vertex_n_buckets_[v];
             int n_buckets_v = vend - vstart;
             if (n_buckets_v <= 1)
-                continue;
+                return;
+
+            std::vector<Candidate> candidates;
 
             for (int bi = vstart; bi < vend; ++bi) {
                 if (fixed_.test(bi))
@@ -1045,7 +1048,7 @@ private:
                     }
                 }
             }
-        }
+        });
     }
 
     // ── Label extension (direction-aware) ──
