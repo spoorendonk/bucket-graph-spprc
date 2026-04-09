@@ -3172,14 +3172,23 @@ private:
 
     void collect_sink_candidates(std::vector<PathCandidate>& candidates, const BucketLabels& bl) {
         auto [start, end] = vertex_bucket_range(pv_.sink);
-        for (int bi = start; bi < end; ++bi) {
+        int n_buckets = end - start;
+        std::vector<std::vector<PathCandidate>> per_bucket(n_buckets);
+
+        executor_.parallel_for(0, n_buckets, [&](int k) {
+            int bi = start + k;
             for (const auto* L : bl.labels[bi]) {
                 if (L->dominated)
                     continue;
                 if (L->cost < opts_.theta) {
-                    candidates.push_back({L->cost, L->real_cost, L, nullptr, -1});
+                    per_bucket[k].push_back({L->cost, L->real_cost, L, nullptr, -1});
                 }
             }
+        });
+
+        for (auto& buf : per_bucket) {
+            candidates.insert(candidates.end(), std::make_move_iterator(buf.begin()),
+                              std::make_move_iterator(buf.end()));
         }
     }
 
