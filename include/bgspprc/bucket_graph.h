@@ -13,7 +13,6 @@
 #include <numeric>
 #include <span>
 #include <stack>
-#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
