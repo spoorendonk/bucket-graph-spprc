@@ -48,6 +48,7 @@ if(BGSPPRC_BUILD_TESTS)
 
     add_executable(test_runner
         tests/test_main.cpp
+        tests/test_executor.cpp
         tests/test_resource.cpp
         tests/test_bucket_graph.cpp
         tests/test_small_instance.cpp

@@ -5,6 +5,7 @@
 #include "arc.h"
 #include "bucket.h"
 #include "bucket_graph.h"
+#include "executor.h"
 #include "label.h"
 #include "problem_view.h"
 #include "r1c.h"
