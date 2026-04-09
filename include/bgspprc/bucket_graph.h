@@ -2654,14 +2654,13 @@ private:
 
     /// Compact a list of buckets.
     void compact_labels(BucketLabels& bl, std::span<const int> bucket_ids) {
-        for (int bi : bucket_ids)
-            compact_bucket(bl, bi);
+        executor_.parallel_for(0, (int)bucket_ids.size(),
+                               [&](int i) { compact_bucket(bl, bucket_ids[i]); });
     }
 
     /// Compact all buckets in a BucketLabels structure.
     void compact_labels(BucketLabels& bl, int n_buckets) {
-        for (int bi = 0; bi < n_buckets; ++bi)
-            compact_bucket(bl, bi);
+        executor_.parallel_for(0, n_buckets, [&](int bi) { compact_bucket(bl, bi); });
     }
 
     void reset_c_best() {
