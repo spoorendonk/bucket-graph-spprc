@@ -4,6 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 @.devkit/standards/cpp.md
 
+## Project Overrides
+
+The devkit `cpp.md` is a generic template. This project diverges in:
+- **Test framework**: doctest (not GoogleTest). Fetched via FetchContent.
+- **Test naming**: `test_<module>.cpp` (not `<module>_test.cpp`).
+- **C++ standard**: C++20 (`cxx_std_20`). See [#84](https://github.com/spoorendonk/bucket-graph-spprc/issues/84) for C++23 bump tracking.
+
 # Project: bucket-graph-spprc
 
 Header-only C++20 template library implementing the bucket graph labeling algorithm for SPPRC (Shortest Path Problem with Resource Constraints) and vehicle routing variants. Based on Sadykov/Uchoa/Pessoa 2021, with extensions from Meta-Solver 2026.
@@ -75,8 +82,8 @@ Built-in resources:
 | `test_bucket_graph.cpp` | Bucket construction, arcs, labeling basics |
 | `test_small_instance.cpp` | End-to-end solver on 5-10 vertex instances |
 | `test_stress.cpp` | Larger instances, 2D buckets, bidir, ng-paths, elimination, fixing, enumeration |
-
-Test framework is **doctest** (fetched via FetchContent).
+| `test_benchmarks.cpp` | Benchmark instance tests |
+| `test_instance_io.cpp` | Instance I/O parsing |
 
 ## Reference Papers
 
