@@ -435,7 +435,7 @@ public:
             std::atomic<int> newly_fixed{0};
 
             executor_.parallel_for(0, nb, [&](int bi) {
-                if (fixed_.test(bi))
+                if (fixed_.atomic_test(bi))
                     return;
 
                 bool fw_bad = (buckets_[bi].c_best + fw_completion_[bi] > theta + EPS);
