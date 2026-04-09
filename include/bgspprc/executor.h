@@ -1,9 +1,6 @@
 #pragma once
 
 #include <concepts>
-#include <thread>
-#include <type_traits>
-#include <utility>
 
 namespace bgspprc {
 
@@ -37,23 +34,5 @@ struct SequentialExecutor {
 };
 
 static_assert(Executor<SequentialExecutor>, "SequentialExecutor must satisfy the Executor concept");
-
-/// Thread-backed executor using std::thread.
-/// parallel_invoke runs two tasks on separate threads.
-/// parallel_for runs sequentially (data-parallel threading comes in later issues).
-struct StdThreadExecutor {
-    void parallel_for(int begin, int end, auto&& f) const {
-        for (int i = begin; i < end; ++i)
-            f(i);
-    }
-
-    void parallel_invoke(auto&& f, auto&& g) const {
-        std::thread t(std::forward<decltype(f)>(f));
-        g();
-        t.join();
-    }
-};
-
-static_assert(Executor<StdThreadExecutor>, "StdThreadExecutor must satisfy the Executor concept");
 
 }  // namespace bgspprc

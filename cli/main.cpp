@@ -23,7 +23,7 @@
 #include "instance_io.h"
 
 #include <algorithm>
-#include <bgspprc/executor.h>
+#include <bgspprc/executor_thread.h>
 #include <bgspprc/resource.h>
 #include <bgspprc/resources/ng_path.h>
 #include <bgspprc/solver.h>
@@ -89,7 +89,6 @@ typename Solver<Pack, Exec>::Options make_solver_opts(double s1, double s2, cons
     typename Solver<Pack, Exec>::Options so{
         .bucket_steps = {s1, s2},
         .bidirectional = opts.bidir,
-        .parallel_bidir = opts.parallel,
         .no_jump_arcs = opts.no_jump_arcs,
         .max_paths = opts.max_paths,
     };

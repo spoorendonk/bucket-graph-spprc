@@ -1,5 +1,5 @@
 #include <atomic>
-#include <bgspprc/executor.h>
+#include <bgspprc/executor_thread.h>
 #include <doctest/doctest.h>
 #include <vector>
 

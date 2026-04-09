@@ -14,6 +14,7 @@
 #include <span>
 #include <stack>
 #include <tuple>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -124,9 +125,8 @@ public:
         int max_paths = 0;  // 0 = unlimited
         double theta = -1e-6;
         bool bidirectional = false;
-        bool parallel_bidir = false;  // run fw/bw labeling on two threads
-        bool symmetric = false;       // skip backward labeling, use fw labels as bw
-        bool no_jump_arcs = false;    // disable jump arcs (for ablation studies)
+        bool symmetric = false;     // skip backward labeling, use fw labels as bw
+        bool no_jump_arcs = false;  // disable jump arcs (for ablation studies)
         Stage stage = Stage::Exact;
         int max_enum_labels = 5000000;  // safety cap on total labels during enumeration
     };
@@ -2895,7 +2895,11 @@ private:
         enum_sink_labels_ = 0;
 
         // Decide whether to run parallel
-        const bool run_parallel = opts_.parallel_bidir && !opts_.symmetric;
+        // Parallel bidir is determined by executor type at compile time.
+        // Non-sequential executors get the parallel path; SequentialExecutor
+        // gets the zero-overhead sequential path.
+        constexpr bool is_parallel_exec = !std::is_same_v<Exec, SequentialExecutor>;
+        const bool run_parallel = is_parallel_exec && !opts_.symmetric;
 
         if (opts_.stage == Stage::Enumerate) {
             compute_completion_bounds(Direction::Forward);
