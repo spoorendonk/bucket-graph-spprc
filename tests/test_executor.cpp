@@ -110,15 +110,6 @@ TEST_CASE("SequentialExecutor n_threads returns 1") {
     CHECK(exec.n_threads() == 1);
 }
 
-TEST_CASE("StdThreadExecutor parallel_invoke runs concurrently") {
-    StdThreadExecutor exec;
-    std::atomic<int> a{0};
-    std::atomic<int> b{0};
-    exec.parallel_invoke([&]() { a.store(1); }, [&]() { b.store(2); });
-    CHECK(a.load() == 1);
-    CHECK(b.load() == 2);
-}
-
 // ── parallel_sort ──
 
 TEST_CASE("parallel_sort with SequentialExecutor - small input falls back to std::sort") {

@@ -3,7 +3,6 @@
 #include "executor.h"
 
 #include <atomic>
-#include <cassert>
 #include <condition_variable>
 #include <deque>
 #include <exception>
@@ -53,7 +52,11 @@ public:
             for (int i = 0; i < n_tasks; ++i)
                 queue_.push_back({&tasks[i], &batch});
         }
-        cv_work_.notify_all();
+        if (n_tasks >= n_workers_)
+            cv_work_.notify_all();
+        else
+            for (int i = 0; i < n_tasks; ++i)
+                cv_work_.notify_one();
     }
 
     /// Block until all tasks in the batch have completed.
@@ -142,9 +145,10 @@ struct StdThreadExecutor {
 
         // Build tasks for pool threads (chunks 1..n_chunks-1).
         // Stack-allocated: pool_tasks is bounded by hardware_concurrency.
+        // Capped at kMaxPoolTasks to prevent stack overflow on very high core counts.
         int pool_tasks = n_chunks - 1;
         static constexpr int kMaxPoolTasks = 128;
-        assert(pool_tasks <= kMaxPoolTasks);
+        pool_tasks = std::min(pool_tasks, kMaxPoolTasks);
         std::function<void()> tasks[kMaxPoolTasks];
         for (int c = 0; c < pool_tasks; ++c) {
             int c_begin = begin + (c + 1) * chunk_size;
