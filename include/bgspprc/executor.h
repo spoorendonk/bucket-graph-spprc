@@ -20,6 +20,8 @@ concept Executor = requires(E e, int n) {
     e.parallel_for(0, n, [](int) {});
     // parallel_invoke: must accept two callables
     e.parallel_invoke([] {}, [] {});
+    // n_threads: number of threads available for parallel_for
+    { e.n_threads() } -> std::convertible_to<int>;
 };
 
 /// Sequential (single-threaded) executor. Default for BucketGraph/Solver.
@@ -33,6 +35,8 @@ struct SequentialExecutor {
         f();
         g();
     }
+
+    int n_threads() const { return 1; }
 };
 
 static_assert(Executor<SequentialExecutor>, "SequentialExecutor must satisfy the Executor concept");

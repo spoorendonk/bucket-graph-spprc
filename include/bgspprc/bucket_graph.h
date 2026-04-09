@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <functional>
 #include <limits>
+#include <mutex>
 #include <numeric>
 #include <span>
 #include <stack>
@@ -125,8 +126,9 @@ public:
         int max_paths = 0;  // 0 = unlimited
         double theta = -1e-6;
         bool bidirectional = false;
-        bool symmetric = false;     // skip backward labeling, use fw labels as bw
-        bool no_jump_arcs = false;  // disable jump arcs (for ablation studies)
+        bool symmetric = false;      // skip backward labeling, use fw labels as bw
+        bool no_jump_arcs = false;   // disable jump arcs (for ablation studies)
+        bool parallel_bidir = true;  // concurrent fw/bw labeling (requires parallel executor)
         Stage stage = Stage::Exact;
         int max_enum_labels = 5000000;  // safety cap on total labels during enumeration
     };
@@ -2916,12 +2918,10 @@ private:
         enum_complete_ = true;
         enum_sink_labels_ = 0;
 
-        // Decide whether to run parallel
-        // Parallel bidir is determined by executor type at compile time.
-        // Non-sequential executors get the parallel path; SequentialExecutor
-        // gets the zero-overhead sequential path.
+        // Decide whether to run parallel bidir labeling.
+        // Requires: non-sequential executor, parallel_bidir enabled, not symmetric.
         constexpr bool is_parallel_exec = !std::is_same_v<Exec, SequentialExecutor>;
-        const bool run_parallel = is_parallel_exec && !opts_.symmetric;
+        const bool run_parallel = is_parallel_exec && opts_.parallel_bidir && !opts_.symmetric;
 
         if (opts_.stage == Stage::Enumerate) {
             compute_completion_bounds(Direction::Forward);
@@ -3166,13 +3166,11 @@ private:
         // Across-arc concatenation: for each arc a = (i,j), join fw labels at i
         // with bw labels at j using on-the-fly extend through arc a.
         // This finds paths crossing the bidir midpoint on a single arc.
-        // Parallelized over arcs via executor: each thread collects into a
-        // thread-local vector, then results are merged.
+        // Parallelized over arcs via executor. Each thread accumulates into
+        // a mutex-protected output vector. Candidate pushes are rare relative
+        // to per-arc work, so lock contention is negligible.
         int n_arcs = pv_.n_arcs;
-        // One vector per thread slot (executor maps iterations to slots).
-        // For SequentialExecutor this is just one vector; for thread-pool
-        // executors, each thread gets its own slot to avoid contention.
-        std::vector<PathCandidate> thread_local_candidates;
+        std::mutex candidates_mutex;
 
         executor_.parallel_for(0, n_arcs, [&](int a) {
             int i = pv_.arc_from[a];
@@ -3273,19 +3271,14 @@ private:
                             }
 
                             if (total_cost < opts_.theta) {
-                                thread_local_candidates.push_back(
-                                    {total_cost, total_real_cost, fw, bw, a});
+                                std::lock_guard lock(candidates_mutex);
+                                candidates.push_back({total_cost, total_real_cost, fw, bw, a});
                             }
                         }
                     }
                 }
             }
         });
-
-        // Move thread-local results into output
-        candidates.insert(candidates.end(),
-                          std::make_move_iterator(thread_local_candidates.begin()),
-                          std::make_move_iterator(thread_local_candidates.end()));
     }
 
     Path realize_path(const PathCandidate& c) {

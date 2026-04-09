@@ -1866,3 +1866,57 @@ TEST_CASE("Parallel bidir: Enumerate stage") {
     CHECK(sp[0].reduced_cost == doctest::Approx(pp[0].reduced_cost).epsilon(1e-6));
     CHECK(sp.size() == pp.size());
 }
+
+TEST_CASE("Parallel bidir: parallel_bidir=false gives sequential bidir with StdThreadExecutor") {
+    int from[] = {0, 0, 1, 2};
+    int to[] = {1, 2, 3, 3};
+    double cost[] = {5.0, 3.0, 4.0, 6.0};
+    double time_d[] = {1.0, 2.0, 2.0, 1.0};
+    double tw_lb[] = {0.0, 0.0, 0.0, 0.0};
+    double tw_ub[] = {20.0, 20.0, 20.0, 20.0};
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 4;
+    pv.source = 0;
+    pv.sink = 3;
+    pv.n_arcs = 4;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    // parallel_bidir=true: concurrent fw/bw
+    BucketGraph<EmptyPack, StdThreadExecutor> par_bidir(pv, EmptyPack{},
+                                                        {.bucket_steps = {5.0, 1.0},
+                                                         .theta = 1e9,
+                                                         .bidirectional = true,
+                                                         .parallel_bidir = true,
+                                                         .stage = Stage::Exact});
+    par_bidir.build();
+    auto pp = par_bidir.solve();
+
+    // parallel_bidir=false: data-parallel only, sequential bidir
+    BucketGraph<EmptyPack, StdThreadExecutor> seq_bidir(pv, EmptyPack{},
+                                                        {.bucket_steps = {5.0, 1.0},
+                                                         .theta = 1e9,
+                                                         .bidirectional = true,
+                                                         .parallel_bidir = false,
+                                                         .stage = Stage::Exact});
+    seq_bidir.build();
+    auto sp = seq_bidir.solve();
+
+    REQUIRE(!pp.empty());
+    REQUIRE(!sp.empty());
+    CHECK(pp[0].reduced_cost == doctest::Approx(sp[0].reduced_cost).epsilon(1e-6));
+    // parallel_bidir=false should not use parallel labeling
+    CHECK(seq_bidir.solve_timings().parallel_labeling.count() == 0.0);
+    // parallel_bidir=true should use parallel labeling
+    CHECK(par_bidir.solve_timings().parallel_labeling.count() > 0.0);
+}

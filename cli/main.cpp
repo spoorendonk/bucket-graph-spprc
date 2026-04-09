@@ -56,7 +56,8 @@ struct Options {
     bool stats = false;           // print solve statistics
     bool csv = false;             // machine-readable CSV output
     bool timing = false;          // print phase timing breakdown
-    bool parallel = false;        // parallel bidir labeling
+    bool parallel = true;         // use parallel executor (StdThreadExecutor)
+    bool parallel_bidir = true;   // concurrent fw/bw labeling (requires parallel)
 };
 
 struct Result {
@@ -90,6 +91,7 @@ typename Solver<Pack, Exec>::Options make_solver_opts(double s1, double s2, cons
         .bucket_steps = {s1, s2},
         .bidirectional = opts.bidir,
         .no_jump_arcs = opts.no_jump_arcs,
+        .parallel_bidir = opts.parallel_bidir,
         .max_paths = opts.max_paths,
     };
     if (!std::isnan(opts.theta))
@@ -487,6 +489,10 @@ int main(int argc, char** argv) {
             opts.timing = true;
         } else if (std::strcmp(argv[i], "--parallel") == 0) {
             opts.parallel = true;
+        } else if (std::strcmp(argv[i], "--no-parallel") == 0) {
+            opts.parallel = false;
+        } else if (std::strcmp(argv[i], "--no-parallel-bidir") == 0) {
+            opts.parallel_bidir = false;
         } else if (argv[i][0] == '-') {
             std::fprintf(stderr, "Unknown option: %s\n", argv[i]);
             return 1;
@@ -512,8 +518,27 @@ int main(int argc, char** argv) {
                      "  --stats         Print solve statistics after each instance\n"
                      "  --csv           Machine-readable CSV output (all fields)\n"
                      "  --timing        Print phase timing breakdown\n"
-                     "  --parallel      Use parallel bidir labeling (two threads)\n");
+                     "  --parallel      Use parallel executor (default: on)\n"
+                     "  --no-parallel   Use sequential executor\n"
+                     "  --no-parallel-bidir  Data-parallel only, sequential fw/bw labeling\n");
         return 1;
+    }
+
+    // Validate: parallel_bidir without parallel executor is meaningless.
+    if (!opts.parallel && opts.parallel_bidir) {
+        std::fprintf(stderr,
+                     "bgspprc: warning: parallel_bidir has no effect without --parallel, "
+                     "falling back to sequential\n");
+        opts.parallel_bidir = false;
+    }
+
+    // Log effective configuration when --stats is set.
+    if (opts.stats) {
+        const char* exec_name = opts.parallel ? "StdThread" : "Sequential";
+        const char* bidir_mode =
+            !opts.bidir ? "off"
+                        : (opts.parallel && opts.parallel_bidir ? "parallel" : "sequential");
+        std::fprintf(stderr, "bgspprc: executor=%s  bidir=%s\n", exec_name, bidir_mode);
     }
 
     if (opts.csv)
