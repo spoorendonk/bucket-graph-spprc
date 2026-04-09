@@ -2611,7 +2611,8 @@ private:
 
     void reset_label_storage(BucketLabels& bl) {
         bl.resize(buckets_.size());
-        for (std::size_t i = 0; i < bl.size(); ++i) {
+        const int n = static_cast<int>(bl.size());
+        auto clear = [&](int i) {
             bl.labels[i].clear();
             bl.costs[i].clear();
             bl.q0[i].clear();
@@ -2620,6 +2621,12 @@ private:
                 bl.ng_bits[i].clear();
             if constexpr (has_r1c_)
                 bl.r1c_bits[i].clear();
+        };
+        if (n >= 1024) {
+            executor_.parallel_for(0, n, clear);
+        } else {
+            for (int i = 0; i < n; ++i)
+                clear(i);
         }
     }
 
@@ -2664,9 +2671,17 @@ private:
     }
 
     void reset_c_best() {
-        for (auto& b : buckets_) {
-            b.c_best = INF;
-            b.bw_c_best = INF;
+        const int nb = static_cast<int>(buckets_.size());
+        if (nb >= 1024) {
+            executor_.parallel_for(0, nb, [&](int i) {
+                buckets_[i].c_best = INF;
+                buckets_[i].bw_c_best = INF;
+            });
+        } else {
+            for (int i = 0; i < nb; ++i) {
+                buckets_[i].c_best = INF;
+                buckets_[i].bw_c_best = INF;
+            }
         }
         vertex_min_c_best_.assign(pv_.n_vertices, INF);
         vertex_min_bw_c_best_.assign(pv_.n_vertices, INF);
