@@ -1,6 +1,9 @@
+#include <algorithm>
 #include <atomic>
 #include <bgspprc/executor_thread.h>
 #include <doctest/doctest.h>
+#include <numeric>
+#include <random>
 #include <vector>
 
 using namespace bgspprc;
@@ -66,4 +69,70 @@ TEST_CASE("StdThreadExecutor parallel_invoke runs both tasks") {
     exec.parallel_invoke([&]() { a.store(1); }, [&]() { b.store(2); });
     CHECK(a.load() == 1);
     CHECK(b.load() == 2);
+}
+
+// ── parallel_sort ──
+
+TEST_CASE("parallel_sort with SequentialExecutor - small input falls back to std::sort") {
+    SequentialExecutor exec;
+    std::vector<int> data = {5, 3, 8, 1, 9, 2, 7, 4, 6};
+    parallel_sort(exec, data.begin(), data.end(), std::less<>{});
+    CHECK(std::is_sorted(data.begin(), data.end()));
+    CHECK(data == std::vector<int>{1, 2, 3, 4, 5, 6, 7, 8, 9});
+}
+
+TEST_CASE("parallel_sort with SequentialExecutor - empty input") {
+    SequentialExecutor exec;
+    std::vector<int> data;
+    parallel_sort(exec, data.begin(), data.end(), std::less<>{});
+    CHECK(data.empty());
+}
+
+TEST_CASE("parallel_sort with SequentialExecutor - single element") {
+    SequentialExecutor exec;
+    std::vector<int> data = {42};
+    parallel_sort(exec, data.begin(), data.end(), std::less<>{});
+    CHECK(data == std::vector<int>{42});
+}
+
+TEST_CASE("parallel_sort with SequentialExecutor - large input above threshold") {
+    SequentialExecutor exec;
+    constexpr int n = 10000;
+    std::vector<int> data(n);
+    std::iota(data.begin(), data.end(), 0);
+    std::mt19937 rng(42);
+    std::shuffle(data.begin(), data.end(), rng);
+
+    parallel_sort(exec, data.begin(), data.end(), std::less<>{});
+    CHECK(std::is_sorted(data.begin(), data.end()));
+    CHECK(data.front() == 0);
+    CHECK(data.back() == n - 1);
+}
+
+TEST_CASE("parallel_sort with SequentialExecutor - custom comparator (descending)") {
+    SequentialExecutor exec;
+    constexpr int n = 5000;
+    std::vector<int> data(n);
+    std::iota(data.begin(), data.end(), 0);
+    std::mt19937 rng(123);
+    std::shuffle(data.begin(), data.end(), rng);
+
+    parallel_sort(exec, data.begin(), data.end(), std::greater<>{});
+    CHECK(std::is_sorted(data.begin(), data.end(), std::greater<>{}));
+    CHECK(data.front() == n - 1);
+    CHECK(data.back() == 0);
+}
+
+TEST_CASE("parallel_sort with StdThreadExecutor - large input above threshold") {
+    StdThreadExecutor exec;
+    constexpr int n = 10000;
+    std::vector<int> data(n);
+    std::iota(data.begin(), data.end(), 0);
+    std::mt19937 rng(99);
+    std::shuffle(data.begin(), data.end(), rng);
+
+    parallel_sort(exec, data.begin(), data.end(), std::less<>{});
+    CHECK(std::is_sorted(data.begin(), data.end()));
+    CHECK(data.front() == 0);
+    CHECK(data.back() == n - 1);
 }

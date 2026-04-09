@@ -3292,7 +3292,7 @@ private:
             if (opts_.stage == Stage::Enumerate)
                 enum_complete_ = false;
         } else if (limit > 1) {
-            std::sort(candidates.begin(), candidates.end(), cmp);
+            parallel_sort(executor_, candidates.begin(), candidates.end(), cmp);
         }
 
         std::vector<Path> paths;
