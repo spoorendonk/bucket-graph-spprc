@@ -1,3 +1,4 @@
+#include <atomic>
 #include <bgspprc/executor.h>
 #include <doctest/doctest.h>
 #include <vector>
@@ -36,4 +37,33 @@ TEST_CASE("SequentialExecutor parallel_invoke runs in order") {
     std::vector<int> order;
     exec.parallel_invoke([&]() { order.push_back(1); }, [&]() { order.push_back(2); });
     CHECK(order == std::vector<int>{1, 2});
+}
+
+// ── StdThreadExecutor ──
+
+TEST_CASE("StdThreadExecutor satisfies Executor concept") {
+    static_assert(Executor<StdThreadExecutor>);
+}
+
+TEST_CASE("StdThreadExecutor parallel_for iterates range") {
+    StdThreadExecutor exec;
+    std::vector<int> results;
+    exec.parallel_for(0, 5, [&](int i) { results.push_back(i); });
+    CHECK(results == std::vector<int>{0, 1, 2, 3, 4});
+}
+
+TEST_CASE("StdThreadExecutor parallel_for empty range") {
+    StdThreadExecutor exec;
+    int count = 0;
+    exec.parallel_for(3, 3, [&](int) { ++count; });
+    CHECK(count == 0);
+}
+
+TEST_CASE("StdThreadExecutor parallel_invoke runs both tasks") {
+    StdThreadExecutor exec;
+    std::atomic<int> a{0};
+    std::atomic<int> b{0};
+    exec.parallel_invoke([&]() { a.store(1); }, [&]() { b.store(2); });
+    CHECK(a.load() == 1);
+    CHECK(b.load() == 2);
 }
