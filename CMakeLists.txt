@@ -6,7 +6,7 @@ add_library(bgspprc INTERFACE)
 target_include_directories(bgspprc INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
-target_compile_features(bgspprc INTERFACE cxx_std_20)
+target_compile_features(bgspprc INTERFACE cxx_std_23)
 
 # Option to disable SIMD (for ablation studies)
 option(BGSPPRC_DISABLE_SIMD "Disable SIMD in dominance checks" OFF)
