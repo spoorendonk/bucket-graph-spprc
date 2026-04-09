@@ -47,8 +47,8 @@ Options `BGSPPRC_BUILD_CLI` and `BGSPPRC_BUILD_TESTS` default ON at top-level, O
 
 ### Core Types (include/bgspprc/)
 
-- **`Solver<Pack>`** (`solver.h`) — Top-level entry point. Wraps `BucketGraph` with multi-stage control (Heuristic1 → Heuristic2 → Exact → Enumerate). Owns `ProblemView`, `Pack`, and options (bucket_steps, bidirectional, theta).
-- **`BucketGraph<Pack>`** (`bucket_graph.h`) — Core labeling engine. Manages the bucket grid, label pools, SCC topology, c_best/completion bounds, bucket fixing, and arc elimination. Runs mono or bidirectional labeling.
+- **`Solver<Pack, Exec>`** (`solver.h`) — Top-level entry point. Wraps `BucketGraph` with multi-stage control (Heuristic1 → Heuristic2 → Exact → Enumerate). Owns `ProblemView`, `Pack`, and options (bucket_steps, bidirectional, theta). `Exec` defaults to `SequentialExecutor`.
+- **`BucketGraph<Pack, Exec>`** (`bucket_graph.h`) — Core labeling engine. Manages the bucket grid, label pools, SCC topology, c_best/completion bounds, bucket fixing, and arc elimination. Runs mono or bidirectional labeling. `Exec` controls parallel dispatch (see `executor.h`).
 - **`Label<Pack>`** (`label.h`) — Per-label state: vertex, bucket, cost, main resource values (q[0], q[1]), parent chain, and a compile-time tuple of all resource states. `BucketLabelPool` provides cache-line-aligned per-bucket arena allocation.
 - **`Bucket`** (`bucket.h`) — Grid cell: vertex, SCC, resource interval [lb,ub), c_best, bucket arcs, and jump arcs.
 - **`ProblemView`** (`problem_view.h`) — Non-owning view of problem data (vertices, arcs, costs, resource bounds). Caller retains ownership.

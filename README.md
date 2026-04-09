@@ -122,6 +122,7 @@ Options:
   --max-paths N   Number of paths to return (0=all, 1=best; default: 1)
   --theta T       Pricing threshold θ (default: -1e-6 for CG)
   --auto-steps    Compute per-vertex auto-computed steps
+  --parallel      Use parallel bidir labeling (two threads)
 ```
 
 Supported formats: `.sppcc` (SPPCC), `.vrp` (Roberti VRPTW), `.graph` (Solomon RCSPP).
