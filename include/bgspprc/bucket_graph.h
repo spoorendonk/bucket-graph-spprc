@@ -365,24 +365,24 @@ public:
                "eliminate_arcs requires completion bounds from a prior solve()");
 
         int nb = static_cast<int>(buckets_.size());
-        for (int bi = 0; bi < nb; ++bi) {
+        executor_.parallel_for(0, nb, [&](int bi) {
             auto& b = buckets_[bi];
             std::erase_if(b.bucket_arcs, [&](const BucketArc& ba) {
                 return b.c_best + ba.cost + fw_completion_[ba.to_bucket] > theta + EPS;
             });
-        }
+        });
         obtain_jump_arcs(Direction::Forward);
 
         if (opts_.bidirectional) {
             assert(!bw_completion_.empty() &&
                    "eliminate_arcs requires bw completion bounds from a prior solve()");
 
-            for (int bi = 0; bi < nb; ++bi) {
+            executor_.parallel_for(0, nb, [&](int bi) {
                 auto& b = buckets_[bi];
                 std::erase_if(b.bw_bucket_arcs, [&](const BucketArc& ba) {
                     return b.bw_c_best + ba.cost + bw_completion_[ba.to_bucket] > theta + EPS;
                 });
-            }
+            });
             obtain_jump_arcs(Direction::Backward);
         }
     }
