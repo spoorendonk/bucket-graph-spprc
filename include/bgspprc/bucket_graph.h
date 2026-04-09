@@ -2627,7 +2627,7 @@ private:
 
     /// Compact a list of buckets.
     void compact_labels(BucketLabels& bl, std::span<const int> bucket_ids) {
-        executor_.parallel_for(0, (int)bucket_ids.size(),
+        executor_.parallel_for(0, static_cast<int>(bucket_ids.size()),
                                [&](int i) { compact_bucket(bl, bucket_ids[i]); });
     }
 

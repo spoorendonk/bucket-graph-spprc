@@ -68,7 +68,7 @@ public:
     /// Thread-safe test using atomic_ref. Use when concurrent atomic_set() calls may
     /// modify the same word.
     bool atomic_test(int i) const {
-        std::atomic_ref<const uint64_t> word(bits_[i / 64]);
+        std::atomic_ref<uint64_t> word(const_cast<uint64_t&>(bits_[i / 64]));
         return (word.load(std::memory_order_relaxed) >> (i % 64)) & 1;
     }
 
