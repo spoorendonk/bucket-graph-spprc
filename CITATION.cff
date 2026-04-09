@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+title: "bucket-graph-spprc"
+type: software
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: Spoorendonk
+    given-names: Simon
+abstract: "Header-only C++23 template library for the bucket graph labeling algorithm for the Shortest Path Problem with Resource Constraints (SPPRC), used as a subproblem algorithm in vehicle routing variants."
+repository-code: "https://github.com/spoorendonk/bucket-graph-spprc"
+date-released: "2026-04-09"
+license: MIT
