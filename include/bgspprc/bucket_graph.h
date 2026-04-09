@@ -681,7 +681,8 @@ private:
             int v = b.vertex;
             auto& ba_vec = (dir == Direction::Forward) ? b.bucket_arcs : b.bw_bucket_arcs;
             ba_vec.clear();
-            b.jump_arcs.clear();
+            auto& ja_vec = (dir == Direction::Forward) ? b.jump_arcs : b.bw_jump_arcs;
+            ja_vec.clear();
 
             // Count feasible arcs for this bucket, then reserve and fill.
             int count = 0;
@@ -2627,13 +2628,23 @@ private:
 
     /// Compact a list of buckets.
     void compact_labels(BucketLabels& bl, std::span<const int> bucket_ids) {
-        executor_.parallel_for(0, static_cast<int>(bucket_ids.size()),
-                               [&](int i) { compact_bucket(bl, bucket_ids[i]); });
+        const int n = static_cast<int>(bucket_ids.size());
+        if (n >= 1024) {
+            executor_.parallel_for(0, n, [&](int i) { compact_bucket(bl, bucket_ids[i]); });
+        } else {
+            for (int i = 0; i < n; ++i)
+                compact_bucket(bl, bucket_ids[i]);
+        }
     }
 
     /// Compact all buckets in a BucketLabels structure.
     void compact_labels(BucketLabels& bl, int n_buckets) {
-        executor_.parallel_for(0, n_buckets, [&](int bi) { compact_bucket(bl, bi); });
+        if (n_buckets >= 1024) {
+            executor_.parallel_for(0, n_buckets, [&](int bi) { compact_bucket(bl, bi); });
+        } else {
+            for (int bi = 0; bi < n_buckets; ++bi)
+                compact_bucket(bl, bi);
+        }
     }
 
     void reset_c_best() {
@@ -3138,23 +3149,14 @@ private:
 
     void collect_sink_candidates(std::vector<PathCandidate>& candidates, const BucketLabels& bl) {
         auto [start, end] = vertex_bucket_range(pv_.sink);
-        int n_buckets = end - start;
-        std::vector<std::vector<PathCandidate>> per_bucket(n_buckets);
-
-        executor_.parallel_for(0, n_buckets, [&](int k) {
-            int bi = start + k;
+        for (int bi = start; bi < end; ++bi) {
             for (const auto* L : bl.labels[bi]) {
                 if (L->dominated)
                     continue;
                 if (L->cost < opts_.theta) {
-                    per_bucket[k].push_back({L->cost, L->real_cost, L, nullptr, -1});
+                    candidates.push_back({L->cost, L->real_cost, L, nullptr, -1});
                 }
             }
-        });
-
-        for (auto& buf : per_bucket) {
-            candidates.insert(candidates.end(), std::make_move_iterator(buf.begin()),
-                              std::make_move_iterator(buf.end()));
         }
     }
 
@@ -3164,11 +3166,15 @@ private:
         // Across-arc concatenation: for each arc a = (i,j), join fw labels at i
         // with bw labels at j using on-the-fly extend through arc a.
         // This finds paths crossing the bidir midpoint on a single arc.
-        // Parallelized over arcs via executor: each arc collects into a local
-        // vector, then results are merged.
-        std::vector<std::vector<PathCandidate>> per_arc_candidates(pv_.n_arcs);
+        // Parallelized over arcs via executor: each thread collects into a
+        // thread-local vector, then results are merged.
+        int n_arcs = pv_.n_arcs;
+        // One vector per thread slot (executor maps iterations to slots).
+        // For SequentialExecutor this is just one vector; for thread-pool
+        // executors, each thread gets its own slot to avoid contention.
+        std::vector<PathCandidate> thread_local_candidates;
 
-        executor_.parallel_for(0, pv_.n_arcs, [&](int a) {
+        executor_.parallel_for(0, n_arcs, [&](int a) {
             int i = pv_.arc_from[a];
             int j = pv_.arc_to[a];
             if (i == pv_.source || i == pv_.sink)
@@ -3186,8 +3192,6 @@ private:
 
             auto [fw_start, fw_end] = vertex_bucket_range(i);
             auto [bw_start, bw_end] = vertex_bucket_range(j);
-
-            auto& local = per_arc_candidates[a];
 
             for (int fbi = fw_start; fbi < fw_end; ++fbi) {
                 // Per-fw-bucket c_best skip
@@ -3269,7 +3273,8 @@ private:
                             }
 
                             if (total_cost < opts_.theta) {
-                                local.push_back({total_cost, total_real_cost, fw, bw, a});
+                                thread_local_candidates.push_back(
+                                    {total_cost, total_real_cost, fw, bw, a});
                             }
                         }
                     }
@@ -3277,15 +3282,10 @@ private:
             }
         });
 
-        // Merge per-arc results into output
-        std::size_t total = 0;
-        for (const auto& v : per_arc_candidates)
-            total += v.size();
-        candidates.reserve(candidates.size() + total);
-        for (auto& v : per_arc_candidates) {
-            candidates.insert(candidates.end(), std::make_move_iterator(v.begin()),
-                              std::make_move_iterator(v.end()));
-        }
+        // Move thread-local results into output
+        candidates.insert(candidates.end(),
+                          std::make_move_iterator(thread_local_candidates.begin()),
+                          std::make_move_iterator(thread_local_candidates.end()));
     }
 
     Path realize_path(const PathCandidate& c) {

@@ -67,15 +67,20 @@ void parallel_sort(Exec& exec, It first, It last, Cmp cmp) {
 
     // Iterative pairwise merge of sorted chunks.
     // Each round merges adjacent pairs, doubling the sorted run length.
+    // Independent pairs within a round are merged in parallel.
     for (int width = 1; width < n_chunks; width *= 2) {
-        for (int i = 0; i + width < n_chunks; i += 2 * width) {
+        int n_pairs = 0;
+        for (int i = 0; i + width < n_chunks; i += 2 * width)
+            ++n_pairs;
+        exec.parallel_for(0, n_pairs, [&](int p) {
+            int i = p * 2 * width;
             auto lo = first + i * chunk_size;
             auto mid_idx = i + width;
             auto mid = (mid_idx >= n_chunks) ? last : first + mid_idx * chunk_size;
             auto hi_idx = i + 2 * width;
             auto hi = (hi_idx >= n_chunks) ? last : first + hi_idx * chunk_size;
             std::inplace_merge(lo, mid, hi, cmp);
-        }
+        });
     }
 }
 
