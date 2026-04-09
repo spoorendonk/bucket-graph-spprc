@@ -3201,116 +3201,128 @@ private:
         // Across-arc concatenation: for each arc a = (i,j), join fw labels at i
         // with bw labels at j using on-the-fly extend through arc a.
         // This finds paths crossing the bidir midpoint on a single arc.
-        [&] {
-            for (int a = 0; a < pv_.n_arcs; ++a) {
-                int i = pv_.arc_from[a];
-                int j = pv_.arc_to[a];
-                if (i == pv_.source || i == pv_.sink)
-                    continue;
-                if (j == pv_.source || j == pv_.sink)
-                    continue;
+        // Parallelized over arcs via executor: each arc collects into a local
+        // vector, then results are merged.
+        std::vector<std::vector<PathCandidate>> per_arc_candidates(pv_.n_arcs);
 
-                double arc_cost = reduced_costs_ ? reduced_costs_[a] : pv_.arc_base_cost[a];
-                double arc_real_cost = pv_.arc_base_cost[a];
+        executor_.parallel_for(0, pv_.n_arcs, [&](int a) {
+            int i = pv_.arc_from[a];
+            int j = pv_.arc_to[a];
+            if (i == pv_.source || i == pv_.sink)
+                return;
+            if (j == pv_.source || j == pv_.sink)
+                return;
 
-                // Arc-level skip: if even the cheapest fw@i + bw@j can't beat theta
-                if (vertex_min_c_best_[i] + vertex_min_bw_c_best_[j] + arc_cost + min_dom_cost_ >=
+            double arc_cost = reduced_costs_ ? reduced_costs_[a] : pv_.arc_base_cost[a];
+            double arc_real_cost = pv_.arc_base_cost[a];
+
+            // Arc-level skip: if even the cheapest fw@i + bw@j can't beat theta
+            if (vertex_min_c_best_[i] + vertex_min_bw_c_best_[j] + arc_cost + min_dom_cost_ >=
+                opts_.theta)
+                return;
+
+            auto [fw_start, fw_end] = vertex_bucket_range(i);
+            auto [bw_start, bw_end] = vertex_bucket_range(j);
+
+            auto& local = per_arc_candidates[a];
+
+            for (int fbi = fw_start; fbi < fw_end; ++fbi) {
+                // Per-fw-bucket c_best skip
+                if (buckets_[fbi].c_best + arc_cost + vertex_min_bw_c_best_[j] + min_dom_cost_ >=
                     opts_.theta)
                     continue;
 
-                auto [fw_start, fw_end] = vertex_bucket_range(i);
-                auto [bw_start, bw_end] = vertex_bucket_range(j);
-
-                for (int fbi = fw_start; fbi < fw_end; ++fbi) {
-                    // Per-fw-bucket c_best skip
-                    if (buckets_[fbi].c_best + arc_cost + vertex_min_bw_c_best_[j] +
-                            min_dom_cost_ >=
+                auto& fw_costs = fw_labels_.costs[fbi];
+                for (std::size_t fi = 0; fi < fw_labels_.labels[fbi].size(); ++fi) {
+                    // Sorted fw cost break
+                    if (fw_costs[fi] + arc_cost + vertex_min_bw_c_best_[j] + min_dom_cost_ >=
                         opts_.theta)
+                        break;
+                    const auto* fw = fw_labels_.labels[fbi][fi];
+                    if (fw->dominated)
                         continue;
 
-                    auto& fw_costs = fw_labels_.costs[fbi];
-                    for (std::size_t fi = 0; fi < fw_labels_.labels[fbi].size(); ++fi) {
-                        // Sorted fw cost break
-                        if (fw_costs[fi] + arc_cost + vertex_min_bw_c_best_[j] + min_dom_cost_ >=
-                            opts_.theta)
-                            break;
-                        const auto* fw = fw_labels_.labels[fbi][fi];
-                        if (fw->dominated)
+                    double fw_arc = fw->cost + arc_cost;
+
+                    // For EmptyPack, bw costs and resource adjustments are
+                    // non-negative, so fw + arc alone exceeding theta is sufficient.
+                    if constexpr (Pack::size == 0) {
+                        if (fw_arc >= opts_.theta)
+                            continue;
+                    }
+
+                    for (int bbi = bw_start; bbi < bw_end; ++bbi) {
+                        // Per-bw-bucket c_best skip (bw_c_best is populated from
+                        // mirror c_best in symmetric mode)
+                        if (fw_arc + buckets_[bbi].bw_c_best + min_dom_cost_ >= opts_.theta)
                             continue;
 
-                        double fw_arc = fw->cost + arc_cost;
+                        auto& bw_costs =
+                            opts_.symmetric ? fw_labels_.costs[bbi] : bw_labels_.costs[bbi];
+                        auto& bw_labels =
+                            opts_.symmetric ? fw_labels_.labels[bbi] : bw_labels_.labels[bbi];
+                        for (std::size_t li = 0; li < bw_labels.size(); ++li) {
+                            // Prefetch next bw label while processing current one
+                            if (li + 1 < bw_labels.size())
+                                BGSPPRC_PREFETCH_R(bw_labels[li + 1]);
+                            // Sorted bw cost break
+                            double total_cost = fw_arc + bw_costs[li];
+                            if (total_cost + min_dom_cost_ >= opts_.theta)
+                                break;
 
-                        // For EmptyPack, bw costs and resource adjustments are
-                        // non-negative, so fw + arc alone exceeding theta is sufficient.
-                        if constexpr (Pack::size == 0) {
-                            if (fw_arc >= opts_.theta)
+                            const auto* bw = bw_labels[li];
+                            if (bw->dominated)
                                 continue;
-                        }
 
-                        for (int bbi = bw_start; bbi < bw_end; ++bbi) {
-                            // Per-bw-bucket c_best skip (bw_c_best is populated from
-                            // mirror c_best in symmetric mode)
-                            if (fw_arc + buckets_[bbi].bw_c_best + min_dom_cost_ >= opts_.theta)
-                                continue;
-
-                            auto& bw_costs =
-                                opts_.symmetric ? fw_labels_.costs[bbi] : bw_labels_.costs[bbi];
-                            auto& bw_labels =
-                                opts_.symmetric ? fw_labels_.labels[bbi] : bw_labels_.labels[bbi];
-                            for (std::size_t li = 0; li < bw_labels.size(); ++li) {
-                                // Prefetch next bw label while processing current one
-                                if (li + 1 < bw_labels.size())
-                                    BGSPPRC_PREFETCH_R(bw_labels[li + 1]);
-                                // Sorted bw cost break
-                                double total_cost = fw_arc + bw_costs[li];
-                                if (total_cost + min_dom_cost_ >= opts_.theta)
+                            bool feasible = true;
+                            for (int r = 0; r < n_main_; ++r) {
+                                double fw_after_arc = fw->q[r] + pv_.arc_resource[r][a];
+                                fw_after_arc = std::max(fw_after_arc, pv_.vertex_lb[r][j]);
+                                double q_bw =
+                                    opts_.symmetric
+                                        ? (pv_.vertex_lb[r][j] + pv_.vertex_ub[r][j] - bw->q[r])
+                                        : bw->q[r];
+                                if (fw_after_arc > q_bw + EPS) {
+                                    feasible = false;
                                     break;
+                                }
+                            }
+                            if (!feasible)
+                                continue;
+                            double total_real_cost = fw->real_cost + bw->real_cost + arc_real_cost;
 
-                                const auto* bw = bw_labels[li];
-                                if (bw->dominated)
+                            if constexpr (Pack::size > 0) {
+                                auto [ext_states, ext_cost] = pack_.extend_along_arc(
+                                    Direction::Forward, fw->resource_states, a);
+                                if (ext_cost >= INF)
                                     continue;
+                                total_cost += ext_cost;
 
-                                bool feasible = true;
-                                for (int r = 0; r < n_main_; ++r) {
-                                    double fw_after_arc = fw->q[r] + pv_.arc_resource[r][a];
-                                    fw_after_arc = std::max(fw_after_arc, pv_.vertex_lb[r][j]);
-                                    double q_bw =
-                                        opts_.symmetric
-                                            ? (pv_.vertex_lb[r][j] + pv_.vertex_ub[r][j] - bw->q[r])
-                                            : bw->q[r];
-                                    if (fw_after_arc > q_bw + EPS) {
-                                        feasible = false;
-                                        break;
-                                    }
-                                }
-                                if (!feasible)
+                                double cc = pack_.concatenation_cost(sym, j, ext_states,
+                                                                     bw->resource_states);
+                                if (cc >= INF)
                                     continue;
-                                double total_real_cost =
-                                    fw->real_cost + bw->real_cost + arc_real_cost;
+                                total_cost += cc;
+                            }
 
-                                if constexpr (Pack::size > 0) {
-                                    auto [ext_states, ext_cost] = pack_.extend_along_arc(
-                                        Direction::Forward, fw->resource_states, a);
-                                    if (ext_cost >= INF)
-                                        continue;
-                                    total_cost += ext_cost;
-
-                                    double cc = pack_.concatenation_cost(sym, j, ext_states,
-                                                                         bw->resource_states);
-                                    if (cc >= INF)
-                                        continue;
-                                    total_cost += cc;
-                                }
-
-                                if (total_cost < opts_.theta) {
-                                    candidates.push_back({total_cost, total_real_cost, fw, bw, a});
-                                }
+                            if (total_cost < opts_.theta) {
+                                local.push_back({total_cost, total_real_cost, fw, bw, a});
                             }
                         }
                     }
                 }
             }
-        }();
+        });
+
+        // Merge per-arc results into output
+        std::size_t total = 0;
+        for (const auto& v : per_arc_candidates)
+            total += v.size();
+        candidates.reserve(candidates.size() + total);
+        for (auto& v : per_arc_candidates) {
+            candidates.insert(candidates.end(), std::make_move_iterator(v.begin()),
+                              std::make_move_iterator(v.end()));
+        }
     }
 
     Path realize_path(const PathCandidate& c) {
