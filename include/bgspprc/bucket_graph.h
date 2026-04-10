@@ -3165,14 +3165,16 @@ private:
         // Across-arc concatenation: for each arc a = (i,j), join fw labels at i
         // with bw labels at j using on-the-fly extend through arc a.
         // This finds paths crossing the bidir midpoint on a single arc.
-        // Parallelized over arc chunks via executor. Each thread writes to
-        // its own per-chunk vector (lock-free), then results are merged.
+        // Parallelized over arc chunks via executor. Each thread accumulates
+        // into a stack-local vector, then moves it into a per-chunk slot at
+        // the end. This avoids false sharing on shared vector headers during
+        // the hot loop (each push_back only touches stack memory).
         int n_arcs = pv_.n_arcs;
         int n_chunks = executor_.n_threads();
         std::vector<std::vector<PathCandidate>> chunk_candidates(n_chunks);
 
         executor_.parallel_for_chunked(0, n_arcs, [&](int c_begin, int c_end, int chunk_idx) {
-            auto& local = chunk_candidates[chunk_idx];
+            std::vector<PathCandidate> local;
             for (int a = c_begin; a < c_end; ++a) {
                 int i = pv_.arc_from[a];
                 int j = pv_.arc_to[a];
@@ -3280,9 +3282,17 @@ private:
                     }
                 }
             }
+            // Single move into the shared slot — only touches the shared
+            // vector header once per chunk, not once per push_back.
+            chunk_candidates[chunk_idx] = std::move(local);
         });
 
-        // Merge per-chunk results into output.
+        // Merge per-chunk results into output. Reserve once to avoid
+        // repeated reallocations as chunks are appended.
+        std::size_t total = candidates.size();
+        for (const auto& chunk : chunk_candidates)
+            total += chunk.size();
+        candidates.reserve(total);
         for (auto& chunk : chunk_candidates)
             candidates.insert(candidates.end(), std::make_move_iterator(chunk.begin()),
                               std::make_move_iterator(chunk.end()));

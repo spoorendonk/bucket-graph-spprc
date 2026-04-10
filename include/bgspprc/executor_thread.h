@@ -169,13 +169,22 @@ struct StdThreadExecutor {
         int chunk_size = (n + n_chunks - 1) / n_chunks;
 
         // Build tasks for pool threads (chunks 1..n_chunks-1).
+        // Pack (c_begin, c_end, chunk_idx) into a side struct so the lambda
+        // only captures two pointers (&f + &ctx) = 16 bytes, fitting in
+        // libstdc++'s std::function SBO and avoiding a per-task heap alloc.
+        struct ChunkCtx {
+            int c_begin;
+            int c_end;
+            int chunk_idx;
+        };
         int pool_tasks = n_chunks - 1;
         std::function<void()> tasks[kMaxPoolTasks];
+        ChunkCtx ctxs[kMaxPoolTasks];
         for (int c = 0; c < pool_tasks; ++c) {
-            int c_begin = begin + (c + 1) * chunk_size;
-            int c_end = std::min(c_begin + chunk_size, end);
-            int chunk_idx = c + 1;
-            tasks[c] = [&f, c_begin, c_end, chunk_idx]() { f(c_begin, c_end, chunk_idx); };
+            ctxs[c] = {begin + (c + 1) * chunk_size, std::min(begin + (c + 2) * chunk_size, end),
+                       c + 1};
+            auto* ctx = &ctxs[c];
+            tasks[c] = [&f, ctx]() { f(ctx->c_begin, ctx->c_end, ctx->chunk_idx); };
         }
 
         // Submit to pool (non-blocking).
