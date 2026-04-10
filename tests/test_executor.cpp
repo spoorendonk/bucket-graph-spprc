@@ -110,6 +110,51 @@ TEST_CASE("SequentialExecutor n_threads returns 1") {
     CHECK(exec.n_threads() == 1);
 }
 
+TEST_CASE("SequentialExecutor parallel_for_chunked emits single chunk") {
+    SequentialExecutor exec;
+    int n_calls = 0;
+    int c_begin_out = -1;
+    int c_end_out = -1;
+    int c_idx_out = -1;
+    exec.parallel_for_chunked(5, 15, [&](int cb, int ce, int ci) {
+        ++n_calls;
+        c_begin_out = cb;
+        c_end_out = ce;
+        c_idx_out = ci;
+    });
+    CHECK(n_calls == 1);
+    CHECK(c_begin_out == 5);
+    CHECK(c_end_out == 15);
+    CHECK(c_idx_out == 0);
+}
+
+TEST_CASE("StdThreadExecutor parallel_for_chunked covers full range with unique chunk indices") {
+    StdThreadExecutor exec;
+    constexpr int n = 10000;
+    int n_threads = exec.n_threads();
+    std::vector<std::atomic<int>> seen(n);
+    for (auto& s : seen)
+        s.store(0, std::memory_order_relaxed);
+    std::vector<std::atomic<int>> chunk_counts(n_threads);
+    for (auto& c : chunk_counts)
+        c.store(0, std::memory_order_relaxed);
+
+    exec.parallel_for_chunked(0, n, [&](int c_begin, int c_end, int chunk_idx) {
+        CHECK(chunk_idx >= 0);
+        CHECK(chunk_idx < n_threads);
+        chunk_counts[chunk_idx].fetch_add(1, std::memory_order_relaxed);
+        for (int i = c_begin; i < c_end; ++i)
+            seen[i].fetch_add(1, std::memory_order_relaxed);
+    });
+
+    // Every element covered exactly once
+    for (int i = 0; i < n; ++i)
+        CHECK(seen[i].load() == 1);
+    // Each chunk_idx called at most once
+    for (int c = 0; c < n_threads; ++c)
+        CHECK(chunk_counts[c].load() <= 1);
+}
+
 // ── parallel_sort ──
 
 TEST_CASE("parallel_sort with SequentialExecutor - small input falls back to std::sort") {

@@ -131,12 +131,33 @@ struct StdThreadExecutor {
         if (n <= 0)
             return;
 
+        if (n < kParallelForMinChunk) {
+            for (int i = begin; i < end; ++i)
+                f(i);
+            return;
+        }
+
+        parallel_for_chunked(begin, end, [&f](int c_begin, int c_end, int) {
+            for (int i = c_begin; i < c_end; ++i)
+                f(i);
+        });
+    }
+
+    /// Divides [begin, end) into chunks (one per thread) and calls
+    /// f(chunk_begin, chunk_end, chunk_idx) on each. chunk_idx is unique per
+    /// chunk in [0, n_threads()), enabling lock-free per-thread accumulation.
+    /// Unlike parallel_for, there is no element-count threshold: callers pass
+    /// chunk-level work, so per-chunk cost is assumed high.
+    void parallel_for_chunked(int begin, int end, auto&& f) const {
+        int n = end - begin;
+        if (n <= 0)
+            return;
+
         auto& pool = detail::global_thread_pool();
         int total_threads = pool.n_workers() + 1;  // +1 for calling thread
 
-        if (n < kParallelForMinChunk || total_threads <= 1) {
-            for (int i = begin; i < end; ++i)
-                f(i);
+        if (total_threads <= 1 || n == 1) {
+            f(begin, end, 0);
             return;
         }
 
@@ -153,10 +174,8 @@ struct StdThreadExecutor {
         for (int c = 0; c < pool_tasks; ++c) {
             int c_begin = begin + (c + 1) * chunk_size;
             int c_end = std::min(c_begin + chunk_size, end);
-            tasks[c] = [&f, c_begin, c_end]() {
-                for (int i = c_begin; i < c_end; ++i)
-                    f(i);
-            };
+            int chunk_idx = c + 1;
+            tasks[c] = [&f, c_begin, c_end, chunk_idx]() { f(c_begin, c_end, chunk_idx); };
         }
 
         // Submit to pool (non-blocking).
@@ -165,8 +184,7 @@ struct StdThreadExecutor {
 
         // Run chunk 0 on the calling thread while pool works.
         int c0_end = std::min(begin + chunk_size, end);
-        for (int i = begin; i < c0_end; ++i)
-            f(i);
+        f(begin, c0_end, 0);
 
         // Wait for pool threads to finish.
         detail::ThreadPool::wait(batch);

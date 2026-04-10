@@ -8,19 +8,21 @@ namespace bgspprc {
 
 /// Concept for pluggable execution strategies.
 ///
-/// An Executor provides two primitives:
-/// - parallel_for(begin, end, f): data-parallel, applies f to [begin, end)
+/// An Executor provides these primitives:
+/// - parallel_for(begin, end, f): data-parallel, applies f(i) to [begin, end)
+/// - parallel_for_chunked(begin, end, f): same, but f(chunk_begin, chunk_end,
+///   chunk_idx) receives bulk ranges and a chunk index in [0, n_threads()).
+///   Callers can use chunk_idx to index into per-thread storage lock-free.
 /// - parallel_invoke(f, g): task-parallel, runs two callables concurrently
+/// - n_threads(): number of threads (=upper bound on chunk_idx)
 ///
 /// SequentialExecutor is the default, running everything sequentially.
 /// Users can inject a thread-pool-backed executor for actual parallelism.
 template <typename E>
 concept Executor = requires(E e, int n) {
-    // parallel_for: must accept (int, int, callable(int))
     e.parallel_for(0, n, [](int) {});
-    // parallel_invoke: must accept two callables
+    e.parallel_for_chunked(0, n, [](int, int, int) {});
     e.parallel_invoke([] {}, [] {});
-    // n_threads: number of threads available for parallel_for
     { e.n_threads() } -> std::convertible_to<int>;
 };
 
@@ -29,6 +31,11 @@ struct SequentialExecutor {
     void parallel_for(int begin, int end, auto&& f) const {
         for (int i = begin; i < end; ++i)
             f(i);
+    }
+
+    void parallel_for_chunked(int begin, int end, auto&& f) const {
+        if (begin < end)
+            f(begin, end, 0);
     }
 
     void parallel_invoke(auto&& f, auto&& g) const {
