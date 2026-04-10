@@ -3273,9 +3273,8 @@ private:
                                     total_cost += cc;
                                 }
 
-                                if (total_cost < opts_.theta) {
+                                if (total_cost < opts_.theta)
                                     local.push_back({total_cost, total_real_cost, fw, bw, a});
-                                }
                             }
                         }
                     }

@@ -150,9 +150,49 @@ TEST_CASE("StdThreadExecutor parallel_for_chunked covers full range with unique 
     // Every element covered exactly once
     for (int i = 0; i < n; ++i)
         CHECK(seen[i].load() == 1);
-    // Each chunk_idx called at most once
-    for (int c = 0; c < n_threads; ++c)
-        CHECK(chunk_counts[c].load() <= 1);
+    // Each chunk_idx called at most once (unused slots stay 0)
+    int used_chunks = 0;
+    for (int c = 0; c < n_threads; ++c) {
+        int cnt = chunk_counts[c].load();
+        CHECK(cnt <= 1);
+        used_chunks += cnt;
+    }
+    // At least one chunk must have fired (total chunks = used_chunks)
+    CHECK(used_chunks >= 1);
+    // For n=10000 > n_threads, effective chunk count equals n_threads
+    CHECK(used_chunks == std::min(n_threads, n));
+}
+
+TEST_CASE("StdThreadExecutor parallel_for_chunked empty range") {
+    StdThreadExecutor exec;
+    int n_calls = 0;
+    exec.parallel_for_chunked(5, 5, [&](int, int, int) { ++n_calls; });
+    CHECK(n_calls == 0);
+}
+
+TEST_CASE("StdThreadExecutor parallel_for_chunked single-element range") {
+    StdThreadExecutor exec;
+    int n_calls = 0;
+    int c_begin_out = -1;
+    int c_end_out = -1;
+    int c_idx_out = -1;
+    exec.parallel_for_chunked(7, 8, [&](int cb, int ce, int ci) {
+        ++n_calls;
+        c_begin_out = cb;
+        c_end_out = ce;
+        c_idx_out = ci;
+    });
+    CHECK(n_calls == 1);
+    CHECK(c_begin_out == 7);
+    CHECK(c_end_out == 8);
+    CHECK(c_idx_out == 0);
+}
+
+TEST_CASE("SequentialExecutor parallel_for_chunked empty range") {
+    SequentialExecutor exec;
+    int n_calls = 0;
+    exec.parallel_for_chunked(5, 5, [&](int, int, int) { ++n_calls; });
+    CHECK(n_calls == 0);
 }
 
 // ── parallel_sort ──

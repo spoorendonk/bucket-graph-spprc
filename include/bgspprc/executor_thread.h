@@ -161,15 +161,15 @@ struct StdThreadExecutor {
             return;
         }
 
-        int n_chunks = std::min(total_threads, n);
+        // Stack-allocated task array. Cap chunk count at kMaxPoolTasks + 1 so
+        // that every computed chunk is actually dispatched (otherwise the tail
+        // chunks would be silently dropped on very high core counts).
+        static constexpr int kMaxPoolTasks = 128;
+        int n_chunks = std::min({total_threads, n, kMaxPoolTasks + 1});
         int chunk_size = (n + n_chunks - 1) / n_chunks;
 
         // Build tasks for pool threads (chunks 1..n_chunks-1).
-        // Stack-allocated: pool_tasks is bounded by hardware_concurrency.
-        // Capped at kMaxPoolTasks to prevent stack overflow on very high core counts.
         int pool_tasks = n_chunks - 1;
-        static constexpr int kMaxPoolTasks = 128;
-        pool_tasks = std::min(pool_tasks, kMaxPoolTasks);
         std::function<void()> tasks[kMaxPoolTasks];
         for (int c = 0; c < pool_tasks; ++c) {
             int c_begin = begin + (c + 1) * chunk_size;
@@ -183,10 +183,15 @@ struct StdThreadExecutor {
         pool.submit(batch, tasks, pool_tasks);
 
         // Run chunk 0 on the calling thread while pool works.
+        // Exception safety: if f throws, wait for pool before unwinding so
+        // workers don't access the stack-allocated tasks/batch after destruction.
         int c0_end = std::min(begin + chunk_size, end);
-        f(begin, c0_end, 0);
-
-        // Wait for pool threads to finish.
+        try {
+            f(begin, c0_end, 0);
+        } catch (...) {
+            detail::ThreadPool::wait(batch);
+            throw;
+        }
         detail::ThreadPool::wait(batch);
     }
 
