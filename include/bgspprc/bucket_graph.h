@@ -2818,18 +2818,23 @@ private:
         if (fw_lc == 0 && bw_lc == 0)
             return;
         double mu = midpoint_.load(std::memory_order_relaxed);
+        // Post-solve corrective step (fixed magnitude, applied between solves).
+        // See checkpoint_midpoint() for the per-region geometry rationale.
+        constexpr double kPostSolveStep = 0.05;
         if (fw_lc > 1.2 * bw_lc) {
-            midpoint_.store(mu + 0.05 * (resource_max_ub_ - mu), std::memory_order_relaxed);
+            midpoint_.store(mu - kPostSolveStep * (mu - resource_min_lb_),
+                            std::memory_order_relaxed);
         } else if (bw_lc > 1.2 * fw_lc) {
-            midpoint_.store(mu - 0.05 * (mu - resource_min_lb_), std::memory_order_relaxed);
+            midpoint_.store(mu + kPostSolveStep * (resource_max_ub_ - mu),
+                            std::memory_order_relaxed);
         }
     }
 
     /// Intra-solve dynamic midpoint adjustment. Called after each
     /// process_scc() in parallel bidir mode. Reads both atomic label
-    /// counters and adjusts midpoint proportionally to balance work.
-    /// Enforces monotonicity: the midpoint only moves in one direction
-    /// per solve (decided at first adjustment).
+    /// counters and applies a damped corrective shift toward balance —
+    /// allows moves in either direction (no monotonicity lock); kGain
+    /// dampens the per-checkpoint magnitude to avoid oscillation.
     void checkpoint_midpoint() {
         int fw_lc = fw_label_count_.load(std::memory_order_relaxed);
         int bw_lc = bw_label_count_.load(std::memory_order_relaxed);
@@ -2841,45 +2846,37 @@ private:
         // ratio > 0.5 means forward is producing more labels
         // ratio < 0.5 means backward is producing more labels
         // Target: ratio = 0.5 (balanced)
-
-        // Determine desired direction: +1 = shift toward upper bound
-        // (give backward more room), -1 = shift toward lower bound
-        // (give forward more room).
+        //
+        // Fw operates on labels with q[0] <= mid (region [lb, mid]).
+        // Bw operates on labels with q[0] >= mid (region [mid, ub]).
+        // Shift midpoint DOWN → fw region shrinks, bw region grows.
+        // Shift midpoint UP   → fw region grows, bw region shrinks.
+        //
+        // To balance: if fw is producing more, shrink fw's region → shift DOWN.
+        // If bw is producing more, shrink bw's region → shift UP.
         int desired = 0;
         if (ratio > 0.55) {
-            desired = +1;  // fw producing more, shift midpoint up
+            desired = -1;  // fw producing more, shrink fw region → shift down
         } else if (ratio < 0.45) {
-            desired = -1;  // bw producing more, shift midpoint down
+            desired = +1;  // bw producing more, shrink bw region → shift up
         } else {
             return;  // balanced enough, no adjustment needed
         }
 
-        // Monotonicity: lock direction on first adjustment.
-        int current_dir = midpoint_direction_.load(std::memory_order_relaxed);
-        if (current_dir == 0) {
-            // Try to set direction. If another thread set it first, use theirs.
-            if (!midpoint_direction_.compare_exchange_strong(current_dir, desired,
-                                                             std::memory_order_relaxed)) {
-                // current_dir now holds the value set by the other thread
-                if (current_dir != desired)
-                    return;  // wrong direction, skip
-            }
-        } else if (current_dir != desired) {
-            return;  // direction locked in opposite way, skip
-        }
-
-        // Proportional adjustment: shift midpoint by a fraction proportional
-        // to the imbalance. Scale: (ratio - 0.5) gives raw imbalance in
-        // [-0.5, 0.5], multiply by available range to get shift magnitude.
-        // This is more aggressive than the 5% post-solve step but bounded
-        // by the actual imbalance magnitude.
+        // Proportional adjustment: shift midpoint by a damped fraction of
+        // the imbalance magnitude, allowing corrective moves in either
+        // direction (no monotonicity lock — rely on damping to avoid
+        // thrashing). 0.3 caps the worst-case single-step shift to
+        // 0.3 * 0.5 = 15% of the remaining range, empirically stable
+        // on rcspp Type-2 instances without observable oscillation.
         double mu = midpoint_.load(std::memory_order_relaxed);
-        double imbalance = ratio - 0.5;  // in [-0.5, 0.5]
+        constexpr double kCheckpointGain = 0.3;
+        double magnitude = std::abs(ratio - 0.5);  // in [0, 0.5]
         double shift = 0.0;
         if (desired > 0) {
-            shift = imbalance * (resource_max_ub_ - mu);
+            shift = +kCheckpointGain * magnitude * (resource_max_ub_ - mu);
         } else {
-            shift = imbalance * (mu - resource_min_lb_);
+            shift = -kCheckpointGain * magnitude * (mu - resource_min_lb_);
         }
         double new_mu = mu + shift;
         // Clamp to valid range
@@ -2949,7 +2946,6 @@ private:
             // Reset dynamic midpoint adjustment state for this solve.
             fw_label_count_.store(0, std::memory_order_relaxed);
             bw_label_count_.store(0, std::memory_order_relaxed);
-            midpoint_direction_.store(0, std::memory_order_relaxed);
 
             // Create initial labels before spawning threads (pool_for needs
             // parallel_ = false during seed creation on main thread for fw,
@@ -3597,10 +3593,6 @@ private:
     // adjust_midpoint().
     alignas(64) std::atomic<int> fw_label_count_{0};
     alignas(64) std::atomic<int> bw_label_count_{0};
-    // Monotonicity direction: 0 = undecided, +1 = toward upper bound,
-    // -1 = toward lower bound.  Set on first intra-solve adjustment
-    // and locked for the remainder of the solve.
-    alignas(64) std::atomic<int> midpoint_direction_{0};
     // Cached resource bounds for midpoint adjustment (set before labeling).
     double resource_min_lb_ = 0.0;
     double resource_max_ub_ = 0.0;

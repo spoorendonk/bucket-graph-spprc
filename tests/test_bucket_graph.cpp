@@ -1992,7 +1992,9 @@ TEST_CASE("Midpoint adjusts on forward-heavy imbalance") {
     // TW: [0,10] for all. Midpoint = 5.
     // Forward: labels at 1,2,3,4 (q=1), 5 (q=2), 6 (q=10) → ~9 labels
     // Backward: 6→5 lands at q=2 < midpoint → only 1 label inserted
-    // Ratio ~9:1 → triggers 5% shift toward max.
+    // Ratio ~9:1 → triggers shift TOWARD lower bound to shrink fw region.
+    // (Fw heavy means fw has too much territory; shrinking its region
+    // brings the system toward balance.)
     int from_arr[9] = {0, 0, 0, 0, 1, 2, 3, 4, 5};
     int to_arr[9] = {1, 2, 3, 4, 5, 5, 5, 5, 6};
     double cost_arr[9] = {1, 2, 3, 4, 1, 1, 1, 1, 1};
@@ -2025,13 +2027,13 @@ TEST_CASE("Midpoint adjusts on forward-heavy imbalance") {
 
     bg.solve();
     double mid1 = bg.midpoint();
-    // First solve: initializes to 5.0, then adjusts upward (fw >> bw)
-    CHECK(mid1 > 5.0);
+    // First solve: initializes to 5.0, then adjusts downward (fw >> bw → shrink fw)
+    CHECK(mid1 < 5.0);
 
     bg.solve();
     double mid2 = bg.midpoint();
-    // Second solve: should shift further upward
-    CHECK(mid2 > mid1);
+    // Second solve: should shift further downward
+    CHECK(mid2 < mid1);
 }
 
 TEST_CASE("Midpoint resets on build") {
@@ -2901,7 +2903,8 @@ TEST_CASE("Dynamic midpoint: midpoint adjusts under imbalance") {
 
     // After solve, midpoint should be initialized (even if not adjusted)
     // The initial midpoint is (min_lb + max_ub) / 2 = (0 + 20) / 2 = 10
-    // After adjust_midpoint, if fw_lc > 1.2 * bw_lc, it shifts up.
+    // After adjust_midpoint, if fw_lc > 1.2 * bw_lc it shifts down toward
+    // the lower bound to shrink fw's region; bw-heavy shifts up.
     // We verify the result is still correct regardless.
     CHECK(paths[0].vertices.front() == 0);
     CHECK(paths[0].vertices.back() == 6);
