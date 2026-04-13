@@ -76,6 +76,11 @@ struct Result {
     int64_t n_labels_created = 0;
     int64_t n_dominance_checks = 0;
     int64_t n_non_dominated = 0;
+    // Per-direction counters (fw / bw). bw is 0 for mono.
+    int64_t n_dom_fw = 0;
+    int64_t n_dom_bw = 0;
+    int64_t n_nondom_fw = 0;
+    int64_t n_nondom_bw = 0;
     int n_fixed_buckets = 0;
     int64_t n_eliminated_arcs = 0;
     std::size_t label_state_bytes = 0;
@@ -111,6 +116,10 @@ void collect_stats(const Solver<P, Exec>& solver, Result& r) {
     r.n_labels_created = solver.labels_created();
     r.n_dominance_checks = solver.dominance_checks();
     r.n_non_dominated = solver.non_dominated_labels();
+    r.n_dom_fw = solver.dominance_checks(Direction::Forward);
+    r.n_dom_bw = solver.dominance_checks(Direction::Backward);
+    r.n_nondom_fw = solver.non_dominated_labels(Direction::Forward);
+    r.n_nondom_bw = solver.non_dominated_labels(Direction::Backward);
     r.n_fixed_buckets = solver.n_fixed_buckets();
     r.n_eliminated_arcs = solver.eliminated_bucket_arcs();
     r.label_state_bytes = Solver<P, Exec>::label_state_size();
@@ -353,7 +362,9 @@ static void print_csv_header() {
         "name,type,n_verts,n_arcs,theta,cost,n_paths,ms,"
         "n_buckets,n_labels_created,n_dominance_checks,"
         "n_non_dominated,n_fixed_buckets,n_eliminated_arcs,"
-        "label_state_bytes\n");
+        "label_state_bytes,"
+        "n_dominance_checks_fw,n_dominance_checks_bw,"
+        "n_non_dominated_fw,n_non_dominated_bw\n");
 }
 
 static void print_result(const Result& r, const Options& opts) {
@@ -363,11 +374,14 @@ static void print_result(const Result& r, const Options& opts) {
     if (opts.csv) {
         std::printf(
             "%s,%s,%d,%d,%.3g,%.3f,%d,%.1f,"
-            "%d,%lld,%lld,%lld,%d,%lld,%zu\n",
+            "%d,%lld,%lld,%lld,%d,%lld,%zu,"
+            "%lld,%lld,%lld,%lld\n",
             r.name.c_str(), r.type.c_str(), r.n_verts, r.n_arcs, r.theta, r.cost, r.n_paths, r.ms,
             r.n_buckets, static_cast<long long>(r.n_labels_created),
             static_cast<long long>(r.n_dominance_checks), static_cast<long long>(r.n_non_dominated),
-            r.n_fixed_buckets, static_cast<long long>(r.n_eliminated_arcs), r.label_state_bytes);
+            r.n_fixed_buckets, static_cast<long long>(r.n_eliminated_arcs), r.label_state_bytes,
+            static_cast<long long>(r.n_dom_fw), static_cast<long long>(r.n_dom_bw),
+            static_cast<long long>(r.n_nondom_fw), static_cast<long long>(r.n_nondom_bw));
         return;
     }
 
@@ -387,6 +401,11 @@ static void print_result(const Result& r, const Options& opts) {
             r.n_buckets, static_cast<long long>(r.n_labels_created),
             static_cast<long long>(r.n_dominance_checks),
             static_cast<long long>(r.n_non_dominated));
+        std::printf(
+            "  n_dominance_checks_fw=%lld  n_dominance_checks_bw=%lld  "
+            "n_non_dominated_fw=%lld  n_non_dominated_bw=%lld\n",
+            static_cast<long long>(r.n_dom_fw), static_cast<long long>(r.n_dom_bw),
+            static_cast<long long>(r.n_nondom_fw), static_cast<long long>(r.n_nondom_bw));
         std::printf(
             "  n_fixed_buckets=%d  n_eliminated_arcs=%lld  "
             "label_state_bytes=%zu\n",

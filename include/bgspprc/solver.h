@@ -111,9 +111,11 @@ public:
 
     /// Dominance comparisons performed in the last solve.
     int64_t dominance_checks() const { return bg_.dominance_checks(); }
+    int64_t dominance_checks(Direction d) const { return bg_.dominance_checks(d); }
 
     /// Labels surviving dominance in the last solve.
     int64_t non_dominated_labels() const { return bg_.non_dominated_labels(); }
+    int64_t non_dominated_labels(Direction d) const { return bg_.non_dominated_labels(d); }
 
     /// Bucket arcs eliminated since last build.
     int64_t eliminated_bucket_arcs() const { return bg_.eliminated_bucket_arcs(); }

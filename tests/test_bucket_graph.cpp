@@ -2914,6 +2914,104 @@ TEST_CASE("Dynamic midpoint: midpoint adjusts under imbalance") {
     CHECK(post_mid <= 20.0);
 }
 
+TEST_CASE("Dynamic midpoint: parallel checkpoint smoke test") {
+    // Smoke test for the parallel-bidir checkpoint_midpoint() path. Exercises
+    // a layered DAG large enough to cross the 100-label activation threshold,
+    // verifying (a) the solve returns a correct path, (b) neither direction
+    // collapses to a trivial label count, and (c) the midpoint stays strictly
+    // inside the resource range.
+    //
+    // This is a coarse smoke test — it catches catastrophic regressions
+    // (starvation, midpoint pinned to a boundary, no paths) but will not
+    // detect a subtle sign flip in isolation. The empirical validation for
+    // checkpoint_midpoint() correctness lives in the rcspp benchmark results.
+    const std::vector<int> layer_widths = {6, 6, 6, 6, 6, 6};
+    const int n_layers = static_cast<int>(layer_widths.size());
+    int n_verts = 2;  // source + sink
+    for (int w : layer_widths)
+        n_verts += w;
+    const int source = 0;
+    const int sink = n_verts - 1;
+
+    // Precompute per-layer vertex id offsets.
+    std::vector<int> layer_start(n_layers);
+    layer_start[0] = 1;
+    for (int i = 1; i < n_layers; ++i) {
+        layer_start[i] = layer_start[i - 1] + layer_widths[i - 1];
+    }
+
+    std::vector<int> from;
+    std::vector<int> to;
+    std::vector<double> cost;
+    std::vector<double> time_d;
+    auto add_arc = [&](int u, int v, double c, double t) {
+        from.push_back(u);
+        to.push_back(v);
+        cost.push_back(c);
+        time_d.push_back(t);
+    };
+    for (int j = 0; j < layer_widths[0]; ++j) {
+        add_arc(source, layer_start[0] + j, 1.0 + j * 0.5, 1.0);
+    }
+    for (int i = 0; i < n_layers - 1; ++i) {
+        for (int a = 0; a < layer_widths[i]; ++a) {
+            for (int b = 0; b < layer_widths[i + 1]; ++b) {
+                int u = layer_start[i] + a;
+                int v = layer_start[i + 1] + b;
+                add_arc(u, v, 1.0 + ((a + b) % 4) * 0.5, 0.5 + ((a + 2 * b) % 5) * 0.3);
+            }
+        }
+    }
+    for (int j = 0; j < layer_widths[n_layers - 1]; ++j) {
+        add_arc(layer_start[n_layers - 1] + j, sink, 1.0, 1.0);
+    }
+    const int n_arcs = static_cast<int>(from.size());
+
+    // Uniform TWs wide enough to let both directions propagate fully.
+    std::vector<double> tw_lb(n_verts, 0.0);
+    std::vector<double> tw_ub(n_verts, 20.0);
+
+    const double* arc_res[] = {time_d.data()};
+    const double* v_lb[] = {tw_lb.data()};
+    const double* v_ub[] = {tw_ub.data()};
+
+    ProblemView pv;
+    pv.n_vertices = n_verts;
+    pv.source = source;
+    pv.sink = sink;
+    pv.n_arcs = n_arcs;
+    pv.arc_from = from.data();
+    pv.arc_to = to.data();
+    pv.arc_base_cost = cost.data();
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    BucketGraph<EmptyPack, StdThreadExecutor> bg(
+        pv, EmptyPack{},
+        {.bucket_steps = {1.0, 1.0}, .theta = 1e9, .bidirectional = true, .stage = Stage::Exact});
+    bg.build();
+
+    auto paths = bg.solve();
+    REQUIRE(!paths.empty());
+    CHECK(paths[0].vertices.front() == source);
+    CHECK(paths[0].vertices.back() == sink);
+
+    int64_t fw_lbl = bg.non_dominated_labels(Direction::Forward);
+    int64_t bw_lbl = bg.non_dominated_labels(Direction::Backward);
+
+    // Neither direction collapsed to a trivial label count.
+    CHECK(fw_lbl > 20);
+    CHECK(bw_lbl > 20);
+
+    // Midpoint must stay inside the resource range.
+    double post_mid = bg.midpoint();
+    CHECK(post_mid >= 0.0);
+    CHECK(post_mid <= 20.0);
+}
+
 // ── BucketLabelPool edge case ──
 
 TEST_CASE("BucketLabelPool: resize to zero buckets") {

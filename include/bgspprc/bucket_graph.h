@@ -285,6 +285,12 @@ public:
     int64_t dominance_checks() const { return dominance_checks_; }
     int64_t non_dominated_labels() const { return non_dominated_labels_; }
 
+    /// Per-direction counter accessors (for profiling fw/bw skew).
+    /// Note: in Exact stage these are equivalent to per-direction
+    /// non_dominated_labels (incremented at the same insert sites).
+    int64_t dominance_checks(Direction d) const { return counters_for(d).dominance_checks; }
+    int64_t non_dominated_labels(Direction d) const { return counters_for(d).non_dominated_labels; }
+
     /// Total labels allocated by the pool(s) during the last solve.
     int64_t labels_created() const {
         return static_cast<int64_t>(pool_.count() + bw_pool_.count());
