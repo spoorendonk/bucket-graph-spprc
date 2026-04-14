@@ -1719,6 +1719,40 @@ private:
             const double existing_q0 = (n_main_ >= 1) ? bl.q0[target_bi][ei] : 0.0;
             const double existing_q1 = (n_main_ >= 2) ? bl.q1[target_bi][ei] : 0.0;
 
+            // Scalar form of the per-j filter (q0, q1, ng). Used by the #else
+            // fallback and by the SIMD path's scalar tails so the semantics
+            // live in exactly one place.
+            auto scalar_pass = [&](int j) -> std::pair<bool, bool> {
+                bool a_ok = true, b_ok = true;
+                if (n_main_ >= 1) {
+                    if (dir == Direction::Forward) {
+                        a_ok = a_ok && (batch_q0[j] >= existing_q0 - EPS);
+                        b_ok = b_ok && (batch_q0[j] <= existing_q0 + EPS);
+                    } else {
+                        a_ok = a_ok && (batch_q0[j] <= existing_q0 + EPS);
+                        b_ok = b_ok && (batch_q0[j] >= existing_q0 - EPS);
+                    }
+                }
+                if (n_main_ >= 2) {
+                    if (dir == Direction::Forward) {
+                        a_ok = a_ok && (batch_q1[j] >= existing_q1 - EPS);
+                        b_ok = b_ok && (batch_q1[j] <= existing_q1 + EPS);
+                    } else {
+                        a_ok = a_ok && (batch_q1[j] <= existing_q1 + EPS);
+                        b_ok = b_ok && (batch_q1[j] >= existing_q1 - EPS);
+                    }
+                }
+                if constexpr (has_ng_) {
+                    if (check_ng) {
+                        if (existing_ng & ~batch_ng[j])
+                            a_ok = false;
+                        if (batch_ng[j] & ~existing_ng)
+                            b_ok = false;
+                    }
+                }
+                return {a_ok, b_ok};
+            };
+
 #ifdef BGSPPRC_HAS_SIMD
             {
                 namespace stdx = std::experimental;
@@ -1761,26 +1795,11 @@ private:
                         pass_b[j + k] = mask_b[k] ? 1u : 0u;
                     }
                 }
+                // Scalar tail covers any j that didn't fit in a full SIMD
+                // chunk. Applying ng here is idempotent with the ng SIMD
+                // pass below, so we get to reuse scalar_pass unchanged.
                 for (; j < batch_size; ++j) {
-                    bool a_ok = true, b_ok = true;
-                    if (n_main_ >= 1) {
-                        if (dir == Direction::Forward) {
-                            a_ok = a_ok && (batch_q0[j] >= existing_q0 - EPS);
-                            b_ok = b_ok && (batch_q0[j] <= existing_q0 + EPS);
-                        } else {
-                            a_ok = a_ok && (batch_q0[j] <= existing_q0 + EPS);
-                            b_ok = b_ok && (batch_q0[j] >= existing_q0 - EPS);
-                        }
-                    }
-                    if (n_main_ >= 2) {
-                        if (dir == Direction::Forward) {
-                            a_ok = a_ok && (batch_q1[j] >= existing_q1 - EPS);
-                            b_ok = b_ok && (batch_q1[j] <= existing_q1 + EPS);
-                        } else {
-                            a_ok = a_ok && (batch_q1[j] <= existing_q1 + EPS);
-                            b_ok = b_ok && (batch_q1[j] >= existing_q1 - EPS);
-                        }
-                    }
+                    auto [a_ok, b_ok] = scalar_pass(j);
                     pass_a[j] = a_ok ? 1u : 0u;
                     pass_b[j] = b_ok ? 1u : 0u;
                 }
@@ -1818,33 +1837,7 @@ private:
             }
 #else
             for (int j = 0; j < batch_size; ++j) {
-                bool a_ok = true, b_ok = true;
-                if (n_main_ >= 1) {
-                    if (dir == Direction::Forward) {
-                        a_ok = a_ok && (batch_q0[j] >= existing_q0 - EPS);
-                        b_ok = b_ok && (batch_q0[j] <= existing_q0 + EPS);
-                    } else {
-                        a_ok = a_ok && (batch_q0[j] <= existing_q0 + EPS);
-                        b_ok = b_ok && (batch_q0[j] >= existing_q0 - EPS);
-                    }
-                }
-                if (n_main_ >= 2) {
-                    if (dir == Direction::Forward) {
-                        a_ok = a_ok && (batch_q1[j] >= existing_q1 - EPS);
-                        b_ok = b_ok && (batch_q1[j] <= existing_q1 + EPS);
-                    } else {
-                        a_ok = a_ok && (batch_q1[j] <= existing_q1 + EPS);
-                        b_ok = b_ok && (batch_q1[j] >= existing_q1 - EPS);
-                    }
-                }
-                if constexpr (has_ng_) {
-                    if (check_ng) {
-                        if (existing_ng & ~batch_ng[j])
-                            a_ok = false;
-                        if (batch_ng[j] & ~existing_ng)
-                            b_ok = false;
-                    }
-                }
+                auto [a_ok, b_ok] = scalar_pass(j);
                 pass_a[j] = a_ok ? 1u : 0u;
                 pass_b[j] = b_ok ? 1u : 0u;
             }
@@ -3380,15 +3373,41 @@ private:
                         // must satisfy q_bw >= q_thr_forward[r], which rearranges to
                         // bw->q[r] <= q_thr_mirror[r] = lb + ub - q_thr_forward[r].
                         double q_thr_forward[2] = {0.0, 0.0};
+#ifdef BGSPPRC_HAS_SIMD
                         double q_thr_mirror[2] = {0.0, 0.0};
+#endif
                         for (int r = 0; r < n_main_; ++r) {
                             double fw_after_arc = fw->q[r] + pv_.arc_resource[r][a];
                             fw_after_arc = std::max(fw_after_arc, pv_.vertex_lb[r][j]);
                             q_thr_forward[r] = fw_after_arc;
+#ifdef BGSPPRC_HAS_SIMD
                             q_thr_mirror[r] =
                                 pv_.vertex_lb[r][j] + pv_.vertex_ub[r][j] - fw_after_arc;
+#endif
                         }
                         const double break_thr = opts_.theta - fw_arc - min_dom_cost_;
+
+                        // Unified emission path for any (bw, bw_cost) pair that has
+                        // already passed feasibility. Keeps the SIMD per-lane loop
+                        // and the scalar tail from drifting.
+                        auto try_emit_concat = [&](const Label<Pack>* bw, double bw_cost) {
+                            double total_cost = fw_arc + bw_cost;
+                            double total_real_cost = fw->real_cost + bw->real_cost + arc_real_cost;
+                            if constexpr (Pack::size > 0) {
+                                auto [ext_states, ext_cost] = pack_.extend_along_arc(
+                                    Direction::Forward, fw->resource_states, a);
+                                if (ext_cost >= INF)
+                                    return;
+                                total_cost += ext_cost;
+                                double cc = pack_.concatenation_cost(sym, j, ext_states,
+                                                                     bw->resource_states);
+                                if (cc >= INF)
+                                    return;
+                                total_cost += cc;
+                            }
+                            if (total_cost < opts_.theta)
+                                local.push_back({total_cost, total_real_cost, fw, bw, a});
+                        };
 
                         for (int bbi = bw_start; bbi < bw_end; ++bbi) {
                             // Per-bw-bucket c_best skip (bw_c_best is populated from
@@ -3398,8 +3417,10 @@ private:
 
                             auto& bw_costs =
                                 opts_.symmetric ? fw_labels_.costs[bbi] : bw_labels_.costs[bbi];
+#ifdef BGSPPRC_HAS_SIMD
                             auto& bw_q0 = opts_.symmetric ? fw_labels_.q0[bbi] : bw_labels_.q0[bbi];
                             auto& bw_q1 = opts_.symmetric ? fw_labels_.q1[bbi] : bw_labels_.q1[bbi];
+#endif
                             auto& bw_labels =
                                 opts_.symmetric ? fw_labels_.labels[bbi] : bw_labels_.labels[bbi];
                             const std::size_t n_bw = bw_labels.size();
@@ -3456,23 +3477,7 @@ private:
                                     const auto* bw = bw_labels[li + k];
                                     if (bw->dominated)
                                         continue;
-                                    double total_cost = fw_arc + bw_costs[li + k];
-                                    double total_real_cost =
-                                        fw->real_cost + bw->real_cost + arc_real_cost;
-                                    if constexpr (Pack::size > 0) {
-                                        auto [ext_states, ext_cost] = pack_.extend_along_arc(
-                                            Direction::Forward, fw->resource_states, a);
-                                        if (ext_cost >= INF)
-                                            continue;
-                                        total_cost += ext_cost;
-                                        double cc = pack_.concatenation_cost(sym, j, ext_states,
-                                                                             bw->resource_states);
-                                        if (cc >= INF)
-                                            continue;
-                                        total_cost += cc;
-                                    }
-                                    if (total_cost < opts_.theta)
-                                        local.push_back({total_cost, total_real_cost, fw, bw, a});
+                                    try_emit_concat(bw, bw_costs[li + k]);
                                 }
                             }
 #endif
@@ -3482,8 +3487,7 @@ private:
                                 if (li + 1 < n_bw)
                                     BGSPPRC_PREFETCH_R(bw_labels[li + 1]);
                                 // Sorted bw cost break
-                                double total_cost = fw_arc + bw_costs[li];
-                                if (total_cost + min_dom_cost_ >= opts_.theta)
+                                if (bw_costs[li] >= break_thr)
                                     break;
 
                                 const auto* bw = bw_labels[li];
@@ -3503,25 +3507,8 @@ private:
                                 }
                                 if (!feasible)
                                     continue;
-                                double total_real_cost =
-                                    fw->real_cost + bw->real_cost + arc_real_cost;
 
-                                if constexpr (Pack::size > 0) {
-                                    auto [ext_states, ext_cost] = pack_.extend_along_arc(
-                                        Direction::Forward, fw->resource_states, a);
-                                    if (ext_cost >= INF)
-                                        continue;
-                                    total_cost += ext_cost;
-
-                                    double cc = pack_.concatenation_cost(sym, j, ext_states,
-                                                                         bw->resource_states);
-                                    if (cc >= INF)
-                                        continue;
-                                    total_cost += cc;
-                                }
-
-                                if (total_cost < opts_.theta)
-                                    local.push_back({total_cost, total_real_cost, fw, bw, a});
+                                try_emit_concat(bw, bw_costs[li]);
                             }
                         }
                     }

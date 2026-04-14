@@ -14,6 +14,16 @@ if(BGSPPRC_DISABLE_SIMD)
     target_compile_definitions(bgspprc INTERFACE BGSPPRC_DISABLE_SIMD)
 endif()
 
+# Detect -march=native once at top level so both CLI and test targets can
+# opt in. Not propagated through the INTERFACE library to avoid forcing a
+# host-specific ISA on downstream consumers.
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag(-march=native BGSPPRC_HAS_MARCH_NATIVE)
+set(BGSPPRC_PROJECT_FLAGS "")
+if(BGSPPRC_HAS_MARCH_NATIVE)
+    list(APPEND BGSPPRC_PROJECT_FLAGS -march=native)
+endif()
+
 # CLI solver (opt-in, off by default when consumed as submodule)
 option(BGSPPRC_BUILD_CLI "Build bgspprc-solve CLI" ${PROJECT_IS_TOP_LEVEL})
 
@@ -22,7 +32,8 @@ if(BGSPPRC_BUILD_CLI)
     target_link_libraries(bgspprc-solve PRIVATE bgspprc)
     target_include_directories(bgspprc-solve PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/cli)
-    target_compile_options(bgspprc-solve PRIVATE -Wall -Wextra -Wpedantic -O2)
+    target_compile_options(bgspprc-solve PRIVATE
+        -Wall -Wextra -Wpedantic -O2 ${BGSPPRC_PROJECT_FLAGS})
 endif()
 
 # Tests (opt-in, off by default when consumed as submodule)
@@ -39,22 +50,26 @@ if(BGSPPRC_BUILD_TESTS)
     enable_testing()
 
     # Compiler flags for project targets only (not propagated to consumers)
-    include(CheckCXXCompilerFlag)
-    check_cxx_compiler_flag(-march=native BGSPPRC_HAS_MARCH_NATIVE)
-    add_compile_options(-Wall -Wextra -Wpedantic -O2)
-    if(BGSPPRC_HAS_MARCH_NATIVE)
-        add_compile_options(-march=native)
-    endif()
+    add_compile_options(-Wall -Wextra -Wpedantic -O2 ${BGSPPRC_PROJECT_FLAGS})
 
-    add_executable(test_runner
+    set(BGSPPRC_TEST_SOURCES
         tests/test_main.cpp
         tests/test_executor.cpp
         tests/test_resource.cpp
         tests/test_bucket_graph.cpp
         tests/test_small_instance.cpp
         tests/test_stress.cpp)
+
+    add_executable(test_runner ${BGSPPRC_TEST_SOURCES})
     target_link_libraries(test_runner PRIVATE bgspprc doctest::doctest)
     add_test(NAME unit_tests COMMAND test_runner)
+
+    # Parity build: same sources, SIMD code paths disabled. Catches a class
+    # of bugs where the SIMD lowering diverges from its scalar fallback.
+    add_executable(test_runner_nosimd ${BGSPPRC_TEST_SOURCES})
+    target_link_libraries(test_runner_nosimd PRIVATE bgspprc doctest::doctest)
+    target_compile_definitions(test_runner_nosimd PRIVATE BGSPPRC_DISABLE_SIMD)
+    add_test(NAME unit_tests_nosimd COMMAND test_runner_nosimd)
 
     if(BGSPPRC_BUILD_CLI)
         add_executable(test_cli tests/test_main.cpp tests/test_instance_io.cpp)
