@@ -1697,34 +1697,156 @@ private:
             if constexpr (has_r1c_)
                 existing_r1c = bl.r1c_bits[target_bi][ei];
 
+            // Precompute SoA pre-filter pass masks for both directions (a) and (b).
+            // Each entry is 1 if the SoA filters allow batch[j] to be a candidate.
+            // The scalar dispatch below still checks batch[j]->dominated and
+            // re-validates cost (which can change as the loop progresses for (a)).
+            uint8_t pass_a[128] = {};
+            uint8_t pass_b[128] = {};
+            const double existing_q0 = (n_main_ >= 1) ? bl.q0[target_bi][ei] : 0.0;
+            const double existing_q1 = (n_main_ >= 2) ? bl.q1[target_bi][ei] : 0.0;
+
+#ifdef BGSPPRC_HAS_SIMD
+            {
+                namespace stdx = std::experimental;
+                using simd_d = stdx::native_simd<double>;
+                constexpr std::size_t W = simd_d::size();
+
+                const simd_d eq0_fw(existing_q0 + EPS);
+                const simd_d eq0_bw(existing_q0 - EPS);
+                const simd_d eq1_fw(existing_q1 + EPS);
+                const simd_d eq1_bw(existing_q1 - EPS);
+
+                int j = 0;
+                for (; j + static_cast<int>(W) <= batch_size; j += static_cast<int>(W)) {
+                    auto mask_a = stdx::native_simd_mask<double>(true);
+                    auto mask_b = stdx::native_simd_mask<double>(true);
+                    if (n_main_ >= 1) {
+                        simd_d q0_vec(batch_q0 + j, stdx::element_aligned);
+                        if (dir == Direction::Forward) {
+                            // (a) existing dominates batch: existing_q0 <= batch_q0
+                            mask_a = mask_a & (q0_vec >= eq0_bw);
+                            // (b) batch dominates existing: batch_q0 <= existing_q0
+                            mask_b = mask_b & (q0_vec <= eq0_fw);
+                        } else {
+                            mask_a = mask_a & (q0_vec <= eq0_fw);
+                            mask_b = mask_b & (q0_vec >= eq0_bw);
+                        }
+                    }
+                    if (n_main_ >= 2) {
+                        simd_d q1_vec(batch_q1 + j, stdx::element_aligned);
+                        if (dir == Direction::Forward) {
+                            mask_a = mask_a & (q1_vec >= eq1_bw);
+                            mask_b = mask_b & (q1_vec <= eq1_fw);
+                        } else {
+                            mask_a = mask_a & (q1_vec <= eq1_fw);
+                            mask_b = mask_b & (q1_vec >= eq1_bw);
+                        }
+                    }
+                    for (std::size_t k = 0; k < W; ++k) {
+                        pass_a[j + k] = mask_a[k] ? 1u : 0u;
+                        pass_b[j + k] = mask_b[k] ? 1u : 0u;
+                    }
+                }
+                for (; j < batch_size; ++j) {
+                    bool a_ok = true, b_ok = true;
+                    if (n_main_ >= 1) {
+                        if (dir == Direction::Forward) {
+                            a_ok = a_ok && (batch_q0[j] >= existing_q0 - EPS);
+                            b_ok = b_ok && (batch_q0[j] <= existing_q0 + EPS);
+                        } else {
+                            a_ok = a_ok && (batch_q0[j] <= existing_q0 + EPS);
+                            b_ok = b_ok && (batch_q0[j] >= existing_q0 - EPS);
+                        }
+                    }
+                    if (n_main_ >= 2) {
+                        if (dir == Direction::Forward) {
+                            a_ok = a_ok && (batch_q1[j] >= existing_q1 - EPS);
+                            b_ok = b_ok && (batch_q1[j] <= existing_q1 + EPS);
+                        } else {
+                            a_ok = a_ok && (batch_q1[j] <= existing_q1 + EPS);
+                            b_ok = b_ok && (batch_q1[j] >= existing_q1 - EPS);
+                        }
+                    }
+                    pass_a[j] = a_ok ? 1u : 0u;
+                    pass_b[j] = b_ok ? 1u : 0u;
+                }
+
+                // ng-bit subset filter: existing_ng & ~batch_ng[j] == 0 for (a),
+                // batch_ng[j] & ~existing_ng == 0 for (b). Process 8 uint32 per
+                // 256-bit op via std::experimental::simd<uint32_t>.
+                if constexpr (has_ng_) {
+                    if (check_ng) {
+                        using simd_u32 = stdx::native_simd<uint32_t>;
+                        constexpr std::size_t WU = simd_u32::size();
+                        const simd_u32 eng_vec(existing_ng);
+                        int k = 0;
+                        for (; k + static_cast<int>(WU) <= batch_size; k += static_cast<int>(WU)) {
+                            simd_u32 bng_vec(batch_ng + k, stdx::element_aligned);
+                            // (a) requires (existing_ng & ~bng) == 0
+                            auto a_zero = (eng_vec & ~bng_vec) == simd_u32(0u);
+                            // (b) requires (bng & ~existing_ng) == 0
+                            auto b_zero = (bng_vec & ~eng_vec) == simd_u32(0u);
+                            for (std::size_t kk = 0; kk < WU; ++kk) {
+                                if (!a_zero[kk])
+                                    pass_a[k + kk] = 0;
+                                if (!b_zero[kk])
+                                    pass_b[k + kk] = 0;
+                            }
+                        }
+                        for (; k < batch_size; ++k) {
+                            if (existing_ng & ~batch_ng[k])
+                                pass_a[k] = 0;
+                            if (batch_ng[k] & ~existing_ng)
+                                pass_b[k] = 0;
+                        }
+                    }
+                }
+            }
+#else
+            for (int j = 0; j < batch_size; ++j) {
+                bool a_ok = true, b_ok = true;
+                if (n_main_ >= 1) {
+                    if (dir == Direction::Forward) {
+                        a_ok = a_ok && (batch_q0[j] >= existing_q0 - EPS);
+                        b_ok = b_ok && (batch_q0[j] <= existing_q0 + EPS);
+                    } else {
+                        a_ok = a_ok && (batch_q0[j] <= existing_q0 + EPS);
+                        b_ok = b_ok && (batch_q0[j] >= existing_q0 - EPS);
+                    }
+                }
+                if (n_main_ >= 2) {
+                    if (dir == Direction::Forward) {
+                        a_ok = a_ok && (batch_q1[j] >= existing_q1 - EPS);
+                        b_ok = b_ok && (batch_q1[j] <= existing_q1 + EPS);
+                    } else {
+                        a_ok = a_ok && (batch_q1[j] <= existing_q1 + EPS);
+                        b_ok = b_ok && (batch_q1[j] >= existing_q1 - EPS);
+                    }
+                }
+                if constexpr (has_ng_) {
+                    if (check_ng) {
+                        if (existing_ng & ~batch_ng[j])
+                            a_ok = false;
+                        if (batch_ng[j] & ~existing_ng)
+                            b_ok = false;
+                    }
+                }
+                pass_a[j] = a_ok ? 1u : 0u;
+                pass_b[j] = b_ok ? 1u : 0u;
+            }
+#endif
+
             // (a) Can existing dominate any survivor?
             //     Early-exit: ec + min_dom_cost > max_survivor_cost + EPS
             if (ec + min_dom_cost_ <= max_survivor_cost + EPS && !existing->dominated) {
                 for (int j = 0; j < batch_size; ++j) {
+                    if (!pass_a[j])
+                        continue;
                     if (batch[j]->dominated)
                         continue;
                     if (ec + min_dom_cost_ > batch[j]->cost + EPS)
                         continue;
-                    // SoA q0/q1 pre-filter: existing can only dominate batch[j]
-                    // if existing's resource <= batch's resource (forward) or >= (backward).
-                    if (n_main_ >= 1) {
-                        if (dir == Direction::Forward && bl.q0[target_bi][ei] > batch_q0[j] + EPS)
-                            continue;
-                        if (dir == Direction::Backward && bl.q0[target_bi][ei] < batch_q0[j] - EPS)
-                            continue;
-                    }
-                    if (n_main_ >= 2) {
-                        if (dir == Direction::Forward && bl.q1[target_bi][ei] > batch_q1[j] + EPS)
-                            continue;
-                        if (dir == Direction::Backward && bl.q1[target_bi][ei] < batch_q1[j] - EPS)
-                            continue;
-                    }
-                    // SoA ng filter: existing_ng & ~batch_ng[j] means existing
-                    // has ng bits that batch[j] doesn't -- can't dominate.
-                    if constexpr (has_ng_) {
-                        if (check_ng && (existing_ng & ~batch_ng[j]))
-                            continue;
-                    }
                     if constexpr (has_r1c_) {
                         if (check_r1c) {
                             uint64_t disadvantage = batch_r1c[j] & ~existing_r1c;
@@ -1746,30 +1868,12 @@ private:
                 continue;
 
             for (int j = 0; j < batch_size; ++j) {
+                if (!pass_b[j])
+                    continue;
                 if (batch[j]->dominated)
                     continue;
                 if (batch[j]->cost + min_dom_cost_ > ec + EPS)
                     continue;
-                // SoA q0/q1 pre-filter (reversed): batch[j] can only dominate
-                // existing if batch's resource <= existing's resource (forward) or >= (backward).
-                if (n_main_ >= 1) {
-                    if (dir == Direction::Forward && batch_q0[j] > bl.q0[target_bi][ei] + EPS)
-                        continue;
-                    if (dir == Direction::Backward && batch_q0[j] < bl.q0[target_bi][ei] - EPS)
-                        continue;
-                }
-                if (n_main_ >= 2) {
-                    if (dir == Direction::Forward && batch_q1[j] > bl.q1[target_bi][ei] + EPS)
-                        continue;
-                    if (dir == Direction::Backward && batch_q1[j] < bl.q1[target_bi][ei] - EPS)
-                        continue;
-                }
-                // Reversed ng: batch dominates existing only if batch's ng
-                // is a subset of existing's ng.
-                if constexpr (has_ng_) {
-                    if (check_ng && (batch_ng[j] & ~existing_ng))
-                        continue;
-                }
                 if constexpr (has_r1c_) {
                     if (check_r1c) {
                         uint64_t disadvantage = existing_r1c & ~batch_r1c[j];
