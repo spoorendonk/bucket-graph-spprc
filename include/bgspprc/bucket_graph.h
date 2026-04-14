@@ -136,9 +136,10 @@ public:
         : pv_(pv), pack_(std::move(pack)), opts_(opts), executor_(std::move(executor)) {
         if (opts_.symmetric) {
             opts_.bidirectional = true;
-            if constexpr (Pack::size > 0)
+            if constexpr (Pack::size > 0) {
                 assert(pack_.symmetric() &&
                        "symmetric mode requires all resources to be symmetric");
+            }
         }
         adj_.build(pv_);
         n_main_ = std::min(pv_.n_main_resources, 2);
@@ -151,8 +152,9 @@ public:
                 min_dom_cost_excl_r1c_ = min_dom_cost_;
             }
         }
-        for (int r = 0; r < n_main_; ++r)
+        for (int r = 0; r < n_main_; ++r) {
             main_nondisposable_[r] = pv_.resource_nondisposable && pv_.resource_nondisposable[r];
+        }
     }
 
     /// Build the bucket graph structure.
@@ -181,8 +183,9 @@ public:
     /// Called automatically at the start of each solve(). Skips if
     /// costs haven't changed since last refresh.
     void refresh_arc_costs() {
-        if (!arc_costs_dirty_)
+        if (!arc_costs_dirty_) {
             return;
+        }
         arc_costs_dirty_ = false;
         for (auto& b : buckets_) {
             for (auto& ba : b.bucket_arcs) {
@@ -305,8 +308,9 @@ public:
     int64_t non_fixed_arc_count() const {
         int64_t count = 0;
         for (int bi = 0; bi < static_cast<int>(buckets_.size()); ++bi) {
-            if (fixed_.test(bi))
+            if (fixed_.test(bi)) {
                 continue;
+            }
             count += static_cast<int64_t>(buckets_[bi].bucket_arcs.size()) +
                      static_cast<int64_t>(buckets_[bi].jump_arcs.size());
             if (opts_.bidirectional) {
@@ -319,11 +323,14 @@ public:
 
     /// BG2021 §6.3 A+: halve all bucket steps (doubles ξ).
     void halve_bucket_steps() {
-        for (int r = 0; r < n_main_; ++r)
+        for (int r = 0; r < n_main_; ++r) {
             opts_.bucket_steps[r] *= 0.5;
-        for (auto& vs : vertex_bucket_steps_)
-            for (int r = 0; r < n_main_; ++r)
+        }
+        for (auto& vs : vertex_bucket_steps_) {
+            for (int r = 0; r < n_main_; ++r) {
                 vs[r] *= 0.5;
+            }
+        }
     }
 
     /// Set per-vertex bucket step sizes. Overrides uniform opts_.bucket_steps
@@ -343,8 +350,9 @@ public:
             int to = pv_.arc_to[a];
             for (int r = 0; r < n_main_; ++r) {
                 double d = pv_.arc_resource[r][a];
-                if (d > EPS)
+                if (d > EPS) {
                     steps[to][r] = std::min(steps[to][r], d);
+                }
             }
         }
         for (int v = 0; v < pv_.n_vertices; ++v) {
@@ -356,8 +364,9 @@ public:
                 }
                 double min_step = range / max_buckets_per_vertex;
                 steps[v][r] = std::max(steps[v][r], min_step);
-                if (steps[v][r] >= INF)
+                if (steps[v][r] >= INF) {
                     steps[v][r] = range;  // fallback: 1 bucket
+                }
             }
         }
         return steps;
@@ -442,8 +451,9 @@ public:
             std::atomic<int> newly_fixed{0};
 
             executor_.parallel_for(0, nb, [&](int bi) {
-                if (fixed_.atomic_test(bi))
+                if (fixed_.atomic_test(bi)) {
                     return;
+                }
 
                 bool fw_bad = (buckets_[bi].c_best + fw_completion_[bi] > theta + EPS);
                 bool should_fix = fw_bad;
@@ -455,8 +465,9 @@ public:
                 }
 
                 if (should_fix) {
-                    if (fixed_.atomic_set(bi))
+                    if (fixed_.atomic_set(bi)) {
                         newly_fixed.fetch_add(1, std::memory_order_relaxed);
+                    }
                 }
             });
 
@@ -468,8 +479,9 @@ public:
         int newly_fixed = 0;
 
         for (int bi = 0; bi < nb; ++bi) {
-            if (fixed_.test(bi))
+            if (fixed_.test(bi)) {
                 continue;
+            }
 
             // Forward path bound: cost-to-b + cost-from-b-to-sink > theta
             bool fw_bad = (buckets_[bi].c_best + fw_completion_[bi] > theta + EPS);
@@ -540,8 +552,9 @@ private:
     /// Select the label pool for a direction. In parallel mode, backward
     /// labels use a separate pool to avoid contention.
     BucketLabelPool<Pack>& pool_for(Direction dir) {
-        if (parallel_ && dir == Direction::Backward)
+        if (parallel_ && dir == Direction::Backward) {
             return bw_pool_;
+        }
         return pool_;
     }
 
@@ -585,10 +598,12 @@ private:
             costs.resize(n);
             q0.resize(n);
             q1.resize(n);
-            if constexpr (has_ng_)
+            if constexpr (has_ng_) {
                 ng_bits.resize(n);
-            if constexpr (has_r1c_)
+            }
+            if constexpr (has_r1c_) {
                 r1c_bits.resize(n);
+            }
         }
 
         std::size_t size() const { return labels.size(); }
@@ -597,8 +612,9 @@ private:
     // ── Bucket construction ──
 
     const std::array<double, 2>& step_for_vertex(int v) const {
-        if (!vertex_bucket_steps_.empty())
+        if (!vertex_bucket_steps_.empty()) {
             return vertex_bucket_steps_[v];
+        }
         return opts_.bucket_steps;
     }
 
@@ -713,8 +729,9 @@ private:
                         }
                     }
                 }
-                if (feasible)
+                if (feasible) {
                     ++count;
+                }
             }
 
             ba_vec.reserve(count);
@@ -740,8 +757,9 @@ private:
                         }
                     }
                 }
-                if (!feasible)
+                if (!feasible) {
                     continue;
+                }
                 int target_bi = vertex_bucket_index(other_v, q_target);
                 BucketArc ba;
                 ba.to_bucket = target_bi;
@@ -788,16 +806,20 @@ private:
                 int k1 = (bi - start) % nb[1];
                 if (dir == Direction::Forward) {
                     // Forward: resource increases → edge to next bucket
-                    if (k0 + 1 < nb[0])
+                    if (k0 + 1 < nb[0]) {
                         adj[bi].push_back(start + (k0 + 1) * nb[1] + k1);
-                    if (k1 + 1 < nb[1])
+                    }
+                    if (k1 + 1 < nb[1]) {
                         adj[bi].push_back(start + k0 * nb[1] + k1 + 1);
+                    }
                 } else {
                     // Backward: resource decreases → edge to previous bucket
-                    if (k0 > 0)
+                    if (k0 > 0) {
                         adj[bi].push_back(start + (k0 - 1) * nb[1] + k1);
-                    if (k1 > 0)
+                    }
+                    if (k1 > 0) {
                         adj[bi].push_back(start + k0 * nb[1] + (k1 - 1));
+                    }
                 }
             }
         }
@@ -836,8 +858,9 @@ private:
         };
 
         for (int i = 0; i < n; ++i) {
-            if (index[i] == -1)
+            if (index[i] == -1) {
                 strongconnect(i);
+            }
         }
 
         scc_buckets.assign(n_scc, {});
@@ -876,15 +899,17 @@ private:
     /// (bw).
     void obtain_jump_arcs(Direction dir) {
         for (auto& b : buckets_) {
-            if (dir == Direction::Forward)
+            if (dir == Direction::Forward) {
                 b.jump_arcs.clear();
-            else
+            } else {
                 b.bw_jump_arcs.clear();
+            }
         }
 
         // When jump arcs are disabled, only clear existing ones (done above).
-        if (opts_.no_jump_arcs)
+        if (opts_.no_jump_arcs) {
             return;
+        }
 
         int nb = static_cast<int>(buckets_.size());
         int na = pv_.n_arcs;
@@ -894,11 +919,13 @@ private:
         for (int bi = 0; bi < nb; ++bi) {
             auto& arcs = (dir == Direction::Forward) ? buckets_[bi].bucket_arcs
                                                      : buckets_[bi].bw_bucket_arcs;
-            for (const auto& ba : arcs)
+            for (const auto& ba : arcs) {
                 scratch_arc_offset_[ba.arc_id + 1]++;
+            }
         }
-        for (int a = 0; a < na; ++a)
+        for (int a = 0; a < na; ++a) {
             scratch_arc_offset_[a + 1] += scratch_arc_offset_[a];
+        }
         scratch_arc_bucket_data_.resize(scratch_arc_offset_[na]);
         {
             std::vector<int> arc_pos(scratch_arc_offset_.begin(), scratch_arc_offset_.end() - 1);
@@ -921,20 +948,23 @@ private:
         // Per-vertex loop: each vertex reads shared CSR (read-only) and writes
         // only to its own buckets' jump_arcs/bw_jump_arcs — no synchronization needed.
         executor_.parallel_for(0, pv_.n_vertices, [&](int v) {
-            if (arcs_by_vertex[v].empty())
+            if (arcs_by_vertex[v].empty()) {
                 return;
+            }
 
             auto [vstart, vend] = vertex_bucket_range(v);
             auto& nb_v = vertex_n_buckets_[v];
             int n_buckets_v = vend - vstart;
-            if (n_buckets_v <= 1)
+            if (n_buckets_v <= 1) {
                 return;
+            }
 
             std::vector<Candidate> candidates;
 
             for (int bi = vstart; bi < vend; ++bi) {
-                if (fixed_.test(bi))
+                if (fixed_.test(bi)) {
                     continue;
+                }
                 int k0 = (bi - vstart) / nb_v[1];
                 int k1 = (bi - vstart) % nb_v[1];
 
@@ -945,8 +975,9 @@ private:
                         scratch_arc_bucket_data_.data() + scratch_arc_offset_[a + 1];
 
                     // Does bucket bi already have a bucket arc for arc a?
-                    if (std::binary_search(csr_begin, csr_end, bi))
+                    if (std::binary_search(csr_begin, csr_end, bi)) {
                         continue;
+                    }
 
                     // Find B̄ = {b' at same vertex : b' ≻ b AND b' has arc a}
                     // Forward: b' ≻ b means k' component-wise > k (jump UP)
@@ -955,8 +986,9 @@ private:
 
                     for (const int* p = csr_begin; p != csr_end; ++p) {
                         int bi2 = *p;
-                        if (bi2 < vstart || bi2 >= vend || bi2 == bi)
+                        if (bi2 < vstart || bi2 >= vend || bi2 == bi) {
                             continue;
+                        }
                         int k0_2 = (bi2 - vstart) / nb_v[1];
                         int k1_2 = (bi2 - vstart) % nb_v[1];
 
@@ -966,8 +998,9 @@ private:
                         } else {
                             succeeds = (k0_2 <= k0 && k1_2 <= k1 && (k0_2 < k0 || k1_2 < k1));
                         }
-                        if (!succeeds)
+                        if (!succeeds) {
                             continue;
+                        }
 
                         candidates.push_back({k0_2, k1_2, bi2});
                     }
@@ -1038,12 +1071,14 @@ private:
             double d = arc.resource[r];
             if (dir == Direction::Forward) {
                 new_q[r] = std::max(parent->q[r] + d, pv_.vertex_lb[r][new_v]);
-                if (new_q[r] > pv_.vertex_ub[r][new_v])
+                if (new_q[r] > pv_.vertex_ub[r][new_v]) {
                     return nullptr;
+                }
             } else {
                 new_q[r] = std::min(parent->q[r] - d, pv_.vertex_ub[r][new_v]);
-                if (new_q[r] < pv_.vertex_lb[r][new_v])
+                if (new_q[r] < pv_.vertex_lb[r][new_v]) {
                     return nullptr;
+                }
             }
         }
 
@@ -1052,11 +1087,13 @@ private:
         if constexpr (Pack::size > 0) {
             auto [arc_states, arc_cost] =
                 pack_.extend_along_arc(dir, parent->resource_states, arc.arc_id);
-            if (arc_cost >= INF)
+            if (arc_cost >= INF) {
                 return nullptr;
+            }
             auto [vtx_states, vtx_cost] = pack_.extend_to_vertex(dir, arc_states, new_v);
-            if (vtx_cost >= INF)
+            if (vtx_cost >= INF) {
                 return nullptr;
+            }
             new_resource_states = vtx_states;
             new_cost += arc_cost + vtx_cost;
         }
@@ -1097,13 +1134,15 @@ private:
             if (dir == Direction::Forward) {
                 q_base = std::max(q_base, jump_bucket.lb[r]);
                 new_q[r] = std::max(q_base + d, pv_.vertex_lb[r][new_v]);
-                if (new_q[r] > pv_.vertex_ub[r][new_v])
+                if (new_q[r] > pv_.vertex_ub[r][new_v]) {
                     return nullptr;
+                }
             } else {
                 q_base = std::min(q_base, jump_bucket.ub[r]);
                 new_q[r] = std::min(q_base - d, pv_.vertex_ub[r][new_v]);
-                if (new_q[r] < pv_.vertex_lb[r][new_v])
+                if (new_q[r] < pv_.vertex_lb[r][new_v]) {
                     return nullptr;
+                }
             }
         }
 
@@ -1112,11 +1151,13 @@ private:
         if constexpr (Pack::size > 0) {
             auto [arc_states, arc_cost] =
                 pack_.extend_along_arc(dir, parent->resource_states, arc.arc_id);
-            if (arc_cost >= INF)
+            if (arc_cost >= INF) {
                 return nullptr;
+            }
             auto [vtx_states, vtx_cost] = pack_.extend_to_vertex(dir, arc_states, new_v);
-            if (vtx_cost >= INF)
+            if (vtx_cost >= INF) {
                 return nullptr;
+            }
             new_resource_states = vtx_states;
             new_cost += arc_cost + vtx_cost;
         }
@@ -1143,20 +1184,24 @@ private:
     // ── Dominance (direction-aware) ──
 
     bool dominates(const Label<Pack>* L1, const Label<Pack>* L2, Direction dir) const {
-        if (L1->vertex != L2->vertex)
+        if (L1->vertex != L2->vertex) {
             return false;
+        }
 
         for (int r = 0; r < n_main_; ++r) {
             if (main_nondisposable_[r]) {
                 // Non-disposable: require equality
-                if (std::abs(L1->q[r] - L2->q[r]) > EPS)
+                if (std::abs(L1->q[r] - L2->q[r]) > EPS) {
                     return false;
+                }
             } else if (dir == Direction::Forward) {
-                if (L1->q[r] > L2->q[r] + EPS)
+                if (L1->q[r] > L2->q[r] + EPS) {
                     return false;
+                }
             } else {
-                if (L1->q[r] < L2->q[r] - EPS)
+                if (L1->q[r] < L2->q[r] - EPS) {
                     return false;
+                }
             }
         }
 
@@ -1172,8 +1217,9 @@ private:
         // Cost pre-check: if L1->cost already exceeds L2->cost by more than the
         // maximum possible domination_cost reduction, L1 can never dominate.
         // Avoids expensive pack domination_cost() (ng bit ops, R1C state ops).
-        if (L1->cost > L2->cost + EPS - min_dom_cost_)
+        if (L1->cost > L2->cost + EPS - min_dom_cost_) {
             return false;
+        }
 
         double dom_cost = L1->cost;
 
@@ -1262,14 +1308,16 @@ private:
             // Prefetch label pointers for this chunk before SIMD filtering.
             // The ~20 cycles of SIMD cost/q0/q1 filtering hide the prefetch
             // latency, so labels are warm when we dereference in the scalar tail.
-            for (std::size_t pf = 0; pf < W; ++pf)
+            for (std::size_t pf = 0; pf < W; ++pf) {
                 BGSPPRC_PREFETCH_R(bucket[i + pf]);
+            }
 
             // Direct SIMD load from contiguous cost array — no gather needed
             simd_d cost_vec(bucket_costs.data() + i, stdx::element_aligned);
             auto mask = (cost_vec + min_dom_cost_) <= threshold;
-            if (!stdx::any_of(mask))
+            if (!stdx::any_of(mask)) {
                 return false;  // sorted: all remaining fail too
+            }
 
             // SIMD resource pre-filter on q[0]
             if (n_main_ >= 1) {
@@ -1279,8 +1327,9 @@ private:
                 } else {
                     mask = mask & (q0_vec >= simd_d(L->q[0] - EPS));
                 }
-                if (!stdx::any_of(mask))
+                if (!stdx::any_of(mask)) {
                     continue;
+                }
             }
 
             // SIMD resource pre-filter on q[1]
@@ -1291,54 +1340,66 @@ private:
                 } else {
                     mask = mask & (q1_vec >= simd_d(L->q[1] - EPS));
                 }
-                if (!stdx::any_of(mask))
+                if (!stdx::any_of(mask)) {
                     continue;
+                }
             }
 
             for (std::size_t j = 0; j < W; ++j) {
-                if (!mask[j])
+                if (!mask[j]) {
                     continue;
+                }
                 // Scalar ng subset check from SoA — avoids chasing label pointer
-                if (check_ng && (ng_data[i + j] & ~new_ng))
+                if (check_ng && (ng_data[i + j] & ~new_ng)) {
                     continue;
+                }
                 // R1C SoA pre-filter: if existing has no disadvantage, tighten cost bound
                 if (check_r1c) {
                     uint64_t disadvantage = new_r1c & ~r1c_data[i + j];
                     if (disadvantage == 0) {
-                        if (bucket_costs[i + j] + min_dom_cost_excl_r1c_ > threshold)
+                        if (bucket_costs[i + j] + min_dom_cost_excl_r1c_ > threshold) {
                             continue;
+                        }
                     }
                 }
                 auto* existing = bucket[i + j];
-                if (existing->dominated)
+                if (existing->dominated) {
                     continue;
+                }
                 ++counters_for(dir).dominance_checks;
-                if (dominates(existing, L, dir))
+                if (dominates(existing, L, dir)) {
                     return true;
+                }
             }
         }
 
         for (; i < n; ++i) {
-            if (bucket_costs[i] + min_dom_cost_ > threshold)
+            if (bucket_costs[i] + min_dom_cost_ > threshold) {
                 break;
+            }
             // Prefetch next label while processing current SoA filters
-            if (i + 1 < n)
+            if (i + 1 < n) {
                 BGSPPRC_PREFETCH_R(bucket[i + 1]);
-            if (check_ng && (ng_data[i] & ~new_ng))
+            }
+            if (check_ng && (ng_data[i] & ~new_ng)) {
                 continue;
+            }
             if (check_r1c) {
                 uint64_t disadvantage = new_r1c & ~r1c_data[i];
                 if (disadvantage == 0) {
-                    if (bucket_costs[i] + min_dom_cost_excl_r1c_ > threshold)
+                    if (bucket_costs[i] + min_dom_cost_excl_r1c_ > threshold) {
                         continue;
+                    }
                 }
             }
             auto* existing = bucket[i];
-            if (existing->dominated)
+            if (existing->dominated) {
                 continue;
+            }
             ++counters_for(dir).dominance_checks;
-            if (dominates(existing, L, dir))
+            if (dominates(existing, L, dir)) {
                 return true;
+            }
         }
         return false;
     }
@@ -1371,26 +1432,32 @@ private:
             has_r1c_ && opts_.stage != Stage::Heuristic1 && opts_.stage != Stage::Heuristic2;
 
         for (std::size_t i = 0; i < bucket.size(); ++i) {
-            if (bucket_costs[i] + min_dom_cost_ > threshold)
+            if (bucket_costs[i] + min_dom_cost_ > threshold) {
                 break;  // sorted
+            }
             // Prefetch next label while processing current SoA filters
-            if (i + 1 < bucket.size())
+            if (i + 1 < bucket.size()) {
                 BGSPPRC_PREFETCH_R(bucket[i + 1]);
-            if (check_ng && (ng_data[i] & ~new_ng))
+            }
+            if (check_ng && (ng_data[i] & ~new_ng)) {
                 continue;
+            }
             if (check_r1c) {
                 uint64_t disadvantage = new_r1c & ~r1c_data[i];
                 if (disadvantage == 0) {
-                    if (bucket_costs[i] + min_dom_cost_excl_r1c_ > threshold)
+                    if (bucket_costs[i] + min_dom_cost_excl_r1c_ > threshold) {
                         continue;
+                    }
                 }
             }
             auto* existing = bucket[i];
-            if (existing->dominated)
+            if (existing->dominated) {
                 continue;
+            }
             ++counters_for(dir).dominance_checks;
-            if (dominates(existing, L, dir))
+            if (dominates(existing, L, dir)) {
                 return true;
+            }
         }
         return false;
 #endif
@@ -1423,32 +1490,40 @@ private:
             for (int i0 = 0; i0 <= k0; ++i0) {
                 for (int i1 = 0; i1 <= k1; ++i1) {
                     int other = start + i0 * nb[1] + i1;
-                    if (other == bi)
+                    if (other == bi) {
                         continue;
-                    if (buckets_[other].c_best + min_dom_cost_ > threshold)
+                    }
+                    if (buckets_[other].c_best + min_dom_cost_ > threshold) {
                         continue;
+                    }
                     auto& ocosts = bl.costs[other];
                     auto& obucket = bl.labels[other];
                     for (std::size_t idx = 0; idx < obucket.size(); ++idx) {
-                        if (ocosts[idx] + min_dom_cost_ > threshold)
+                        if (ocosts[idx] + min_dom_cost_ > threshold) {
                             break;
+                        }
                         // Prefetch next label while processing current SoA filters
-                        if (idx + 1 < obucket.size())
+                        if (idx + 1 < obucket.size()) {
                             BGSPPRC_PREFETCH_R(obucket[idx + 1]);
-                        if (check_ng && (bl.ng_bits[other][idx] & ~new_ng))
+                        }
+                        if (check_ng && (bl.ng_bits[other][idx] & ~new_ng)) {
                             continue;
+                        }
                         if (check_r1c) {
                             uint64_t disadvantage = new_r1c & ~bl.r1c_bits[other][idx];
                             if (disadvantage == 0 &&
-                                ocosts[idx] + min_dom_cost_excl_r1c_ > threshold)
+                                ocosts[idx] + min_dom_cost_excl_r1c_ > threshold) {
                                 continue;
+                            }
                         }
                         auto* existing = obucket[idx];
-                        if (existing->dominated)
+                        if (existing->dominated) {
                             continue;
+                        }
                         ++counters_for(dir).dominance_checks;
-                        if (dominates(existing, L, dir))
+                        if (dominates(existing, L, dir)) {
                             return true;
+                        }
                     }
                 }
             }
@@ -1456,32 +1531,40 @@ private:
             for (int i0 = k0; i0 < nb[0]; ++i0) {
                 for (int i1 = k1; i1 < nb[1]; ++i1) {
                     int other = start + i0 * nb[1] + i1;
-                    if (other == bi)
+                    if (other == bi) {
                         continue;
-                    if (buckets_[other].bw_c_best + min_dom_cost_ > threshold)
+                    }
+                    if (buckets_[other].bw_c_best + min_dom_cost_ > threshold) {
                         continue;
+                    }
                     auto& ocosts = bl.costs[other];
                     auto& obucket = bl.labels[other];
                     for (std::size_t idx = 0; idx < obucket.size(); ++idx) {
-                        if (ocosts[idx] + min_dom_cost_ > threshold)
+                        if (ocosts[idx] + min_dom_cost_ > threshold) {
                             break;
+                        }
                         // Prefetch next label while processing current SoA filters
-                        if (idx + 1 < obucket.size())
+                        if (idx + 1 < obucket.size()) {
                             BGSPPRC_PREFETCH_R(obucket[idx + 1]);
-                        if (check_ng && (bl.ng_bits[other][idx] & ~new_ng))
+                        }
+                        if (check_ng && (bl.ng_bits[other][idx] & ~new_ng)) {
                             continue;
+                        }
                         if (check_r1c) {
                             uint64_t disadvantage = new_r1c & ~bl.r1c_bits[other][idx];
                             if (disadvantage == 0 &&
-                                ocosts[idx] + min_dom_cost_excl_r1c_ > threshold)
+                                ocosts[idx] + min_dom_cost_excl_r1c_ > threshold) {
                                 continue;
+                            }
                         }
                         auto* existing = obucket[idx];
-                        if (existing->dominated)
+                        if (existing->dominated) {
                             continue;
+                        }
                         ++counters_for(dir).dominance_checks;
-                        if (dominates(existing, L, dir))
+                        if (dominates(existing, L, dir)) {
                             return true;
+                        }
                     }
                 }
             }
@@ -1518,14 +1601,16 @@ private:
             if (!existing->dominated) {
                 // Reversed ng check: new_label dominates existing only if
                 // new_label's ng is a subset of existing's ng
-                if (check_ng && (new_ng & ~bl.ng_bits[bi][i]))
+                if (check_ng && (new_ng & ~bl.ng_bits[bi][i])) {
                     continue;
+                }
                 // Reversed R1C check: existing_r1c & ~new_r1c is the disadvantage
                 if (check_r1c) {
                     uint64_t disadvantage = bl.r1c_bits[bi][i] & ~new_r1c;
                     if (disadvantage == 0 &&
-                        new_label->cost + min_dom_cost_excl_r1c_ > bucket_costs[i] + EPS)
+                        new_label->cost + min_dom_cost_excl_r1c_ > bucket_costs[i] + EPS) {
                         continue;
+                    }
                 }
                 ++counters_for(dir).dominance_checks;
                 if (dominates(new_label, existing, dir)) {
@@ -1541,14 +1626,16 @@ private:
     /// completion-bound pruning instead of dominance.
     bool try_insert_label(Label<Pack>* new_label, int actual_bi, Direction dir, BucketLabels& bl,
                           int& label_count) {
-        if (fixed_.test(actual_bi))
+        if (fixed_.test(actual_bi)) {
             return false;
+        }
 
         if (opts_.stage == Stage::Enumerate) {
             auto& completion = (dir == Direction::Forward) ? fw_completion_ : bw_completion_;
             if (!completion.empty() && completion[actual_bi] < INF &&
-                new_label->cost + completion[actual_bi] >= opts_.theta)
+                new_label->cost + completion[actual_bi] >= opts_.theta) {
                 return false;
+            }
             bl.labels[actual_bi].push_back(new_label);
             bl.costs[actual_bi].push_back(new_label->cost);
             bl.q0[actual_bi].push_back(new_label->q[0]);
@@ -1562,8 +1649,9 @@ private:
             ++label_count;
             auto& dc = counters_for(dir);
             ++dc.total_enum_labels;
-            if (buckets_[actual_bi].vertex == pv_.sink)
+            if (buckets_[actual_bi].vertex == pv_.sink) {
                 ++dc.enum_sink_labels;
+            }
             return true;
         }
 
@@ -1573,10 +1661,11 @@ private:
             if (bucket.empty()) {
                 insert_sorted(bl, actual_bi, new_label);
                 ++label_count;
-                if (dir == Direction::Forward)
+                if (dir == Direction::Forward) {
                     ++fw_counters_.label_count;
-                else
+                } else {
                     ++bw_counters_.label_count;
+                }
                 return true;
             }
             // Bucket has exactly 1 label. Replace if new is cheaper.
@@ -1604,10 +1693,11 @@ private:
             insert_sorted(bl, actual_bi, new_label);
             ++label_count;
             ++counters_for(dir).non_dominated_labels;
-            if (dir == Direction::Forward)
+            if (dir == Direction::Forward) {
                 ++fw_counters_.label_count;
-            else
+            } else {
                 ++bw_counters_.label_count;
+            }
             return true;
         }
         return false;
@@ -1619,10 +1709,12 @@ private:
     void batch_try_insert(Label<Pack>** batch, int batch_size, int target_bi, Direction dir,
                           BucketLabels& bl, int& label_count, bool& changed) {
         assert(opts_.stage == Stage::Exact);
-        if (batch_size <= 0)
+        if (batch_size <= 0) {
             return;
-        if (fixed_.test(target_bi))
+        }
+        if (fixed_.test(target_bi)) {
             return;
+        }
 
         // Sort batch by cost ascending for intra-batch dominance.
         std::sort(batch, batch + batch_size,
@@ -1630,14 +1722,17 @@ private:
 
         // 1. Intra-batch dominance (sorted by cost, i < j only).
         for (int i = 0; i < batch_size; ++i) {
-            if (batch[i]->dominated)
+            if (batch[i]->dominated) {
                 continue;
+            }
             for (int j = i + 1; j < batch_size; ++j) {
-                if (batch[j]->dominated)
+                if (batch[j]->dominated) {
                     continue;
+                }
                 ++counters_for(dir).dominance_checks;
-                if (dominates(batch[i], batch[j], dir))
+                if (dominates(batch[i], batch[j], dir)) {
                     batch[j]->dominated = true;
+                }
             }
         }
 
@@ -1646,14 +1741,16 @@ private:
         double min_survivor_cost = INF;
         int n_survivors = 0;
         for (int i = 0; i < batch_size; ++i) {
-            if (batch[i]->dominated)
+            if (batch[i]->dominated) {
                 continue;
+            }
             max_survivor_cost = std::max(max_survivor_cost, batch[i]->cost);
             min_survivor_cost = std::min(min_survivor_cost, batch[i]->cost);
             ++n_survivors;
         }
-        if (n_survivors == 0)
+        if (n_survivors == 0) {
             return;
+        }
 
         // Precompute SoA filter data for survivors.
         [[maybe_unused]] const bool check_ng =
@@ -1672,12 +1769,14 @@ private:
         [[maybe_unused]] uint32_t batch_ng[128];
         [[maybe_unused]] uint64_t batch_r1c[128];
         if constexpr (has_ng_) {
-            for (int i = 0; i < batch_size; ++i)
+            for (int i = 0; i < batch_size; ++i) {
                 batch_ng[i] = batch[i]->dominated ? 0 : label_ng_bits(batch[i]);
+            }
         }
         if constexpr (has_r1c_) {
-            for (int i = 0; i < batch_size; ++i)
+            for (int i = 0; i < batch_size; ++i) {
                 batch_r1c[i] = batch[i]->dominated ? 0 : label_r1c_bits(batch[i]);
+            }
         }
 
         // 3. Fused single pass: each existing label loaded once, checked vs
@@ -1692,10 +1791,12 @@ private:
             // Precompute existing label's ng/r1c bits once per iteration.
             [[maybe_unused]] uint32_t existing_ng = 0;
             [[maybe_unused]] uint64_t existing_r1c = 0;
-            if constexpr (has_ng_)
+            if constexpr (has_ng_) {
                 existing_ng = bl.ng_bits[target_bi][ei];
-            if constexpr (has_r1c_)
+            }
+            if constexpr (has_r1c_) {
                 existing_r1c = bl.r1c_bits[target_bi][ei];
+            }
 
             // Skip the SoA pre-filter entirely when both dispatch loops below
             // would no-op anyway. (a) needs ec to be in range and existing not
@@ -1705,8 +1806,9 @@ private:
             const bool may_a =
                 (ec + min_dom_cost_ <= max_survivor_cost + EPS) && !existing->dominated;
             const bool may_b = (min_survivor_cost + min_dom_cost_ <= ec + EPS);
-            if (!may_a && !may_b)
+            if (!may_a && !may_b) {
                 continue;
+            }
 
             // Precompute SoA pre-filter pass masks for both directions:
             //   pass_a[j] = 1 if SoA fields allow existing to dominate batch[j]
@@ -1744,10 +1846,12 @@ private:
                 }
                 if constexpr (has_ng_) {
                     if (check_ng) {
-                        if (existing_ng & ~batch_ng[j])
+                        if (existing_ng & ~batch_ng[j]) {
                             a_ok = false;
-                        if (batch_ng[j] & ~existing_ng)
+                        }
+                        if (batch_ng[j] & ~existing_ng) {
                             b_ok = false;
+                        }
                     }
                 }
                 return {a_ok, b_ok};
@@ -1820,17 +1924,21 @@ private:
                             // (b) requires (bng & ~existing_ng) == 0
                             auto b_zero = (bng_vec & ~eng_vec) == simd_u32(0u);
                             for (std::size_t kk = 0; kk < WU; ++kk) {
-                                if (!a_zero[kk])
+                                if (!a_zero[kk]) {
                                     pass_a[k + kk] = 0;
-                                if (!b_zero[kk])
+                                }
+                                if (!b_zero[kk]) {
                                     pass_b[k + kk] = 0;
+                                }
                             }
                         }
                         for (; k < batch_size; ++k) {
-                            if (existing_ng & ~batch_ng[k])
+                            if (existing_ng & ~batch_ng[k]) {
                                 pass_a[k] = 0;
-                            if (batch_ng[k] & ~existing_ng)
+                            }
+                            if (batch_ng[k] & ~existing_ng) {
                                 pass_b[k] = 0;
+                            }
                         }
                     }
                 }
@@ -1847,44 +1955,56 @@ private:
             //     Early-exit: ec + min_dom_cost > max_survivor_cost + EPS
             if (ec + min_dom_cost_ <= max_survivor_cost + EPS && !existing->dominated) {
                 for (int j = 0; j < batch_size; ++j) {
-                    if (!pass_a[j])
+                    if (!pass_a[j]) {
                         continue;
-                    if (batch[j]->dominated)
+                    }
+                    if (batch[j]->dominated) {
                         continue;
-                    if (ec + min_dom_cost_ > batch[j]->cost + EPS)
+                    }
+                    if (ec + min_dom_cost_ > batch[j]->cost + EPS) {
                         continue;
+                    }
                     if constexpr (has_r1c_) {
                         if (check_r1c) {
                             uint64_t disadvantage = batch_r1c[j] & ~existing_r1c;
                             if (disadvantage == 0 &&
-                                ec + min_dom_cost_excl_r1c_ > batch[j]->cost + EPS)
+                                ec + min_dom_cost_excl_r1c_ > batch[j]->cost + EPS) {
                                 continue;
+                            }
                         }
                     }
                     ++counters_for(dir).dominance_checks;
-                    if (dominates(existing, batch[j], dir))
+                    if (dominates(existing, batch[j], dir)) {
                         batch[j]->dominated = true;
+                    }
                 }
             }
 
             // (b) Can any survivor dominate existing?
-            if (existing->dominated)
+            if (existing->dominated) {
                 continue;
-            if (min_survivor_cost + min_dom_cost_ > ec + EPS)
+            }
+            if (min_survivor_cost + min_dom_cost_ > ec + EPS) {
                 continue;
+            }
 
             for (int j = 0; j < batch_size; ++j) {
-                if (!pass_b[j])
+                if (!pass_b[j]) {
                     continue;
-                if (batch[j]->dominated)
+                }
+                if (batch[j]->dominated) {
                     continue;
-                if (batch[j]->cost + min_dom_cost_ > ec + EPS)
+                }
+                if (batch[j]->cost + min_dom_cost_ > ec + EPS) {
                     continue;
+                }
                 if constexpr (has_r1c_) {
                     if (check_r1c) {
                         uint64_t disadvantage = existing_r1c & ~batch_r1c[j];
-                        if (disadvantage == 0 && batch[j]->cost + min_dom_cost_excl_r1c_ > ec + EPS)
+                        if (disadvantage == 0 &&
+                            batch[j]->cost + min_dom_cost_excl_r1c_ > ec + EPS) {
                             continue;
+                        }
                     }
                 }
                 ++counters_for(dir).dominance_checks;
@@ -1898,23 +2018,27 @@ private:
         // Recompute survivor count.
         n_survivors = 0;
         for (int i = 0; i < batch_size; ++i) {
-            if (!batch[i]->dominated)
+            if (!batch[i]->dominated) {
                 ++n_survivors;
+            }
         }
-        if (n_survivors == 0)
+        if (n_survivors == 0) {
             return;
+        }
 
         // 4. Insert survivors.
         for (int i = 0; i < batch_size; ++i) {
-            if (batch[i]->dominated)
+            if (batch[i]->dominated) {
                 continue;
+            }
             insert_sorted(bl, target_bi, batch[i]);
             ++label_count;
             ++counters_for(dir).non_dominated_labels;
-            if (dir == Direction::Forward)
+            if (dir == Direction::Forward) {
                 ++fw_counters_.label_count;
-            else
+            } else {
                 ++bw_counters_.label_count;
+            }
             changed = true;
         }
     }
@@ -1924,8 +2048,9 @@ private:
     /// to batch_try_insert.
     void process_batch(Label<Pack>** buf, int n, Direction dir, BucketLabels& bl, int& label_count,
                        bool& changed) {
-        if (n <= 0)
+        if (n <= 0) {
             return;
+        }
 
         // Sort by target bucket index.
         std::sort(buf, buf + n,
@@ -1936,14 +2061,16 @@ private:
         while (group_start < n) {
             int target_bi = buf[group_start]->bucket;
             int group_end = group_start + 1;
-            while (group_end < n && buf[group_end]->bucket == target_bi)
+            while (group_end < n && buf[group_end]->bucket == target_bi) {
                 ++group_end;
+            }
 
             int group_size = group_end - group_start;
             if (group_size == 1) {
                 // Single label — use existing path.
-                if (try_insert_label(buf[group_start], target_bi, dir, bl, label_count))
+                if (try_insert_label(buf[group_start], target_bi, dir, bl, label_count)) {
                     changed = true;
+                }
             } else {
                 // Multi-label group — fused dominance.
                 batch_try_insert(buf + group_start, group_size, target_bi, dir, bl, label_count,
@@ -1957,8 +2084,9 @@ private:
     void process_scc(int scc_id, Direction dir, const std::vector<std::vector<int>>& scc_buckets,
                      BucketLabels& bl) {
         auto& scc_bs = scc_buckets[scc_id];
-        if (scc_bs.empty())
+        if (scc_bs.empty()) {
             return;
+        }
 
         const bool enumerating = (opts_.stage == Stage::Enumerate);
         // Enumeration needs more labels per SCC since dominance is disabled.
@@ -1971,8 +2099,9 @@ private:
         // enum_complete_ is atomic to allow safe concurrent writes.
         auto at_label_cap = [&]() -> bool {
             if (label_count >= scc_cap) {
-                if (enumerating)
+                if (enumerating) {
                     enum_complete_.store(false, std::memory_order_relaxed);
+                }
                 return true;
             }
             if (enumerating && dc.total_enum_labels >= opts_.max_enum_labels) {
@@ -1996,17 +2125,20 @@ private:
         while (changed) {
             changed = false;
             for (int bi : scc_bs) {
-                if (fixed_.test(bi))
+                if (fixed_.test(bi)) {
                     continue;
-                if (at_label_cap())
+                }
+                if (at_label_cap()) {
                     break;
+                }
 
                 auto& bucket_labels = bl.labels[bi];
                 int n_labels = static_cast<int>(bucket_labels.size());
                 for (int li = 0; li < n_labels; ++li) {
                     auto* label = bucket_labels[li];
-                    if (label->extended || label->dominated)
+                    if (label->extended || label->dominated) {
                         continue;
+                    }
 
                     // Midpoint cutoff for bidirectional. Read atomic midpoint once
                     // per label (relaxed load has no barrier overhead). Reused by
@@ -2067,16 +2199,19 @@ private:
                     // Pre-filter lambda shared by both paths: applies midpoint and
                     // completion-bound pruning on a freshly extended label.
                     auto pre_filter = [&](Label<Pack>* new_label) -> bool {
-                        if (!new_label)
+                        if (!new_label) {
                             return false;
+                        }
                         if (prune_past_mid && new_label->q[0] > mid &&
-                            !has_compatible_opposite(new_label, opts_.theta))
+                            !has_compatible_opposite(new_label, opts_.theta)) {
                             return false;
+                        }
                         if (use_completion_prune) {
                             int nbi = new_label->bucket;
                             if (completion[nbi] < INF &&
-                                new_label->cost + completion[nbi] >= opts_.theta)
+                                new_label->cost + completion[nbi] >= opts_.theta) {
                                 return false;
+                            }
                         }
                         return true;
                     };
@@ -2089,8 +2224,9 @@ private:
 
                         for (const auto& ba : arcs) {
                             auto* L = extend_label(label, ba, dir);
-                            if (!pre_filter(L))
+                            if (!pre_filter(L)) {
                                 continue;
+                            }
                             batch_buf[batch_n++] = L;
                             if (batch_n == 128) {
                                 process_batch(batch_buf, batch_n, dir, bl, label_count, changed);
@@ -2100,8 +2236,9 @@ private:
 
                         for (const auto& ja : jarcs) {
                             auto* L = extend_label(label, ja, dir, buckets_[ja.jump_bucket]);
-                            if (!pre_filter(L))
+                            if (!pre_filter(L)) {
                                 continue;
+                            }
                             batch_buf[batch_n++] = L;
                             if (batch_n == 128) {
                                 process_batch(batch_buf, batch_n, dir, bl, label_count, changed);
@@ -2110,16 +2247,19 @@ private:
                         }
 
                         // Flush remaining
-                        if (batch_n > 0)
+                        if (batch_n > 0) {
                             process_batch(batch_buf, batch_n, dir, bl, label_count, changed);
+                        }
                     } else {
                         // Original sequential path (unchanged).
                         auto try_insert = [&](Label<Pack>* new_label) {
-                            if (!pre_filter(new_label))
+                            if (!pre_filter(new_label)) {
                                 return;
+                            }
                             if (try_insert_label(new_label, new_label->bucket, dir, bl,
-                                                 label_count))
+                                                 label_count)) {
                                 changed = true;
+                            }
                         };
 
                         for (const auto& ba : arcs) {
@@ -2134,8 +2274,9 @@ private:
                     label->extended = true;
                 }
             }
-            if (at_label_cap())
+            if (at_label_cap()) {
                 break;
+            }
         }
 
         // Batch compaction: physically remove dominated labels at SCC boundary
@@ -2173,13 +2314,15 @@ private:
             }
 #endif
             for (; i < n; ++i) {
-                if (bucket_costs[i] < best)
+                if (bucket_costs[i] < best) {
                     best = bucket_costs[i];
+                }
             }
-            if (dir == Direction::Forward)
+            if (dir == Direction::Forward) {
                 buckets_[bi].c_best = best;
-            else
+            } else {
                 buckets_[bi].bw_c_best = best;
+            }
         }
 
         // Second pass: propagate — only vertices in this SCC
@@ -2194,8 +2337,9 @@ private:
                 for (int k0 = 0; k0 < nb[0]; ++k0) {
                     for (int k1 = 0; k1 < nb[1]; ++k1) {
                         int bi = start + k0 * nb[1] + k1;
-                        if (bucket_scc[bi] != scc_id)
+                        if (bucket_scc[bi] != scc_id) {
                             continue;
+                        }
                         if (k0 > 0) {
                             int prev = start + (k0 - 1) * nb[1] + k1;
                             buckets_[bi].c_best =
@@ -2209,15 +2353,17 @@ private:
                     }
                 }
                 double vmin = INF;
-                for (int bi = start; bi < end; ++bi)
+                for (int bi = start; bi < end; ++bi) {
                     vmin = std::min(vmin, buckets_[bi].c_best);
+                }
                 vertex_min_c_best_[v] = vmin;
             } else {
                 for (int k0 = nb[0] - 1; k0 >= 0; --k0) {
                     for (int k1 = nb[1] - 1; k1 >= 0; --k1) {
                         int bi = start + k0 * nb[1] + k1;
-                        if (bucket_scc[bi] != scc_id)
+                        if (bucket_scc[bi] != scc_id) {
                             continue;
+                        }
                         if (k0 + 1 < nb[0]) {
                             int next = start + (k0 + 1) * nb[1] + k1;
                             buckets_[bi].bw_c_best =
@@ -2231,8 +2377,9 @@ private:
                     }
                 }
                 double vmin = INF;
-                for (int bi = start; bi < end; ++bi)
+                for (int bi = start; bi < end; ++bi) {
                     vmin = std::min(vmin, buckets_[bi].bw_c_best);
+                }
                 vertex_min_bw_c_best_[v] = vmin;
             }
         }
@@ -2277,8 +2424,9 @@ private:
                     auto& arcs = (dir == Direction::Forward) ? buckets_[bi].bucket_arcs
                                                              : buckets_[bi].bw_bucket_arcs;
                     for (const auto& ba : arcs) {
-                        if (completion[ba.to_bucket] >= INF)
+                        if (completion[ba.to_bucket] >= INF) {
                             continue;
+                        }
                         double candidate = ba.cost + completion[ba.to_bucket];
                         if (candidate < completion[bi] - EPS) {
                             completion[bi] = candidate;
@@ -2286,8 +2434,9 @@ private:
                         }
                     }
                 }
-                if (!changed)
+                if (!changed) {
                     break;
+                }
             }
         }
 
@@ -2316,8 +2465,9 @@ private:
                     m.copy_to(dst + k1, stdx::element_aligned);
                 }
 #endif
-                for (; k1 < vnb[1]; ++k1)
+                for (; k1 < vnb[1]; ++k1) {
                     dst[k1] = std::min(dst[k1], src[k1]);
+                }
             };
 
             if (dir == Direction::Forward) {
@@ -2360,29 +2510,33 @@ private:
         // (can be negative for R1C with negative duals; 0 for ng-path).
         double arc_cost = reduced_costs_ ? reduced_costs_[arc_id] : pv_.arc_base_cost[arc_id];
         double total_cost = fw->cost + bw->cost + arc_cost;
-        if (total_cost + min_dom_cost_ >= theta)
+        if (total_cost + min_dom_cost_ >= theta) {
             return false;
+        }
 
         // Resource feasibility
         int j = pv_.arc_to[arc_id];
         for (int r = 0; r < n_main_; ++r) {
             double fw_after = fw->q[r] + pv_.arc_resource[r][arc_id];
             fw_after = std::max(fw_after, pv_.vertex_lb[r][j]);
-            if (fw_after > bw->q[r] + EPS)
+            if (fw_after > bw->q[r] + EPS) {
                 return false;
+            }
         }
 
         if constexpr (Pack::size > 0) {
             auto [ext_states, ext_cost] =
                 pack_.extend_along_arc(Direction::Forward, fw->resource_states, arc_id);
-            if (ext_cost >= INF)
+            if (ext_cost >= INF) {
                 return false;
+            }
             total_cost += ext_cost;
 
             double cc =
                 pack_.concatenation_cost(Symmetry::Asymmetric, j, ext_states, bw->resource_states);
-            if (cc >= INF)
+            if (cc >= INF) {
                 return false;
+            }
             total_cost += cc;
         }
 
@@ -2396,14 +2550,16 @@ private:
     void prune_bw_incompatible(double theta) {
         bw_labels_pruned_ = 0;
         for (int v = 0; v < pv_.n_vertices; ++v) {
-            if (v == pv_.source || v == pv_.sink)
+            if (v == pv_.source || v == pv_.sink) {
                 continue;
+            }
             double arrival = vertex_min_fw_arrival_[v];
             auto [start, end] = vertex_bucket_range(v);
             for (int bi = start; bi < end; ++bi) {
                 for (auto* bw : bw_labels_.labels[bi]) {
-                    if (bw->dominated)
+                    if (bw->dominated) {
                         continue;
+                    }
                     if (arrival + bw->cost + min_dom_cost_ >= theta) {
                         bw->dominated = true;
                         ++bw_labels_pruned_;
@@ -2421,15 +2577,17 @@ private:
     /// never incorrectly prunes — matches the paper's Algorithm 2 bound.
     bool has_compatible_opposite(const Label<Pack>* L, double theta) const {
         int v = L->vertex;
-        if (v == pv_.source || v == pv_.sink)
+        if (v == pv_.source || v == pv_.sink) {
             return true;
+        }
 
         for (int arc_id : adj_.outgoing[v]) {
             double arc_cost = reduced_costs_ ? reduced_costs_[arc_id] : pv_.arc_base_cost[arc_id];
             double base = L->cost + arc_cost;
             int j = pv_.arc_to[arc_id];
-            if (base + vertex_min_bw_c_best_[j] + min_dom_cost_ < theta)
+            if (base + vertex_min_bw_c_best_[j] + min_dom_cost_ < theta) {
                 return true;
+            }
         }
         return false;
     }
@@ -2450,13 +2608,15 @@ private:
             if (dir == Direction::Forward) {
                 base_q = is_jump ? buckets_[jump_bi].lb[r] : buckets_[src_bi].lb[r];
                 q_arr[r] = std::max(base_q + d, pv_.vertex_lb[r][head_v]);
-                if (q_arr[r] > pv_.vertex_ub[r][head_v])
+                if (q_arr[r] > pv_.vertex_ub[r][head_v]) {
                     return -1;
+                }
             } else {
                 base_q = is_jump ? buckets_[jump_bi].ub[r] : buckets_[src_bi].ub[r];
                 q_arr[r] = std::min(base_q - d, pv_.vertex_ub[r][head_v]);
-                if (q_arr[r] < pv_.vertex_lb[r][head_v])
+                if (q_arr[r] < pv_.vertex_lb[r][head_v]) {
                     return -1;
+                }
             }
         }
         return vertex_bucket_index(head_v, q_arr);
@@ -2473,16 +2633,18 @@ private:
         Direction dir,              // direction of L (fw → checking bw buckets)
         int vstart, int n_buckets_v, uint8_t* visited) const {
         int local = b_tilde - vstart;
-        if (visited[local])
+        if (visited[local]) {
             return;
+        }
         visited[local] = 1;
 
         // Cost bound prune: c̄^L + c̄_{arc} + c̃^best_{b̃} ≥ θ
         double arc_cost = reduced_costs_ ? reduced_costs_[arc_id] : pv_.arc_base_cost[arc_id];
         double opp_c_best =
             (dir == Direction::Forward) ? buckets_[b_tilde].bw_c_best : buckets_[b_tilde].c_best;
-        if (L->cost + arc_cost + opp_c_best + min_dom_cost_ >= theta)
+        if (L->cost + arc_cost + opp_c_best + min_dom_cost_ >= theta) {
             return;
+        }
 
         // Check labels at b_tilde for θ-compatibility
         if (!((b_bar[b_tilde / 64] >> (b_tilde % 64)) & 1)) {
@@ -2492,10 +2654,12 @@ private:
                 (dir == Direction::Forward) ? bw_labels_.costs[b_tilde] : fw_labels_.costs[b_tilde];
             double base = L->cost + arc_cost;
             for (std::size_t idx = 0; idx < opp_labels.size(); ++idx) {
-                if (base + opp_costs[idx] + min_dom_cost_ >= theta)
+                if (base + opp_costs[idx] + min_dom_cost_ >= theta) {
                     break;  // sorted
-                if (opp_labels[idx]->dominated)
+                }
+                if (opp_labels[idx]->dominated) {
                     continue;
+                }
                 bool compat = (dir == Direction::Forward)
                                   ? is_theta_compatible(L, opp_labels[idx], arc_id, theta)
                                   : is_theta_compatible(opp_labels[idx], L, arc_id, theta);
@@ -2545,17 +2709,20 @@ private:
         int arr_k1 = (arr_bi - arr_vstart) % arr_nb[1];
 
         for (int bi2 = arr_vstart; bi2 < arr_vend; ++bi2) {
-            if (!((b_bar[bi2 / 64] >> (bi2 % 64)) & 1))
+            if (!((b_bar[bi2 / 64] >> (bi2 % 64)) & 1)) {
                 continue;
+            }
             int k0_2 = (bi2 - arr_vstart) / arr_nb[1];
             int k1_2 = (bi2 - arr_vstart) % arr_nb[1];
 
             if (dir == Direction::Forward) {
-                if (k0_2 >= arr_k0 && k1_2 >= arr_k1)
+                if (k0_2 >= arr_k0 && k1_2 >= arr_k1) {
                     return false;
+                }
             } else {
-                if (k0_2 <= arr_k0 && k1_2 <= arr_k1)
+                if (k0_2 <= arr_k0 && k1_2 <= arr_k1) {
                     return false;
+                }
             }
         }
         return true;
@@ -2565,8 +2732,9 @@ private:
     /// GetBBar: callable(int arc_id) → std::span<uint64_t>
     template <typename GetBBar>
     void process_bucket_elimination(int bi, Direction dir, double theta, GetBBar&& get_bbar) {
-        if (fixed_.test(bi))
+        if (fixed_.test(bi)) {
             return;
+        }
 
         // Get labels at bucket b
         auto& labels_b =
@@ -2588,12 +2756,14 @@ private:
         for (const auto& ja : jarcs) {
             int arr_bi =
                 compute_arrival_bucket(bi, ja.to_vertex, ja.resource, dir, true, ja.jump_bucket);
-            if (arr_bi < 0)
+            if (arr_bi < 0) {
                 continue;
+            }
 
             for (const auto* L : labels_b) {
-                if (L->dominated)
+                if (L->dominated) {
                     continue;
+                }
                 do_update(L, ja.arc_id, arr_bi);
             }
         }
@@ -2610,8 +2780,9 @@ private:
             bool eliminate = (arr_bi < 0);
             if (!eliminate) {
                 for (const auto* L : labels_b) {
-                    if (L->dominated)
+                    if (L->dominated) {
                         continue;
+                    }
                     do_update(L, ba.arc_id, arr_bi);
                 }
                 eliminate = should_eliminate_arc(arr_bi, get_bbar(ba.arc_id), dir);
@@ -2635,28 +2806,32 @@ private:
         const auto& arcs_by_vertex = (dir == Direction::Forward) ? adj_.outgoing : adj_.incoming;
         scratch_arc_local_.resize(pv_.n_arcs);
         for (int v = 0; v < pv_.n_vertices; ++v) {
-            for (int i = 0; i < static_cast<int>(arcs_by_vertex[v].size()); ++i)
+            for (int i = 0; i < static_cast<int>(arcs_by_vertex[v].size()); ++i) {
                 scratch_arc_local_[arcs_by_vertex[v][i]] = i;
+            }
         }
 
         // Reusable flat buffer for B̄ bitsets — sized to max across all vertices
         int max_flat_size = 0;
         for (int v = 0; v < pv_.n_vertices; ++v) {
             const auto& arcs_v = arcs_by_vertex[v];
-            if (arcs_v.empty())
+            if (arcs_v.empty()) {
                 continue;
+            }
             auto [vs, ve] = vertex_bucket_range(v);
             int n_bv = ve - vs;
             int entries = static_cast<int>(arcs_v.size()) * n_bv;
             max_flat_size = std::max(max_flat_size, entries * n_words);
         }
-        if (static_cast<int>(scratch_b_bar_.size()) < max_flat_size)
+        if (static_cast<int>(scratch_b_bar_.size()) < max_flat_size) {
             scratch_b_bar_.resize(max_flat_size);
+        }
 
         for (int v = 0; v < pv_.n_vertices; ++v) {
             const auto& arcs_from_v = arcs_by_vertex[v];
-            if (arcs_from_v.empty())
+            if (arcs_from_v.empty()) {
                 continue;
+            }
 
             auto [vstart, vend] = vertex_bucket_range(v);
             auto& nb_v = vertex_n_buckets_[v];
@@ -2675,8 +2850,9 @@ private:
             auto process = [&](int k0, int k1) {
                 int bi = vstart + k0 * nb_v[1] + k1;
                 int local_bi = bi - vstart;
-                if (fixed_.test(bi))
+                if (fixed_.test(bi)) {
                     return;
+                }
 
                 // Propagate B̄ from Φ_b predecessors (source-sense)
                 for (int lai = 0; lai < n_arcs_v; ++lai) {
@@ -2684,24 +2860,28 @@ private:
                     if (dir == Direction::Forward) {
                         if (k0 > 0) {
                             auto pred = b_bar(lai * n_bv + ((k0 - 1) * nb_v[1] + k1));
-                            for (int w = 0; w < n_words; ++w)
+                            for (int w = 0; w < n_words; ++w) {
                                 cur[w] |= pred[w];
+                            }
                         }
                         if (k1 > 0) {
                             auto pred = b_bar(lai * n_bv + (k0 * nb_v[1] + (k1 - 1)));
-                            for (int w = 0; w < n_words; ++w)
+                            for (int w = 0; w < n_words; ++w) {
                                 cur[w] |= pred[w];
+                            }
                         }
                     } else {
                         if (k0 + 1 < nb_v[0]) {
                             auto pred = b_bar(lai * n_bv + ((k0 + 1) * nb_v[1] + k1));
-                            for (int w = 0; w < n_words; ++w)
+                            for (int w = 0; w < n_words; ++w) {
                                 cur[w] |= pred[w];
+                            }
                         }
                         if (k1 + 1 < nb_v[1]) {
                             auto pred = b_bar(lai * n_bv + (k0 * nb_v[1] + (k1 + 1)));
-                            for (int w = 0; w < n_words; ++w)
+                            for (int w = 0; w < n_words; ++w) {
                                 cur[w] |= pred[w];
+                            }
                         }
                     }
                 }
@@ -2714,13 +2894,17 @@ private:
             };
 
             if (dir == Direction::Forward) {
-                for (int k0 = 0; k0 < nb_v[0]; ++k0)
-                    for (int k1 = 0; k1 < nb_v[1]; ++k1)
+                for (int k0 = 0; k0 < nb_v[0]; ++k0) {
+                    for (int k1 = 0; k1 < nb_v[1]; ++k1) {
                         process(k0, k1);
+                    }
+                }
             } else {
-                for (int k0 = nb_v[0] - 1; k0 >= 0; --k0)
-                    for (int k1 = nb_v[1] - 1; k1 >= 0; --k1)
+                for (int k0 = nb_v[0] - 1; k0 >= 0; --k0) {
+                    for (int k1 = nb_v[1] - 1; k1 >= 0; --k1) {
                         process(k0, k1);
+                    }
+                }
             }
         }
     }
@@ -2735,16 +2919,19 @@ private:
             bl.costs[i].clear();
             bl.q0[i].clear();
             bl.q1[i].clear();
-            if constexpr (has_ng_)
+            if constexpr (has_ng_) {
                 bl.ng_bits[i].clear();
-            if constexpr (has_r1c_)
+            }
+            if constexpr (has_r1c_) {
                 bl.r1c_bits[i].clear();
+            }
         };
         if (n >= 1024) {
             executor_.parallel_for(0, n, clear);
         } else {
-            for (int i = 0; i < n; ++i)
+            for (int i = 0; i < n; ++i) {
                 clear(i);
+            }
         }
     }
 
@@ -2766,14 +2953,16 @@ private:
         if constexpr (has_ng_) {
             auto& ng = bl.ng_bits[bi];
             ng.resize(surviving.size());
-            for (std::size_t i = 0; i < surviving.size(); ++i)
+            for (std::size_t i = 0; i < surviving.size(); ++i) {
                 ng[i] = label_ng_bits(surviving[i]);
+            }
         }
         if constexpr (has_r1c_) {
             auto& r1c = bl.r1c_bits[bi];
             r1c.resize(surviving.size());
-            for (std::size_t i = 0; i < surviving.size(); ++i)
+            for (std::size_t i = 0; i < surviving.size(); ++i) {
                 r1c[i] = label_r1c_bits(surviving[i]);
+            }
         }
     }
 
@@ -2783,8 +2972,9 @@ private:
         if (n >= 1024) {
             executor_.parallel_for(0, n, [&](int i) { compact_bucket(bl, bucket_ids[i]); });
         } else {
-            for (int i = 0; i < n; ++i)
+            for (int i = 0; i < n; ++i) {
                 compact_bucket(bl, bucket_ids[i]);
+            }
         }
     }
 
@@ -2793,8 +2983,9 @@ private:
         if (n_buckets >= 1024) {
             executor_.parallel_for(0, n_buckets, [&](int bi) { compact_bucket(bl, bi); });
         } else {
-            for (int bi = 0; bi < n_buckets; ++bi)
+            for (int bi = 0; bi < n_buckets; ++bi) {
                 compact_bucket(bl, bi);
+            }
         }
     }
 
@@ -2821,12 +3012,14 @@ private:
         std::array<double, 2> q{};
         if (dir == Direction::Forward) {
             vertex = pv_.source;
-            for (int r = 0; r < n_main_; ++r)
+            for (int r = 0; r < n_main_; ++r) {
                 q[r] = pv_.vertex_lb[r][pv_.source];
+            }
         } else {
             vertex = pv_.sink;
-            for (int r = 0; r < n_main_; ++r)
+            for (int r = 0; r < n_main_; ++r) {
                 q[r] = pv_.vertex_ub[r][pv_.sink];
+            }
         }
 
         // Compute resource states on stack before allocation
@@ -2834,8 +3027,9 @@ private:
         double extra_cost = 0.0;
         if constexpr (Pack::size > 0) {
             auto [vtx_states, vtx_cost] = pack_.extend_to_vertex(dir, resource_states, vertex);
-            if (vtx_cost >= INF)
+            if (vtx_cost >= INF) {
                 return nullptr;
+            }
             resource_states = vtx_states;
             extra_cost = vtx_cost;
         }
@@ -2895,19 +3089,23 @@ private:
         }
 
         auto* src = create_initial_label(Direction::Forward);
-        if (!src)
+        if (!src) {
             return {};  // infeasible source state
+        }
         int src_bi = src->bucket;
         fw_labels_.labels[src_bi].push_back(src);
         fw_labels_.costs[src_bi].push_back(src->cost);
         fw_labels_.q0[src_bi].push_back(src->q[0]);
         fw_labels_.q1[src_bi].push_back(src->q[1]);
-        if constexpr (has_ng_)
+        if constexpr (has_ng_) {
             fw_labels_.ng_bits[src_bi].push_back(label_ng_bits(src));
-        if constexpr (has_r1c_)
+        }
+        if constexpr (has_r1c_) {
             fw_labels_.r1c_bits[src_bi].push_back(label_r1c_bits(src));
-        if (opts_.stage == Stage::Enumerate)
+        }
+        if (opts_.stage == Stage::Enumerate) {
             ++fw_counters_.total_enum_labels;
+        }
 
         // Inject warm labels from previous solve
         if (!warm_labels_.empty()) {
@@ -2932,8 +3130,9 @@ private:
 
         // Completion bounds for arc elimination and bucket fixing (BG2021 §4).
         auto t_comp_start = Clock_::now();
-        if (opts_.stage != Stage::Enumerate)
+        if (opts_.stage != Stage::Enumerate) {
             compute_completion_bounds(Direction::Forward);
+        }
         timings_.completion_bounds = Clock_::now() - t_comp_start;
 
         // Path extraction
@@ -2965,8 +3164,9 @@ private:
     void adjust_midpoint() {
         int fw_lc = fw_counters_.label_count;
         int bw_lc = bw_counters_.label_count;
-        if (fw_lc == 0 && bw_lc == 0)
+        if (fw_lc == 0 && bw_lc == 0) {
             return;
+        }
         double mu = midpoint_.load(std::memory_order_relaxed);
         // Post-solve corrective step (fixed magnitude, applied between solves).
         // See checkpoint_midpoint() for the per-region geometry rationale.
@@ -2989,8 +3189,9 @@ private:
         int fw_lc = fw_label_count_.load(std::memory_order_relaxed);
         int bw_lc = bw_label_count_.load(std::memory_order_relaxed);
         int total = fw_lc + bw_lc;
-        if (total < 100)
+        if (total < 100) {
             return;  // too few labels to reliably judge imbalance
+        }
 
         double ratio = static_cast<double>(fw_lc) / static_cast<double>(total);
         // ratio > 0.5 means forward is producing more labels
@@ -3101,17 +3302,20 @@ private:
             // parallel_ = false during seed creation on main thread for fw,
             // but bw seed goes to bw_pool_ when parallel_ is true).
             auto* src = create_initial_label(Direction::Forward);
-            if (!src)
+            if (!src) {
                 return {};
+            }
             int src_bi = src->bucket;
             fw_labels_.labels[src_bi].push_back(src);
             fw_labels_.costs[src_bi].push_back(src->cost);
             fw_labels_.q0[src_bi].push_back(src->q[0]);
             fw_labels_.q1[src_bi].push_back(src->q[1]);
-            if constexpr (has_ng_)
+            if constexpr (has_ng_) {
                 fw_labels_.ng_bits[src_bi].push_back(label_ng_bits(src));
-            if constexpr (has_r1c_)
+            }
+            if constexpr (has_r1c_) {
                 fw_labels_.r1c_bits[src_bi].push_back(label_r1c_bits(src));
+            }
 
             // Set parallel_ before creating bw seed so it uses bw_pool_
             parallel_ = true;
@@ -3126,10 +3330,12 @@ private:
             bw_labels_.costs[snk_bi].push_back(snk->cost);
             bw_labels_.q0[snk_bi].push_back(snk->q[0]);
             bw_labels_.q1[snk_bi].push_back(snk->q[1]);
-            if constexpr (has_ng_)
+            if constexpr (has_ng_) {
                 bw_labels_.ng_bits[snk_bi].push_back(label_ng_bits(snk));
-            if constexpr (has_r1c_)
+            }
+            if constexpr (has_r1c_) {
                 bw_labels_.r1c_bits[snk_bi].push_back(label_r1c_bits(snk));
+            }
 
             if (!warm_labels_.empty()) {
                 inject_warm_labels(fw_labels_, Direction::Forward);
@@ -3168,17 +3374,20 @@ private:
         } else if (!opts_.symmetric) {
             // ── Sequential backward-first labeling ──
             auto* snk = create_initial_label(Direction::Backward);
-            if (!snk)
+            if (!snk) {
                 return {};  // infeasible sink state
+            }
             int snk_bi = snk->bucket;
             bw_labels_.labels[snk_bi].push_back(snk);
             bw_labels_.costs[snk_bi].push_back(snk->cost);
             bw_labels_.q0[snk_bi].push_back(snk->q[0]);
             bw_labels_.q1[snk_bi].push_back(snk->q[1]);
-            if constexpr (has_ng_)
+            if constexpr (has_ng_) {
                 bw_labels_.ng_bits[snk_bi].push_back(label_ng_bits(snk));
-            if constexpr (has_r1c_)
+            }
+            if constexpr (has_r1c_) {
                 bw_labels_.r1c_bits[snk_bi].push_back(label_r1c_bits(snk));
+            }
             if (opts_.stage == Stage::Enumerate) {
                 ++bw_counters_.total_enum_labels;
                 ++bw_counters_.enum_sink_labels;
@@ -3195,19 +3404,23 @@ private:
         // Forward labeling (common to sequential-bidir and symmetric paths)
         if (!run_parallel) {
             auto* src = create_initial_label(Direction::Forward);
-            if (!src)
+            if (!src) {
                 return {};  // infeasible source state
+            }
             int src_bi = src->bucket;
             fw_labels_.labels[src_bi].push_back(src);
             fw_labels_.costs[src_bi].push_back(src->cost);
             fw_labels_.q0[src_bi].push_back(src->q[0]);
             fw_labels_.q1[src_bi].push_back(src->q[1]);
-            if constexpr (has_ng_)
+            if constexpr (has_ng_) {
                 fw_labels_.ng_bits[src_bi].push_back(label_ng_bits(src));
-            if constexpr (has_r1c_)
+            }
+            if constexpr (has_r1c_) {
                 fw_labels_.r1c_bits[src_bi].push_back(label_r1c_bits(src));
-            if (opts_.stage == Stage::Enumerate)
+            }
+            if (opts_.stage == Stage::Enumerate) {
                 ++fw_counters_.total_enum_labels;
+            }
 
             if (!warm_labels_.empty()) {
                 inject_warm_labels(fw_labels_, Direction::Forward);
@@ -3261,8 +3474,9 @@ private:
         }
         timings_.completion_bounds = Clock_::now() - t_comp_start;
 
-        if (opts_.stage == Stage::Exact && !opts_.symmetric)
+        if (opts_.stage == Stage::Exact && !opts_.symmetric) {
             adjust_midpoint();
+        }
 
         // Concatenation
         std::vector<PathCandidate> candidates;
@@ -3296,8 +3510,9 @@ private:
         auto [start, end] = vertex_bucket_range(pv_.sink);
         for (int bi = start; bi < end; ++bi) {
             for (const auto* L : bl.labels[bi]) {
-                if (L->dominated)
+                if (L->dominated) {
                     continue;
+                }
                 if (L->cost < opts_.theta) {
                     candidates.push_back({L->cost, L->real_cost, L, nullptr, -1});
                 }
@@ -3324,18 +3539,21 @@ private:
             for (int a = c_begin; a < c_end; ++a) {
                 int i = pv_.arc_from[a];
                 int j = pv_.arc_to[a];
-                if (i == pv_.source || i == pv_.sink)
+                if (i == pv_.source || i == pv_.sink) {
                     continue;
-                if (j == pv_.source || j == pv_.sink)
+                }
+                if (j == pv_.source || j == pv_.sink) {
                     continue;
+                }
 
                 double arc_cost = reduced_costs_ ? reduced_costs_[a] : pv_.arc_base_cost[a];
                 double arc_real_cost = pv_.arc_base_cost[a];
 
                 // Arc-level skip: if even the cheapest fw@i + bw@j can't beat theta
                 if (vertex_min_c_best_[i] + vertex_min_bw_c_best_[j] + arc_cost + min_dom_cost_ >=
-                    opts_.theta)
+                    opts_.theta) {
                     continue;
+                }
 
                 auto [fw_start, fw_end] = vertex_bucket_range(i);
                 auto [bw_start, bw_end] = vertex_bucket_range(j);
@@ -3344,26 +3562,30 @@ private:
                     // Per-fw-bucket c_best skip
                     if (buckets_[fbi].c_best + arc_cost + vertex_min_bw_c_best_[j] +
                             min_dom_cost_ >=
-                        opts_.theta)
+                        opts_.theta) {
                         continue;
+                    }
 
                     auto& fw_costs = fw_labels_.costs[fbi];
                     for (std::size_t fi = 0; fi < fw_labels_.labels[fbi].size(); ++fi) {
                         // Sorted fw cost break
                         if (fw_costs[fi] + arc_cost + vertex_min_bw_c_best_[j] + min_dom_cost_ >=
-                            opts_.theta)
+                            opts_.theta) {
                             break;
+                        }
                         const auto* fw = fw_labels_.labels[fbi][fi];
-                        if (fw->dominated)
+                        if (fw->dominated) {
                             continue;
+                        }
 
                         double fw_arc = fw->cost + arc_cost;
 
                         // For EmptyPack, bw costs and resource adjustments are
                         // non-negative, so fw + arc alone exceeding theta is sufficient.
                         if constexpr (Pack::size == 0) {
-                            if (fw_arc >= opts_.theta)
+                            if (fw_arc >= opts_.theta) {
                                 continue;
+                            }
                         }
 
                         // Hoist per-resource feasibility thresholds out of the bbi loop —
@@ -3396,24 +3618,28 @@ private:
                             if constexpr (Pack::size > 0) {
                                 auto [ext_states, ext_cost] = pack_.extend_along_arc(
                                     Direction::Forward, fw->resource_states, a);
-                                if (ext_cost >= INF)
+                                if (ext_cost >= INF) {
                                     return;
+                                }
                                 total_cost += ext_cost;
                                 double cc = pack_.concatenation_cost(sym, j, ext_states,
                                                                      bw->resource_states);
-                                if (cc >= INF)
+                                if (cc >= INF) {
                                     return;
+                                }
                                 total_cost += cc;
                             }
-                            if (total_cost < opts_.theta)
+                            if (total_cost < opts_.theta) {
                                 local.push_back({total_cost, total_real_cost, fw, bw, a});
+                            }
                         };
 
                         for (int bbi = bw_start; bbi < bw_end; ++bbi) {
                             // Per-bw-bucket c_best skip (bw_c_best is populated from
                             // mirror c_best in symmetric mode)
-                            if (fw_arc + buckets_[bbi].bw_c_best + min_dom_cost_ >= opts_.theta)
+                            if (fw_arc + buckets_[bbi].bw_c_best + min_dom_cost_ >= opts_.theta) {
                                 continue;
+                            }
 
                             auto& bw_costs =
                                 opts_.symmetric ? fw_labels_.costs[bbi] : bw_labels_.costs[bbi];
@@ -3439,8 +3665,9 @@ private:
 
                             for (; li + W <= n_bw; li += W) {
                                 // Prefetch label pointers for this chunk.
-                                for (std::size_t pf = 0; pf < W; ++pf)
+                                for (std::size_t pf = 0; pf < W; ++pf) {
                                     BGSPPRC_PREFETCH_R(bw_labels[li + pf]);
+                                }
 
                                 simd_d cost_vec(bw_costs.data() + li, stdx::element_aligned);
                                 // Sorted-cost break: if every lane already exceeds break_thr,
@@ -3448,35 +3675,42 @@ private:
                                 // through to the scalar tail will re-detect this on its
                                 // first iteration and break, so no flag is needed.
                                 auto cost_mask = cost_vec < break_vec;
-                                if (!stdx::any_of(cost_mask))
+                                if (!stdx::any_of(cost_mask)) {
                                     break;
+                                }
 
                                 auto mask = cost_mask;
                                 if (n_main_ >= 1) {
                                     simd_d q0_vec(bw_q0.data() + li, stdx::element_aligned);
-                                    if (opts_.symmetric)
+                                    if (opts_.symmetric) {
                                         mask = mask & (q0_vec <= q0_thr_mr);
-                                    else
+                                    } else {
                                         mask = mask & (q0_vec >= q0_thr_fw);
-                                    if (!stdx::any_of(mask))
+                                    }
+                                    if (!stdx::any_of(mask)) {
                                         continue;
+                                    }
                                 }
                                 if (n_main_ >= 2) {
                                     simd_d q1_vec(bw_q1.data() + li, stdx::element_aligned);
-                                    if (opts_.symmetric)
+                                    if (opts_.symmetric) {
                                         mask = mask & (q1_vec <= q1_thr_mr);
-                                    else
+                                    } else {
                                         mask = mask & (q1_vec >= q1_thr_fw);
-                                    if (!stdx::any_of(mask))
+                                    }
+                                    if (!stdx::any_of(mask)) {
                                         continue;
+                                    }
                                 }
 
                                 for (std::size_t k = 0; k < W; ++k) {
-                                    if (!mask[k])
+                                    if (!mask[k]) {
                                         continue;
+                                    }
                                     const auto* bw = bw_labels[li + k];
-                                    if (bw->dominated)
+                                    if (bw->dominated) {
                                         continue;
+                                    }
                                     try_emit_concat(bw, bw_costs[li + k]);
                                 }
                             }
@@ -3484,15 +3718,18 @@ private:
 
                             for (; li < n_bw; ++li) {
                                 // Prefetch next bw label while processing current one
-                                if (li + 1 < n_bw)
+                                if (li + 1 < n_bw) {
                                     BGSPPRC_PREFETCH_R(bw_labels[li + 1]);
+                                }
                                 // Sorted bw cost break
-                                if (bw_costs[li] >= break_thr)
+                                if (bw_costs[li] >= break_thr) {
                                     break;
+                                }
 
                                 const auto* bw = bw_labels[li];
-                                if (bw->dominated)
+                                if (bw->dominated) {
                                     continue;
+                                }
 
                                 bool feasible = true;
                                 for (int r = 0; r < n_main_; ++r) {
@@ -3505,8 +3742,9 @@ private:
                                         break;
                                     }
                                 }
-                                if (!feasible)
+                                if (!feasible) {
                                     continue;
+                                }
 
                                 try_emit_concat(bw, bw_costs[li]);
                             }
@@ -3522,12 +3760,14 @@ private:
         // Merge per-chunk results into output. Reserve once to avoid
         // repeated reallocations as chunks are appended.
         std::size_t total = candidates.size();
-        for (const auto& chunk : chunk_candidates)
+        for (const auto& chunk : chunk_candidates) {
             total += chunk.size();
+        }
         candidates.reserve(total);
-        for (auto& chunk : chunk_candidates)
+        for (auto& chunk : chunk_candidates) {
             candidates.insert(candidates.end(), std::make_move_iterator(chunk.begin()),
                               std::make_move_iterator(chunk.end()));
+        }
     }
 
     Path realize_path(const PathCandidate& c) {
@@ -3563,16 +3803,18 @@ private:
             std::partial_sort(candidates.begin(), candidates.begin() + limit, candidates.end(),
                               cmp);
             candidates.resize(limit);
-            if (opts_.stage == Stage::Enumerate)
+            if (opts_.stage == Stage::Enumerate) {
                 enum_complete_ = false;
+            }
         } else if (limit > 1) {
             parallel_sort(executor_, candidates.begin(), candidates.end(), cmp);
         }
 
         std::vector<Path> paths;
         paths.reserve(limit);
-        for (const auto& c : candidates)
+        for (const auto& c : candidates) {
             paths.push_back(realize_path(c));
+        }
         return paths;
     }
 
@@ -3601,8 +3843,9 @@ private:
         for (int v = 0; v < pv_.n_vertices; ++v) {
             auto [start, end] = vertex_bucket_range(v);
             double vmin = INF;
-            for (int bi = start; bi < end; ++bi)
+            for (int bi = start; bi < end; ++bi) {
                 vmin = std::min(vmin, buckets_[bi].bw_c_best);
+            }
             vertex_min_bw_c_best_[v] = vmin;
         }
     }
@@ -3615,8 +3858,9 @@ private:
         // First pass: per-bucket min from labels
         for (int bi = 0; bi < static_cast<int>(buckets_.size()); ++bi) {
             double best = INF;
-            for (const auto* L : bw_labels_.labels[bi])
+            for (const auto* L : bw_labels_.labels[bi]) {
                 best = std::min(best, L->cost);
+            }
             buckets_[bi].bw_c_best = best;
         }
         // Second pass: monotone propagation (larger → smaller) + vertex min
@@ -3639,8 +3883,9 @@ private:
                 }
             }
             double vmin = INF;
-            for (int bi = start; bi < end; ++bi)
+            for (int bi = start; bi < end; ++bi) {
                 vmin = std::min(vmin, buckets_[bi].bw_c_best);
+            }
             vertex_min_bw_c_best_[v] = vmin;
         }
     }
@@ -3667,8 +3912,9 @@ private:
         scratch_path_verts_.clear();
         scratch_path_arcs_.clear();
         bw->get_backward_subpath(scratch_path_verts_, scratch_path_arcs_);
-        for (std::size_t k = 1; k < scratch_path_verts_.size(); ++k)
+        for (std::size_t k = 1; k < scratch_path_verts_.size(); ++k) {
             p.vertices.push_back(scratch_path_verts_[k]);
+        }
         p.arcs.insert(p.arcs.end(), scratch_path_arcs_.begin(), scratch_path_arcs_.end());
     }
 
@@ -3788,8 +4034,9 @@ private:
     void inject_warm_labels(BucketLabels& bl, Direction dir) {
         int label_count = 0;  // local counter for try_insert_label
         for (const auto& wl : warm_labels_) {
-            if (wl.dir != dir)
+            if (wl.dir != dir) {
                 continue;
+            }
 
             // Compute bucket before allocation for locality
             int bi = vertex_bucket_index(wl.vertex, wl.q);

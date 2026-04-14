@@ -177,8 +177,9 @@ TEST_CASE("Arc elimination with tight theta removes arcs") {
 
     // Count arcs before
     int arcs_before = 0;
-    for (int i = 0; i < bg.n_buckets(); ++i)
+    for (int i = 0; i < bg.n_buckets(); ++i) {
         arcs_before += static_cast<int>(bg.bucket(i).bucket_arcs.size());
+    }
 
     // Eliminate with tight theta: should remove some arcs
     bg.eliminate_arcs(5.0);
@@ -266,9 +267,10 @@ TEST_CASE("Label-based elimination is at least as tight as bound-based") {
     bg1.solve();
     bg1.eliminate_arcs(8.0);
     int arcs_bound = 0;
-    for (int i = 0; i < bg1.n_buckets(); ++i)
+    for (int i = 0; i < bg1.n_buckets(); ++i) {
         arcs_bound += static_cast<int>(bg1.bucket(i).bucket_arcs.size() +
                                        bg1.bucket(i).bw_bucket_arcs.size());
+    }
 
     // Label-based
     BucketGraph<EmptyPack> bg2(g.pv, EmptyPack{},
@@ -277,9 +279,10 @@ TEST_CASE("Label-based elimination is at least as tight as bound-based") {
     bg2.solve();
     bg2.eliminate_arcs_label_based(8.0);
     int arcs_label = 0;
-    for (int i = 0; i < bg2.n_buckets(); ++i)
+    for (int i = 0; i < bg2.n_buckets(); ++i) {
         arcs_label += static_cast<int>(bg2.bucket(i).bucket_arcs.size() +
                                        bg2.bucket(i).bw_bucket_arcs.size());
+    }
 
     // Label-based should eliminate at least as many arcs (fewer remaining)
     CHECK(arcs_label <= arcs_bound);
@@ -333,8 +336,9 @@ TEST_CASE("Time window feasibility") {
     for (const auto& p : paths) {
         bool has_v1 = false;
         for (int v : p.vertices) {
-            if (v == 1)
+            if (v == 1) {
                 has_v1 = true;
+            }
         }
         CHECK(!has_v1);
     }
@@ -458,8 +462,9 @@ TEST_CASE("Bidirectional path validity") {
 
         // Cost matches arc sum
         double sum = 0.0;
-        for (int a : p.arcs)
+        for (int a : p.arcs) {
             sum += g.cost[a];
+        }
         CHECK(p.original_cost == doctest::Approx(sum));
     }
 }
@@ -1736,8 +1741,9 @@ TEST_CASE("Symmetric: no backward labels generated") {
 
     // Backward bucket arcs still exist (needed for elimination/fixing)
     int bw_arcs = 0;
-    for (int i = 0; i < sym.n_buckets(); ++i)
+    for (int i = 0; i < sym.n_buckets(); ++i) {
         bw_arcs += static_cast<int>(sym.bucket(i).bw_bucket_arcs.size());
+    }
     CHECK(bw_arcs > 0);
 }
 
@@ -1765,8 +1771,9 @@ TEST_CASE("Symmetric: path validity") {
 
         // Cost matches arc sum
         double sum = 0.0;
-        for (int a : p.arcs)
+        for (int a : p.arcs) {
             sum += g.cost[a];
+        }
         CHECK(p.original_cost == doctest::Approx(sum));
     }
 }
@@ -2285,8 +2292,9 @@ TEST_CASE("max_paths selects cheapest paths (mono, Exact)") {
     bg_all.build();
     auto all = bg_all.solve();
     REQUIRE(all.size() >= 2);
-    for (std::size_t i = 1; i < all.size(); ++i)
+    for (std::size_t i = 1; i < all.size(); ++i) {
         CHECK(all[i - 1].reduced_cost <= all[i].reduced_cost + 1e-9);
+    }
 
     // Limit to 1 — cheapest only (exercises partial_sort branch)
     BG bg_lim(g.pv, EmptyPack{},
@@ -2310,8 +2318,9 @@ TEST_CASE("max_paths selects cheapest paths (bidir, Exact)") {
     bg_all.build();
     auto all = bg_all.solve();
     REQUIRE(all.size() >= 2);
-    for (std::size_t i = 1; i < all.size(); ++i)
+    for (std::size_t i = 1; i < all.size(); ++i) {
         CHECK(all[i - 1].reduced_cost <= all[i].reduced_cost + 1e-9);
+    }
 
     // Limit to 1
     BG bg_lim(g.pv, EmptyPack{},
@@ -2369,8 +2378,9 @@ TEST_CASE("max_paths=0 returns all paths sorted (Enumerate)") {
     bg.build();
     auto paths = bg.solve();
     REQUIRE(paths.size() == 4);  // 4 distinct paths in this graph
-    for (std::size_t i = 1; i < paths.size(); ++i)
+    for (std::size_t i = 1; i < paths.size(); ++i) {
         CHECK(paths[i - 1].reduced_cost <= paths[i].reduced_cost + 1e-9);
+    }
 }
 
 TEST_CASE("max_paths >= n_paths returns all paths") {
@@ -2440,8 +2450,9 @@ TEST_CASE("Bidir concatenation paths are realized correctly") {
         }
     }
     // Sorted by cost
-    for (std::size_t i = 1; i < paths.size(); ++i)
+    for (std::size_t i = 1; i < paths.size(); ++i) {
         CHECK(paths[i - 1].reduced_cost <= paths[i].reduced_cost + 1e-9);
+    }
 }
 
 TEST_CASE("Bidir max_paths realizes concatenation paths correctly") {
@@ -2928,8 +2939,9 @@ TEST_CASE("Dynamic midpoint: parallel checkpoint smoke test") {
     const std::vector<int> layer_widths = {6, 6, 6, 6, 6, 6};
     const int n_layers = static_cast<int>(layer_widths.size());
     int n_verts = 2;  // source + sink
-    for (int w : layer_widths)
+    for (int w : layer_widths) {
         n_verts += w;
+    }
     const int source = 0;
     const int sink = n_verts - 1;
 

@@ -44,29 +44,35 @@ public:
     /// Submit tasks to the pool. Returns immediately.
     /// The Batch must outlive all submitted tasks (caller owns it).
     void submit(Batch& batch, std::function<void()>* tasks, int n_tasks) {
-        if (n_tasks <= 0)
+        if (n_tasks <= 0) {
             return;
+        }
         batch.remaining.fetch_add(n_tasks, std::memory_order_relaxed);
         {
             std::lock_guard lock(mutex_);
-            for (int i = 0; i < n_tasks; ++i)
+            for (int i = 0; i < n_tasks; ++i) {
                 queue_.push_back({&tasks[i], &batch});
+            }
         }
-        if (n_tasks >= n_workers_)
+        if (n_tasks >= n_workers_) {
             cv_work_.notify_all();
-        else
-            for (int i = 0; i < n_tasks; ++i)
+        } else {
+            for (int i = 0; i < n_tasks; ++i) {
                 cv_work_.notify_one();
+            }
+        }
     }
 
     /// Block until all tasks in the batch have completed.
     /// Rethrows the first exception from any task.
     static void wait(Batch& batch) {
         int val;
-        while ((val = batch.remaining.load(std::memory_order_acquire)) != 0)
+        while ((val = batch.remaining.load(std::memory_order_acquire)) != 0) {
             batch.remaining.wait(val, std::memory_order_acquire);
-        if (batch.exception)
+        }
+        if (batch.exception) {
             std::rethrow_exception(batch.exception);
+        }
     }
 
 private:
@@ -88,11 +94,13 @@ private:
                 (*task.fn)();
             } catch (...) {
                 std::lock_guard lock(task.batch->exception_mutex);
-                if (!task.batch->exception)
+                if (!task.batch->exception) {
                     task.batch->exception = std::current_exception();
+                }
             }
-            if (task.batch->remaining.fetch_sub(1, std::memory_order_release) == 1)
+            if (task.batch->remaining.fetch_sub(1, std::memory_order_release) == 1) {
                 task.batch->remaining.notify_all();
+            }
         }
     }
 
@@ -128,18 +136,21 @@ inline constexpr int kParallelForMinChunk = 512;
 struct StdThreadExecutor {
     void parallel_for(int begin, int end, auto&& f) const {
         int n = end - begin;
-        if (n <= 0)
+        if (n <= 0) {
             return;
+        }
 
         if (n < kParallelForMinChunk) {
-            for (int i = begin; i < end; ++i)
+            for (int i = begin; i < end; ++i) {
                 f(i);
+            }
             return;
         }
 
         parallel_for_chunked(begin, end, [&f](int c_begin, int c_end, int) {
-            for (int i = c_begin; i < c_end; ++i)
+            for (int i = c_begin; i < c_end; ++i) {
                 f(i);
+            }
         });
     }
 
@@ -150,8 +161,9 @@ struct StdThreadExecutor {
     /// chunk-level work, so per-chunk cost is assumed high.
     void parallel_for_chunked(int begin, int end, auto&& f) const {
         int n = end - begin;
-        if (n <= 0)
+        if (n <= 0) {
             return;
+        }
 
         auto& pool = detail::global_thread_pool();
         int total_threads = pool.n_workers() + 1;  // +1 for calling thread

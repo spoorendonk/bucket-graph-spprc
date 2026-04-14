@@ -29,13 +29,15 @@ concept Executor = requires(E e, int n) {
 /// Sequential (single-threaded) executor. Default for BucketGraph/Solver.
 struct SequentialExecutor {
     void parallel_for(int begin, int end, auto&& f) const {
-        for (int i = begin; i < end; ++i)
+        for (int i = begin; i < end; ++i) {
             f(i);
+        }
     }
 
     void parallel_for_chunked(int begin, int end, auto&& f) const {
-        if (begin < end)
+        if (begin < end) {
             f(begin, end, 0);
+        }
     }
 
     void parallel_invoke(auto&& f, auto&& g) const {
@@ -64,8 +66,9 @@ void parallel_sort(Exec& exec, It first, It last, Cmp cmp) {
     // many that merge overhead dominates. 8 chunks is a reasonable default.
     constexpr int max_chunks = 8;
     int n_chunks = std::min(max_chunks, static_cast<int>(n / 512));
-    if (n_chunks < 2)
+    if (n_chunks < 2) {
         n_chunks = 2;
+    }
 
     auto chunk_size = n / n_chunks;
 
@@ -81,8 +84,9 @@ void parallel_sort(Exec& exec, It first, It last, Cmp cmp) {
     // Independent pairs within a round are merged in parallel.
     for (int width = 1; width < n_chunks; width *= 2) {
         int n_pairs = 0;
-        for (int i = 0; i + width < n_chunks; i += 2 * width)
+        for (int i = 0; i + width < n_chunks; i += 2 * width) {
             ++n_pairs;
+        }
         exec.parallel_for(0, n_pairs, [&](int p) {
             int i = p * 2 * width;
             auto lo = first + i * chunk_size;

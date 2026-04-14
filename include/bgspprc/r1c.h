@@ -38,17 +38,20 @@ struct R1CResource {
     /// The executor is used to parallelize mask building over cuts.
     template <Executor Exec = SequentialExecutor>
     void set_cuts(std::span<const R1Cut> cuts, int n_vertices, int n_arcs, Exec&& exec = {}) {
-        if (cuts.size() > 64)
+        if (cuts.size() > 64) {
             throw std::invalid_argument(
                 "R1CResource supports at most 64 cuts (uint64_t state limit)");
+        }
         for (const auto& cut : cuts) {
-            if (cut.base_set.size() != cut.multipliers.size())
+            if (cut.base_set.size() != cut.multipliers.size()) {
                 throw std::invalid_argument(
                     "R1CResource: base_set and multipliers must have equal size");
+            }
             for (double p : cut.multipliers) {
-                if (std::abs(p - 0.5) > 1e-9)
+                if (std::abs(p - 0.5) > 1e-9) {
                     throw std::invalid_argument(
                         "R1CResource only supports 3-SRC (p=1/2) multipliers");
+                }
             }
         }
         n_vertices_ = n_vertices;
@@ -70,34 +73,39 @@ struct R1CResource {
 
     /// Memory reset along arc: keep bits for cuts where arc ∈ AM.
     std::pair<State, double> extend_along_arc(Direction /*dir*/, State state, int arc_id) const {
-        if (n_active_ == 0)
+        if (n_active_ == 0) {
             return {state, 0.0};
+        }
         return {state & arc_keep_mask_[arc_id], 0.0};
     }
 
     /// Toggle bits for cuts where vertex ∈ C. Overflow (1→0) applies cost -β.
     std::pair<State, double> extend_to_vertex(Direction /*dir*/, State state, int vertex) const {
-        if (n_active_ == 0)
+        if (n_active_ == 0) {
             return {state, 0.0};
+        }
 
         uint64_t toggle = vertex_toggle_mask_[vertex];
         uint64_t overflow = state & toggle;
         state ^= toggle;
 
         double cost = 0.0;
-        if (overflow)
+        if (overflow) {
             cost = compute_overflow_cost(overflow);
+        }
         return {state, cost};
     }
 
     /// Extra cost L1 pays vs L2: penalty for cuts where s2 has credit but s1
     /// doesn't.
     double domination_cost(Direction /*dir*/, int /*vertex*/, State s1, State s2) const {
-        if (n_active_ == 0)
+        if (n_active_ == 0) {
             return 0.0;
+        }
         uint64_t disadvantage = s2 & ~s1;
-        if (disadvantage)
+        if (disadvantage) {
             return compute_overflow_cost(disadvantage);
+        }
         return 0.0;
     }
 
@@ -108,19 +116,22 @@ struct R1CResource {
         double total = 0.0;
         for (int c = 0; c < n_active_; ++c) {
             double contrib = -betas_[c];
-            if (contrib < 0.0)
+            if (contrib < 0.0) {
                 total += contrib;
+            }
         }
         return total;
     }
 
     /// Cost when joining fw/bw labels: if both have credit, overflow.
     double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State s_fw, State s_bw) const {
-        if (n_active_ == 0)
+        if (n_active_ == 0) {
             return 0.0;
+        }
         uint64_t both = s_fw & s_bw;
-        if (both)
+        if (both) {
             return compute_overflow_cost(both);
+        }
         return 0.0;
     }
 

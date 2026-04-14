@@ -99,8 +99,9 @@ typename Solver<Pack, Exec>::Options make_solver_opts(double s1, double s2, cons
         .parallel_bidir = opts.parallel_bidir,
         .max_paths = opts.max_paths,
     };
-    if (!std::isnan(opts.theta))
+    if (!std::isnan(opts.theta)) {
         so.theta = opts.theta;
+    }
     return so;
 }
 
@@ -151,8 +152,9 @@ static Result run_sppcc(const std::string& path, const Options& opts, Exec execu
         auto so = make_solver_opts<NgPack, Exec>(s1, s2, opts);
         r.theta = so.theta;
         Solver<NgPack, Exec> solver(pv, make_resource_pack(std::move(ng)), so, executor);
-        if (opts.auto_steps)
+        if (opts.auto_steps) {
             apply_auto_steps(solver);
+        }
         solver.build();
         solver.set_stage(opts.stage);
         auto paths = solver.solve();
@@ -165,8 +167,9 @@ static Result run_sppcc(const std::string& path, const Options& opts, Exec execu
             r.cost = paths[0].reduced_cost;
             r.best_path = paths[0].vertices;
         }
-        if (opts.stats || opts.csv)
+        if (opts.stats || opts.csv) {
             collect_stats(solver, r);
+        }
     } else {
         auto pv = inst.problem_view();
         r.n_verts = pv.n_vertices;
@@ -176,8 +179,9 @@ static Result run_sppcc(const std::string& path, const Options& opts, Exec execu
         auto so = make_solver_opts<EmptyPack, Exec>(s1, s2, opts);
         r.theta = so.theta;
         Solver<EmptyPack, Exec> solver(pv, EmptyPack{}, so, executor);
-        if (opts.auto_steps)
+        if (opts.auto_steps) {
             apply_auto_steps(solver);
+        }
         solver.build();
         solver.set_stage(opts.stage);
         auto paths = solver.solve();
@@ -190,8 +194,9 @@ static Result run_sppcc(const std::string& path, const Options& opts, Exec execu
             r.cost = paths[0].reduced_cost;
             r.best_path = paths[0].vertices;
         }
-        if (opts.stats || opts.csv)
+        if (opts.stats || opts.csv) {
             collect_stats(solver, r);
+        }
     }
     return r;
 }
@@ -220,8 +225,9 @@ static Result run_vrp(const std::string& path, const Options& opts, Exec executo
         auto so = make_solver_opts<NgPack, Exec>(s1, s2, opts);
         r.theta = so.theta;
         Solver<NgPack, Exec> solver(pv, make_resource_pack(std::move(ng)), so, executor);
-        if (opts.auto_steps)
+        if (opts.auto_steps) {
             apply_auto_steps(solver);
+        }
         solver.build();
         solver.set_stage(opts.stage);
         auto paths = solver.solve();
@@ -234,8 +240,9 @@ static Result run_vrp(const std::string& path, const Options& opts, Exec executo
             r.cost = paths[0].reduced_cost;
             r.best_path = paths[0].vertices;
         }
-        if (opts.stats || opts.csv)
+        if (opts.stats || opts.csv) {
             collect_stats(solver, r);
+        }
     } else {
         auto pv = inst.problem_view();
         r.n_verts = pv.n_vertices;
@@ -245,8 +252,9 @@ static Result run_vrp(const std::string& path, const Options& opts, Exec executo
         auto so = make_solver_opts<EmptyPack, Exec>(s1, s2, opts);
         r.theta = so.theta;
         Solver<EmptyPack, Exec> solver(pv, EmptyPack{}, so, executor);
-        if (opts.auto_steps)
+        if (opts.auto_steps) {
             apply_auto_steps(solver);
+        }
         solver.build();
         solver.set_stage(opts.stage);
         auto paths = solver.solve();
@@ -259,8 +267,9 @@ static Result run_vrp(const std::string& path, const Options& opts, Exec executo
             r.cost = paths[0].reduced_cost;
             r.best_path = paths[0].vertices;
         }
-        if (opts.stats || opts.csv)
+        if (opts.stats || opts.csv) {
             collect_stats(solver, r);
+        }
     }
     return r;
 }
@@ -288,8 +297,9 @@ static Result run_graph(const std::string& path, const Options& opts, Exec execu
         auto so = make_solver_opts<EmptyPack, Exec>(s1, s2, opts);
         r.theta = so.theta;
         Solver<EmptyPack, Exec> solver(pv, EmptyPack{}, so, executor);
-        if (use_auto)
+        if (use_auto) {
             apply_auto_steps(solver);
+        }
         solver.build();
         solver.set_stage(opts.stage);
         auto paths = solver.solve();
@@ -302,8 +312,9 @@ static Result run_graph(const std::string& path, const Options& opts, Exec execu
             r.cost = paths[0].reduced_cost;
             r.best_path = paths[0].vertices;
         }
-        if (opts.stats || opts.csv)
+        if (opts.stats || opts.csv) {
             collect_stats(solver, r);
+        }
     } else {
         // Use ng-path resource
         int ng_k = opts.ng > 0 ? opts.ng : (inst.ng_size > 0 ? inst.ng_size : 8);
@@ -322,8 +333,9 @@ static Result run_graph(const std::string& path, const Options& opts, Exec execu
         auto so = make_solver_opts<NgPack, Exec>(s1, s2, opts);
         r.theta = so.theta;
         Solver<NgPack, Exec> solver(pv, make_resource_pack(std::move(ng)), so, executor);
-        if (use_auto)
+        if (use_auto) {
             apply_auto_steps(solver);
+        }
         solver.build();
         solver.set_stage(opts.stage);
         auto paths = solver.solve();
@@ -336,8 +348,9 @@ static Result run_graph(const std::string& path, const Options& opts, Exec execu
             r.cost = paths[0].reduced_cost;
             r.best_path = paths[0].vertices;
         }
-        if (opts.stats || opts.csv)
+        if (opts.stats || opts.csv) {
             collect_stats(solver, r);
+        }
     }
     return r;
 }
@@ -347,12 +360,15 @@ static Result run_graph(const std::string& path, const Options& opts, Exec execu
 template <Executor Exec>
 static Result run_instance(const std::string& path, const Options& opts, Exec executor = {}) {
     auto ext = fs::path(path).extension().string();
-    if (ext == ".sppcc")
+    if (ext == ".sppcc") {
         return run_sppcc(path, opts, executor);
-    if (ext == ".vrp")
+    }
+    if (ext == ".vrp") {
         return run_vrp(path, opts, executor);
-    if (ext == ".graph")
+    }
+    if (ext == ".graph") {
         return run_graph(path, opts, executor);
+    }
     std::fprintf(stderr, "Unknown extension: %s\n", path.c_str());
     return {};
 }
@@ -368,8 +384,9 @@ static void print_csv_header() {
 }
 
 static void print_result(const Result& r, const Options& opts) {
-    if (r.name.empty())
+    if (r.name.empty()) {
         return;
+    }
 
     if (opts.csv) {
         std::printf(
@@ -390,8 +407,9 @@ static void print_result(const Result& r, const Options& opts) {
                 r.ms);
     if (!r.best_path.empty()) {
         std::printf(" ");
-        for (int v : r.best_path)
+        for (int v : r.best_path) {
             std::printf(" %d", v);
+        }
         std::printf("\n");
     }
     if (opts.stats) {
@@ -427,8 +445,9 @@ static void run_path_with(const std::string& path, const Options& opts, Exec exe
         std::vector<std::string> files;
         for (auto& entry : fs::directory_iterator(path)) {
             auto ext = entry.path().extension().string();
-            if (ext == ".sppcc" || ext == ".vrp" || ext == ".graph")
+            if (ext == ".sppcc" || ext == ".vrp" || ext == ".graph") {
                 files.push_back(entry.path().string());
+            }
         }
         std::sort(files.begin(), files.end());
         for (auto& f : files) {
@@ -452,12 +471,15 @@ static void run_path(const std::string& path, const Options& opts) {
 // ── CLI parsing ──
 
 static Stage parse_stage(const char* s) {
-    if (std::strcmp(s, "heuristic1") == 0)
+    if (std::strcmp(s, "heuristic1") == 0) {
         return Stage::Heuristic1;
-    if (std::strcmp(s, "heuristic2") == 0)
+    }
+    if (std::strcmp(s, "heuristic2") == 0) {
         return Stage::Heuristic2;
-    if (std::strcmp(s, "exact") == 0)
+    }
+    if (std::strcmp(s, "exact") == 0) {
         return Stage::Exact;
+    }
     std::fprintf(stderr, "Unknown stage: %s (using exact)\n", s);
     return Stage::Exact;
 }
@@ -482,11 +504,11 @@ int main(int argc, char** argv) {
             opts.ng = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--ng-metric") == 0 && i + 1 < argc) {
             ++i;
-            if (std::strcmp(argv[i], "distance") == 0)
+            if (std::strcmp(argv[i], "distance") == 0) {
                 opts.ng_metric = 1;
-            else if (std::strcmp(argv[i], "cost") == 0)
+            } else if (std::strcmp(argv[i], "cost") == 0) {
                 opts.ng_metric = 0;
-            else {
+            } else {
                 std::fprintf(stderr, "Unknown ng-metric: %s (use distance|cost)\n", argv[i]);
                 return 1;
             }
@@ -560,9 +582,11 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "bgspprc: executor=%s  bidir=%s\n", exec_name, bidir_mode);
     }
 
-    if (opts.csv)
+    if (opts.csv) {
         print_csv_header();
-    for (auto& p : paths)
+    }
+    for (auto& p : paths) {
         run_path(p, opts);
+    }
     return 0;
 }

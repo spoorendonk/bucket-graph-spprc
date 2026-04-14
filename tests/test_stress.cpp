@@ -41,8 +41,9 @@ static void check_parallel_bidir_agree(const ProblemView& pv, double tol = 1e9, 
     // Verify all sequential paths appear in parallel results
     auto to_set = [](const auto& paths) {
         std::vector<std::vector<int>> vs;
-        for (auto& p : paths)
+        for (auto& p : paths) {
             vs.push_back(p.vertices);
+        }
         std::sort(vs.begin(), vs.end());
         vs.erase(std::unique(vs.begin(), vs.end()), vs.end());
         return vs;
@@ -79,8 +80,9 @@ static void check_mono_bidir_agree(const ProblemView& pv, double tol = 1e9, doub
     // so we check mono ⊆ bidir (same paths, bidir may have extras).
     auto to_set = [](const auto& paths) {
         std::vector<std::vector<int>> vs;
-        for (auto& p : paths)
+        for (auto& p : paths) {
             vs.push_back(p.vertices);
+        }
         std::sort(vs.begin(), vs.end());
         vs.erase(std::unique(vs.begin(), vs.end()), vs.end());
         return vs;
@@ -1079,13 +1081,17 @@ TEST_CASE("Stress: 10-vertex layered graph, mono==bidir") {
     add_arc(0, 2, 3.0, 2.0);
     add_arc(0, 3, 4.0, 1.0);
     // Layer 1→2
-    for (int i = 1; i <= 3; ++i)
-        for (int j = 4; j <= 6; ++j)
+    for (int i = 1; i <= 3; ++i) {
+        for (int j = 4; j <= 6; ++j) {
             add_arc(i, j, 1.0 + (i + j) % 3, 1.0 + (i * j) % 2);
+        }
+    }
     // Layer 2→3
-    for (int i = 4; i <= 6; ++i)
-        for (int j = 7; j <= 8; ++j)
+    for (int i = 4; i <= 6; ++i) {
+        for (int j = 7; j <= 8; ++j) {
             add_arc(i, j, 2.0 + (i - j) % 2, 1.0);
+        }
+    }
     // Layer 3→4
     add_arc(7, 9, 1.0, 2.0);
     add_arc(8, 9, 3.0, 1.0);
@@ -1290,8 +1296,9 @@ TEST_CASE("Stress: PickupDeliveryResource feasible solve") {
     // All returned paths must be feasible (no path with cumulative pickup > Q)
     for (const auto& p : paths) {
         double total_pickup = 0.0;
-        for (int v : p.vertices)
+        for (int v : p.vertices) {
             total_pickup += pickup[v];
+        }
         CHECK(total_pickup <= 10.0 + 1e-6);
     }
 }

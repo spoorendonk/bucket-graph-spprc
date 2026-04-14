@@ -163,8 +163,9 @@ public:
     /// Adaptive bucket step sizes. Returns true if steps changed (needs rebuild).
     bool adapt_bucket_steps(double threshold = 20.0) {
         bool changed = bg_.adapt_bucket_steps(threshold);
-        if (changed)
+        if (changed) {
             bg_.build();
+        }
         return changed;
     }
 
@@ -186,8 +187,9 @@ private:
     /// BG2021 §6.3 A+: check if bucket steps should be halved.
     /// Returns true if bucket graph was rebuilt with finer steps.
     bool try_refine_buckets() {
-        if (exact_pricing_calls_ == 0)
+        if (exact_pricing_calls_ == 0) {
             return false;
+        }
 
         double avg_ratio =
             static_cast<double>(total_dom_checks_) / std::max(total_nondom_labels_, int64_t{1});

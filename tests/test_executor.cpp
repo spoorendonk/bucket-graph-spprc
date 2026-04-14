@@ -75,13 +75,15 @@ TEST_CASE("StdThreadExecutor parallel_for distributes work across threads") {
     StdThreadExecutor exec;
     constexpr int n = 10000;
     std::vector<std::atomic<int>> flags(n);
-    for (auto& f : flags)
+    for (auto& f : flags) {
         f.store(0, std::memory_order_relaxed);
+    }
 
     exec.parallel_for(0, n, [&](int i) { flags[i].store(1, std::memory_order_relaxed); });
 
-    for (int i = 0; i < n; ++i)
+    for (int i = 0; i < n; ++i) {
         CHECK(flags[i].load() == 1);
+    }
 }
 
 TEST_CASE("StdThreadExecutor parallel_for atomic sum") {
@@ -133,23 +135,27 @@ TEST_CASE("StdThreadExecutor parallel_for_chunked covers full range with unique 
     constexpr int n = 10000;
     int n_threads = exec.n_threads();
     std::vector<std::atomic<int>> seen(n);
-    for (auto& s : seen)
+    for (auto& s : seen) {
         s.store(0, std::memory_order_relaxed);
+    }
     std::vector<std::atomic<int>> chunk_counts(n_threads);
-    for (auto& c : chunk_counts)
+    for (auto& c : chunk_counts) {
         c.store(0, std::memory_order_relaxed);
+    }
 
     exec.parallel_for_chunked(0, n, [&](int c_begin, int c_end, int chunk_idx) {
         CHECK(chunk_idx >= 0);
         CHECK(chunk_idx < n_threads);
         chunk_counts[chunk_idx].fetch_add(1, std::memory_order_relaxed);
-        for (int i = c_begin; i < c_end; ++i)
+        for (int i = c_begin; i < c_end; ++i) {
             seen[i].fetch_add(1, std::memory_order_relaxed);
+        }
     });
 
     // Every element covered exactly once
-    for (int i = 0; i < n; ++i)
+    for (int i = 0; i < n; ++i) {
         CHECK(seen[i].load() == 1);
+    }
     // Each chunk_idx called at most once (unused slots stay 0)
     int used_chunks = 0;
     for (int c = 0; c < n_threads; ++c) {
