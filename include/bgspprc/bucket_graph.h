@@ -3222,6 +3222,22 @@ private:
                                 continue;
                         }
 
+                        // Precompute per-resource feasibility thresholds for the bw
+                        // q-values. For asymmetric mode the test is q_bw >= fw_after_arc - EPS;
+                        // for symmetric mode the bw q-values represent the mirrored
+                        // value (lb+ub - q), so the test becomes q_bw <= mirror_thr + EPS
+                        // where mirror_thr = lb+ub - fw_after_arc.
+                        double q_thr_forward[2] = {0.0, 0.0};
+                        double q_thr_mirror[2] = {0.0, 0.0};
+                        for (int r = 0; r < n_main_; ++r) {
+                            double fw_after_arc = fw->q[r] + pv_.arc_resource[r][a];
+                            fw_after_arc = std::max(fw_after_arc, pv_.vertex_lb[r][j]);
+                            q_thr_forward[r] = fw_after_arc;
+                            q_thr_mirror[r] =
+                                pv_.vertex_lb[r][j] + pv_.vertex_ub[r][j] - fw_after_arc;
+                        }
+                        const double break_thr = opts_.theta - fw_arc - min_dom_cost_;
+
                         for (int bbi = bw_start; bbi < bw_end; ++bbi) {
                             // Per-bw-bucket c_best skip (bw_c_best is populated from
                             // mirror c_best in symmetric mode)
@@ -3230,11 +3246,91 @@ private:
 
                             auto& bw_costs =
                                 opts_.symmetric ? fw_labels_.costs[bbi] : bw_labels_.costs[bbi];
+                            auto& bw_q0 = opts_.symmetric ? fw_labels_.q0[bbi] : bw_labels_.q0[bbi];
+                            auto& bw_q1 = opts_.symmetric ? fw_labels_.q1[bbi] : bw_labels_.q1[bbi];
                             auto& bw_labels =
                                 opts_.symmetric ? fw_labels_.labels[bbi] : bw_labels_.labels[bbi];
-                            for (std::size_t li = 0; li < bw_labels.size(); ++li) {
+                            const std::size_t n_bw = bw_labels.size();
+
+                            std::size_t li = 0;
+#ifdef BGSPPRC_HAS_SIMD
+                            namespace stdx = std::experimental;
+                            using simd_d = stdx::native_simd<double>;
+                            constexpr std::size_t W = simd_d::size();
+
+                            const simd_d break_vec(break_thr);
+                            const simd_d q0_thr_fw(q_thr_forward[0] - EPS);
+                            const simd_d q0_thr_mr(q_thr_mirror[0] + EPS);
+                            const simd_d q1_thr_fw(q_thr_forward[1] - EPS);
+                            const simd_d q1_thr_mr(q_thr_mirror[1] + EPS);
+
+                            bool early_break = false;
+                            for (; li + W <= n_bw; li += W) {
+                                // Prefetch label pointers for this chunk.
+                                for (std::size_t pf = 0; pf < W; ++pf)
+                                    BGSPPRC_PREFETCH_R(bw_labels[li + pf]);
+
+                                simd_d cost_vec(bw_costs.data() + li, stdx::element_aligned);
+                                // Sorted-cost break: if every lane already exceeds break_thr,
+                                // the rest of the bucket cannot succeed either.
+                                auto cost_mask = cost_vec < break_vec;
+                                if (!stdx::any_of(cost_mask)) {
+                                    early_break = true;
+                                    break;
+                                }
+
+                                auto mask = cost_mask;
+                                if (n_main_ >= 1) {
+                                    simd_d q0_vec(bw_q0.data() + li, stdx::element_aligned);
+                                    if (opts_.symmetric)
+                                        mask = mask & (q0_vec <= q0_thr_mr);
+                                    else
+                                        mask = mask & (q0_vec >= q0_thr_fw);
+                                    if (!stdx::any_of(mask))
+                                        continue;
+                                }
+                                if (n_main_ >= 2) {
+                                    simd_d q1_vec(bw_q1.data() + li, stdx::element_aligned);
+                                    if (opts_.symmetric)
+                                        mask = mask & (q1_vec <= q1_thr_mr);
+                                    else
+                                        mask = mask & (q1_vec >= q1_thr_fw);
+                                    if (!stdx::any_of(mask))
+                                        continue;
+                                }
+
+                                for (std::size_t k = 0; k < W; ++k) {
+                                    if (!mask[k])
+                                        continue;
+                                    const auto* bw = bw_labels[li + k];
+                                    if (bw->dominated)
+                                        continue;
+                                    double total_cost = fw_arc + bw_costs[li + k];
+                                    double total_real_cost =
+                                        fw->real_cost + bw->real_cost + arc_real_cost;
+                                    if constexpr (Pack::size > 0) {
+                                        auto [ext_states, ext_cost] = pack_.extend_along_arc(
+                                            Direction::Forward, fw->resource_states, a);
+                                        if (ext_cost >= INF)
+                                            continue;
+                                        total_cost += ext_cost;
+                                        double cc = pack_.concatenation_cost(sym, j, ext_states,
+                                                                             bw->resource_states);
+                                        if (cc >= INF)
+                                            continue;
+                                        total_cost += cc;
+                                    }
+                                    if (total_cost < opts_.theta)
+                                        local.push_back({total_cost, total_real_cost, fw, bw, a});
+                                }
+                            }
+                            if (early_break)
+                                continue;
+#endif
+
+                            for (; li < n_bw; ++li) {
                                 // Prefetch next bw label while processing current one
-                                if (li + 1 < bw_labels.size())
+                                if (li + 1 < n_bw)
                                     BGSPPRC_PREFETCH_R(bw_labels[li + 1]);
                                 // Sorted bw cost break
                                 double total_cost = fw_arc + bw_costs[li];
@@ -3247,13 +3343,11 @@ private:
 
                                 bool feasible = true;
                                 for (int r = 0; r < n_main_; ++r) {
-                                    double fw_after_arc = fw->q[r] + pv_.arc_resource[r][a];
-                                    fw_after_arc = std::max(fw_after_arc, pv_.vertex_lb[r][j]);
                                     double q_bw =
                                         opts_.symmetric
                                             ? (pv_.vertex_lb[r][j] + pv_.vertex_ub[r][j] - bw->q[r])
                                             : bw->q[r];
-                                    if (fw_after_arc > q_bw + EPS) {
+                                    if (q_thr_forward[r] > q_bw + EPS) {
                                         feasible = false;
                                         break;
                                     }
