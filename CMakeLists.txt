@@ -1,7 +1,12 @@
 cmake_minimum_required(VERSION 3.25)
 project(bgspprc LANGUAGES CXX)
 
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# Emit compile_commands.json for clang-tidy and IDEs, but only when we
+# are the top-level project — otherwise a downstream consumer embedding
+# us via add_subdirectory could have its own compile db clobbered.
+if(PROJECT_IS_TOP_LEVEL)
+    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+endif()
 
 # Header-only INTERFACE library
 add_library(bgspprc INTERFACE)
