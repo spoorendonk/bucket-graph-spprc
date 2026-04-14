@@ -1697,12 +1697,25 @@ private:
             if constexpr (has_r1c_)
                 existing_r1c = bl.r1c_bits[target_bi][ei];
 
-            // Precompute SoA pre-filter pass masks for both directions (a) and (b).
-            // Each entry is 1 if the SoA filters allow batch[j] to be a candidate.
-            // The scalar dispatch below still checks batch[j]->dominated and
-            // re-validates cost (which can change as the loop progresses for (a)).
-            uint8_t pass_a[128] = {};
-            uint8_t pass_b[128] = {};
+            // Skip the SoA pre-filter entirely when both dispatch loops below
+            // would no-op anyway. (a) needs ec to be in range and existing not
+            // already dominated; (b) needs the survivor floor not to dominate
+            // existing on cost. existing->dominated may flip mid-(a), but if it
+            // was already set on entry, both branches skip — covered by may_a.
+            const bool may_a =
+                (ec + min_dom_cost_ <= max_survivor_cost + EPS) && !existing->dominated;
+            const bool may_b = (min_survivor_cost + min_dom_cost_ <= ec + EPS);
+            if (!may_a && !may_b)
+                continue;
+
+            // Precompute SoA pre-filter pass masks for both directions:
+            //   pass_a[j] = 1 if SoA fields allow existing to dominate batch[j]
+            //   pass_b[j] = 1 if SoA fields allow batch[j] to dominate existing
+            // Per-entry checks (cost, batch[j]->dominated, R1C bits) stay in
+            // the scalar dispatch below. Both writers cover [0, batch_size)
+            // exhaustively, so no zero-init is needed.
+            uint8_t pass_a[128];
+            uint8_t pass_b[128];
             const double existing_q0 = (n_main_ >= 1) ? bl.q0[target_bi][ei] : 0.0;
             const double existing_q1 = (n_main_ >= 2) ? bl.q1[target_bi][ei] : 0.0;
 
@@ -2291,8 +2304,10 @@ private:
         executor_.parallel_for(0, pv_.n_vertices, [&](int v) {
             auto [start, end] = vertex_bucket_range(v);
             auto& vnb = vertex_n_buckets_[v];
-            // The k0-axis propagation takes a min between two parallel rows
-            // of vnb[1] contiguous doubles — trivial SIMD min sweep.
+            // k0-axis propagation: each pair of adjacent rows is vnb[1]
+            // contiguous doubles with no within-row dependency, so a SIMD
+            // element-wise min sweep is straightforward. The k1 sweep below
+            // carries a serial dependency across elements of the same row.
             auto row_min_into = [&](int dst_row_start, int src_row_start) {
                 double* dst = completion.data() + dst_row_start;
                 const double* src = completion.data() + src_row_start;
@@ -3358,11 +3373,12 @@ private:
                                 continue;
                         }
 
-                        // Precompute per-resource feasibility thresholds for the bw
-                        // q-values. For asymmetric mode the test is q_bw >= fw_after_arc - EPS;
-                        // for symmetric mode the bw q-values represent the mirrored
-                        // value (lb+ub - q), so the test becomes q_bw <= mirror_thr + EPS
-                        // where mirror_thr = lb+ub - fw_after_arc.
+                        // Hoist per-resource feasibility thresholds out of the bbi loop —
+                        // they depend only on fw, arc a, and vertex j, all fixed here.
+                        // Asymmetric: test bw->q[r] >= q_thr_forward[r].
+                        // Symmetric: bw stores raw q; the mirrored q_bw = lb + ub - bw->q[r]
+                        // must satisfy q_bw >= q_thr_forward[r], which rearranges to
+                        // bw->q[r] <= q_thr_mirror[r] = lb + ub - q_thr_forward[r].
                         double q_thr_forward[2] = {0.0, 0.0};
                         double q_thr_mirror[2] = {0.0, 0.0};
                         for (int r = 0; r < n_main_; ++r) {
@@ -3400,7 +3416,6 @@ private:
                             const simd_d q1_thr_fw(q_thr_forward[1] - EPS);
                             const simd_d q1_thr_mr(q_thr_mirror[1] + EPS);
 
-                            bool early_break = false;
                             for (; li + W <= n_bw; li += W) {
                                 // Prefetch label pointers for this chunk.
                                 for (std::size_t pf = 0; pf < W; ++pf)
@@ -3408,12 +3423,12 @@ private:
 
                                 simd_d cost_vec(bw_costs.data() + li, stdx::element_aligned);
                                 // Sorted-cost break: if every lane already exceeds break_thr,
-                                // the rest of the bucket cannot succeed either.
+                                // the rest of the bucket cannot succeed either. Falling
+                                // through to the scalar tail will re-detect this on its
+                                // first iteration and break, so no flag is needed.
                                 auto cost_mask = cost_vec < break_vec;
-                                if (!stdx::any_of(cost_mask)) {
-                                    early_break = true;
+                                if (!stdx::any_of(cost_mask))
                                     break;
-                                }
 
                                 auto mask = cost_mask;
                                 if (n_main_ >= 1) {
@@ -3460,8 +3475,6 @@ private:
                                         local.push_back({total_cost, total_real_cost, fw, bw, a});
                                 }
                             }
-                            if (early_break)
-                                continue;
 #endif
 
                             for (; li < n_bw; ++li) {
