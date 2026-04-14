@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.25)
 project(bgspprc LANGUAGES CXX)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Header-only INTERFACE library
 add_library(bgspprc INTERFACE)
 target_include_directories(bgspprc INTERFACE
