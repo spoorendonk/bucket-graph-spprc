@@ -2144,13 +2144,31 @@ private:
                        const BucketLabels& bl) {
         auto& scc_bs = scc_buckets[scc_id];
 
-        // First pass: c_best from labels in bucket
+        // First pass: c_best from labels in bucket. compact_labels() runs
+        // immediately before update_c_best at the SCC boundary, so every
+        // entry in bl.labels[bi] is guaranteed non-dominated and the
+        // parallel cost SoA bl.costs[bi] is the authoritative view.
         for (int bi : scc_bs) {
+            const auto& bucket_costs = bl.costs[bi];
+            const std::size_t n = bucket_costs.size();
             double best = INF;
-            for (const auto* L : bl.labels[bi]) {
-                if (!L->dominated && L->cost < best) {
-                    best = L->cost;
+            std::size_t i = 0;
+#ifdef BGSPPRC_HAS_SIMD
+            namespace stdx = std::experimental;
+            using simd_d = stdx::native_simd<double>;
+            constexpr std::size_t W = simd_d::size();
+            if (n >= W) {
+                simd_d best_vec(INF);
+                for (; i + W <= n; i += W) {
+                    simd_d v(bucket_costs.data() + i, stdx::element_aligned);
+                    best_vec = stdx::min(best_vec, v);
                 }
+                best = stdx::hmin(best_vec);
+            }
+#endif
+            for (; i < n; ++i) {
+                if (bucket_costs[i] < best)
+                    best = bucket_costs[i];
             }
             if (dir == Direction::Forward)
                 buckets_[bi].c_best = best;
