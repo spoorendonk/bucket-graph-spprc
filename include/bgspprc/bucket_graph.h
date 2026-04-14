@@ -2273,15 +2273,33 @@ private:
         executor_.parallel_for(0, pv_.n_vertices, [&](int v) {
             auto [start, end] = vertex_bucket_range(v);
             auto& vnb = vertex_n_buckets_[v];
+            // The k0-axis propagation takes a min between two parallel rows
+            // of vnb[1] contiguous doubles — trivial SIMD min sweep.
+            auto row_min_into = [&](int dst_row_start, int src_row_start) {
+                double* dst = completion.data() + dst_row_start;
+                const double* src = completion.data() + src_row_start;
+                int k1 = 0;
+#ifdef BGSPPRC_HAS_SIMD
+                namespace stdx = std::experimental;
+                using simd_d = stdx::native_simd<double>;
+                constexpr int W = static_cast<int>(simd_d::size());
+                for (; k1 + W <= vnb[1]; k1 += W) {
+                    simd_d a(dst + k1, stdx::element_aligned);
+                    simd_d b(src + k1, stdx::element_aligned);
+                    simd_d m = stdx::min(a, b);
+                    m.copy_to(dst + k1, stdx::element_aligned);
+                }
+#endif
+                for (; k1 < vnb[1]; ++k1)
+                    dst[k1] = std::min(dst[k1], src[k1]);
+            };
+
             if (dir == Direction::Forward) {
                 // Forward: lower k = more slack → propagate higher→lower
                 for (int k0 = vnb[0] - 2; k0 >= 0; --k0) {
-                    for (int k1 = vnb[1] - 1; k1 >= 0; --k1) {
-                        int bi = start + k0 * vnb[1] + k1;
-                        int next = start + (k0 + 1) * vnb[1] + k1;
-                        completion[bi] = std::min(completion[bi], completion[next]);
-                    }
+                    row_min_into(start + k0 * vnb[1], start + (k0 + 1) * vnb[1]);
                 }
+                // k1 axis is a serial scan within a row — no SIMD.
                 for (int k0 = vnb[0] - 1; k0 >= 0; --k0) {
                     for (int k1 = vnb[1] - 2; k1 >= 0; --k1) {
                         int bi = start + k0 * vnb[1] + k1;
@@ -2292,11 +2310,7 @@ private:
             } else {
                 // Backward: higher k = more slack → propagate lower→higher
                 for (int k0 = 1; k0 < vnb[0]; ++k0) {
-                    for (int k1 = 0; k1 < vnb[1]; ++k1) {
-                        int bi = start + k0 * vnb[1] + k1;
-                        int prev = start + (k0 - 1) * vnb[1] + k1;
-                        completion[bi] = std::min(completion[bi], completion[prev]);
-                    }
+                    row_min_into(start + k0 * vnb[1], start + (k0 - 1) * vnb[1]);
                 }
                 for (int k0 = 0; k0 < vnb[0]; ++k0) {
                     for (int k1 = 1; k1 < vnb[1]; ++k1) {
