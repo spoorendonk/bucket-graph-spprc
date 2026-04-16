@@ -2,16 +2,29 @@
 """Convert bgspprc instance files (.sppcc, .vrp, .graph) to Pathwyse format.
 
 Usage:
-    python3 benchmarks/convert_to_pathwyse.py [--outdir DIR] PATH...
+    python3 benchmarks/convert_to_pathwyse.py [--outdir DIR] [--cost-scale N]
+        [--time-scale N] [--cap-scale N] PATH...
 
 Arguments:
     PATH            Instance file or directory of instances.
     --outdir DIR    Output directory (default: benchmarks/instances/pathwyse).
+    --cost-scale N  Multiplier applied to EDGE_COST before int truncation
+                    (default: 1000000 = 6-digit precision).
+    --time-scale N  Multiplier for TW bounds and arc times (default: 1000).
+    --cap-scale N   Multiplier for capacity bounds and demands (default: 1).
 
 Converts:
     .sppcc  → Pathwyse format with CAP resource (capacity-constrained).
     .vrp    → Pathwyse format with CAP resource (CVRP pricing).
     .graph  → Pathwyse format with CAP + TW resources (time windows + capacity).
+
+Pathwyse reads every numeric field with std::stoi, so fractional values are
+truncated at the decimal point. To preserve precision, we pre-multiply each
+field by the appropriate scale and round to int. Consumers must divide the
+reported Obj by cost-scale to recover the true objective value.
+
+The scales used are written to a sidecar `<stem>.scales` file next to each
+converted `.txt` so downstream scripts can read them back.
 
 The conversion models the same graph structure as bgspprc's loaders:
     - Source/sink split: depot becomes source (vertex 0), sink is added as last vertex.
@@ -22,6 +35,19 @@ import math
 import os
 import sys
 from pathlib import Path
+
+
+# Default scales. Pathwyse reads every field with std::stoi, so fractional
+# values are lost unless we pre-multiply by a scale and round to int.
+DEFAULT_COST_SCALE = 1_000_000
+DEFAULT_TIME_SCALE = 1_000
+DEFAULT_CAP_SCALE = 1
+
+
+def _scale_int(value, scale):
+    """Multiply by scale and round to nearest int. Pathwyse stores all fields
+    as int, so callers must scale back on output side."""
+    return int(round(float(value) * scale))
 
 
 def parse_sppcc(filepath):
@@ -267,8 +293,15 @@ def parse_graph(filepath):
     }
 
 
-def write_pathwyse(inst, outpath):
-    """Write instance in Pathwyse format."""
+def write_pathwyse(
+    inst,
+    outpath,
+    cost_scale=DEFAULT_COST_SCALE,
+    time_scale=DEFAULT_TIME_SCALE,
+    cap_scale=DEFAULT_CAP_SCALE,
+):
+    """Write instance in Pathwyse format. All numeric fields are scaled and
+    rounded to int since Pathwyse parses every value with std::stoi."""
     nv = inst["n_vertices"]
     source = inst["source"]
     sink = inst["sink"]
@@ -304,17 +337,23 @@ def write_pathwyse(inst, outpath):
 
         # Global resource bounds
         f.write("RES_BOUND\n")
-        f.write(f"0 0 {inst['cap_ub']}\n")
+        f.write(f"0 0 {_scale_int(inst['cap_ub'], cap_scale)}\n")
         if has_tw:
             # Global time window: [min_tw_lb, max_tw_ub]
-            f.write(f"1 {inst['tw_lb'][source]} {inst['tw_ub'][sink]}\n")
+            f.write(
+                f"1 {_scale_int(inst['tw_lb'][source], time_scale)} "
+                f"{_scale_int(inst['tw_ub'][sink], time_scale)}\n"
+            )
         f.write("END\n")
 
         # Per-node resource bounds (time windows)
         if has_tw:
             f.write("RES_NODE_BOUND\n")
             for v in range(nv):
-                f.write(f"1 {v} {inst['tw_lb'][v]} {inst['tw_ub'][v]}\n")
+                f.write(
+                    f"1 {v} {_scale_int(inst['tw_lb'][v], time_scale)} "
+                    f"{_scale_int(inst['tw_ub'][v], time_scale)}\n"
+                )
             f.write("END\n")
 
         # Per-node capacity bounds (if per-vertex caps differ)
@@ -322,13 +361,13 @@ def write_pathwyse(inst, outpath):
         if cap_per_v:
             f.write("RES_NODE_BOUND\n")
             for v in range(nv):
-                f.write(f"0 {v} 0 {cap_per_v[v]}\n")
+                f.write(f"0 {v} 0 {_scale_int(cap_per_v[v], cap_scale)}\n")
             f.write("END\n")
 
         # Edge costs
         f.write("EDGE_COST\n")
         for arc in inst["arcs"]:
-            f.write(f"{arc[0]} {arc[1]} {arc[2]}\n")
+            f.write(f"{arc[0]} {arc[1]} {_scale_int(arc[2], cost_scale)}\n")
         f.write("END\n")
 
         # Node costs: all zero (costs are on arcs, which already include duals)
@@ -342,7 +381,7 @@ def write_pathwyse(inst, outpath):
         demands = inst["demands"]
         for v in range(nv):
             if demands[v] != 0:
-                f.write(f"0 {v} {demands[v]}\n")
+                f.write(f"0 {v} {_scale_int(demands[v], cap_scale)}\n")
         f.write("END\n")
 
         # Edge consumption: time (resource 1)
@@ -351,11 +390,18 @@ def write_pathwyse(inst, outpath):
             for i, arc in enumerate(inst["arcs"]):
                 time_val = inst["arc_times"][i]
                 if time_val != 0:
-                    f.write(f"1 {arc[0]} {arc[1]} {time_val}\n")
+                    f.write(f"1 {arc[0]} {arc[1]} {_scale_int(time_val, time_scale)}\n")
             f.write("END\n")
 
+    # Sidecar file with the scales used, so run_pathwyse.sh can divide Obj back.
+    scales_path = str(outpath).rsplit(".", 1)[0] + ".scales"
+    with open(scales_path, "w") as f:
+        f.write(f"cost_scale={cost_scale}\n")
+        f.write(f"time_scale={time_scale}\n")
+        f.write(f"cap_scale={cap_scale}\n")
 
-def convert_file(filepath, outdir):
+
+def convert_file(filepath, outdir, cost_scale, time_scale, cap_scale):
     """Convert a single instance file to Pathwyse format."""
     filepath = Path(filepath)
     ext = filepath.suffix
@@ -376,7 +422,7 @@ def convert_file(filepath, outdir):
     os.makedirs(outsubdir, exist_ok=True)
 
     outpath = outsubdir / (filepath.stem + ".txt")
-    write_pathwyse(inst, str(outpath))
+    write_pathwyse(inst, str(outpath), cost_scale, time_scale, cap_scale)
     return str(outpath)
 
 
@@ -392,6 +438,24 @@ def main():
         default=None,
         help="Output directory (default: benchmarks/instances/pathwyse)",
     )
+    parser.add_argument(
+        "--cost-scale",
+        type=int,
+        default=DEFAULT_COST_SCALE,
+        help=f"Multiplier for EDGE_COST before int truncation (default: {DEFAULT_COST_SCALE})",
+    )
+    parser.add_argument(
+        "--time-scale",
+        type=int,
+        default=DEFAULT_TIME_SCALE,
+        help=f"Multiplier for TW bounds and arc times (default: {DEFAULT_TIME_SCALE})",
+    )
+    parser.add_argument(
+        "--cap-scale",
+        type=int,
+        default=DEFAULT_CAP_SCALE,
+        help=f"Multiplier for capacity bounds and demands (default: {DEFAULT_CAP_SCALE})",
+    )
     args = parser.parse_args()
 
     if args.outdir is None:
@@ -403,21 +467,29 @@ def main():
     for path in args.paths:
         p = Path(path)
         if p.is_file():
-            out = convert_file(str(p), args.outdir)
+            out = convert_file(
+                str(p), args.outdir, args.cost_scale, args.time_scale, args.cap_scale
+            )
             if out:
                 print(f"  {p.name} -> {out}")
                 converted += 1
         elif p.is_dir():
             for ext in ("*.sppcc", "*.vrp", "*.graph"):
                 for f in sorted(p.rglob(ext)):
-                    out = convert_file(str(f), args.outdir)
+                    out = convert_file(
+                        str(f), args.outdir, args.cost_scale, args.time_scale, args.cap_scale
+                    )
                     if out:
                         print(f"  {f.name} -> {out}")
                         converted += 1
         else:
             print(f"  Warning: {path} not found, skipping", file=sys.stderr)
 
-    print(f"\nConverted {converted} instances to {args.outdir}")
+    print(
+        f"\nConverted {converted} instances to {args.outdir} "
+        f"(cost_scale={args.cost_scale}, time_scale={args.time_scale}, "
+        f"cap_scale={args.cap_scale})"
+    )
 
 
 if __name__ == "__main__":

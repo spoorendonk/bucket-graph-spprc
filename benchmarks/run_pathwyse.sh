@@ -133,11 +133,12 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
 fi
 
 # ── Pathwyse settings file for ng-path ──
-# Pathwyse uses int objective internally. We force scaling=1 so the reported
-# Obj equals int(actual_cost). For integer-cost instances this is exact; for
-# fractional costs the error is bounded by the number of arcs in the path.
-PW_SCALE=1
-
+# Pathwyse reads every numeric field with std::stoi (truncates at the decimal
+# point). convert_to_pathwyse.py pre-multiplies EDGE_COST by cost_scale
+# (default 1e6) and writes a sidecar `.scales` file; we read it per-instance
+# and divide the reported Obj by cost_scale to recover the true objective.
+# `problem/scaling` is left at the Pathwyse default since our own scaling
+# already carries all the precision we need.
 write_pathwyse_settings() {
   local ng_val="$1"
   local ng_mode="off"
@@ -160,6 +161,18 @@ algo/default/compare_unreachables = 1
 data_collection/level = -1
 output/write = 0
 SETTINGS
+}
+
+# Read cost_scale from the sidecar next to a converted .txt. Falls back to 1
+# for legacy files without a sidecar.
+read_cost_scale() {
+  local pw_file="$1"
+  local scales_file="${pw_file%.txt}.scales"
+  if [[ -f "$scales_file" ]]; then
+    awk -F= '$1=="cost_scale" {print $2; exit}' "$scales_file"
+  else
+    echo 1
+  fi
 }
 
 # ── Write CSV header ──
@@ -237,14 +250,14 @@ for file in "${FILES[@]}"; do
     fi
   fi
 
-  # Parse Pathwyse output
-  # Pathwyse output at verbosity=0: "Status Obj: VALUE" and "PWDefault global time: TIME"
-  # We force scaling=1, so Obj = int(actual_cost).
+  # Parse Pathwyse output. Obj is an integer; divide by per-instance cost_scale
+  # (read from the sidecar written by convert_to_pathwyse.py) to recover the
+  # true objective.
+  pw_cost_scale="$(read_cost_scale "$pw_file")"
   if [[ "$pw_status" == "OK" && -n "$pw_raw" ]]; then
-    # Extract objective (may be negative)
-    if [[ "$pw_raw" =~ Obj:[[:space:]]*(-?[0-9.eE+-]+) ]]; then
+    if [[ "$pw_raw" =~ Obj:[[:space:]]*(-?[0-9]+) ]]; then
       pw_cost_raw="${BASH_REMATCH[1]}"
-      pw_cost="$(awk -v raw="$pw_cost_raw" -v scale="$PW_SCALE" 'BEGIN{printf "%.3f", raw / scale}')"
+      pw_cost="$(awk -v raw="$pw_cost_raw" -v scale="$pw_cost_scale" 'BEGIN{printf "%.6f", raw / scale}')"
     fi
     # Extract global time
     if [[ "$pw_raw" =~ global\ time:[[:space:]]*([0-9.eE+-]+) ]]; then
@@ -252,11 +265,13 @@ for file in "${FILES[@]}"; do
     fi
   fi
 
-  # Cost comparison: bg cost <= pw cost expected (weaker dominance finds more paths)
+  # Cost comparison: bg cost <= pw cost expected (weaker dominance finds more
+  # paths). Tolerance accounts for accumulated per-arc rounding in the int
+  # scaling used by the converter (≈ n_arcs / cost_scale).
   bg_leq=""
   if [[ -n "$bg_cost" && -n "$pw_cost" ]]; then
-    bg_leq="$(awk -v bg="$bg_cost" -v pw="$pw_cost" \
-      'BEGIN{print (bg <= pw + 1) ? "bg_leq" : "bg_gt"}')"
+    bg_leq="$(awk -v bg="$bg_cost" -v pw="$pw_cost" -v s="$pw_cost_scale" \
+      'BEGIN{tol = 100.0 / s; print (bg <= pw + tol) ? "bg_leq" : "bg_gt"}')"
   fi
 
   # Ratio
