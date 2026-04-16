@@ -3180,62 +3180,6 @@ private:
         }
     }
 
-    /// Intra-solve dynamic midpoint adjustment. Called after each
-    /// process_scc() in parallel bidir mode. Reads both atomic label
-    /// counters and applies a damped corrective shift toward balance —
-    /// allows moves in either direction (no monotonicity lock); kGain
-    /// dampens the per-checkpoint magnitude to avoid oscillation.
-    void checkpoint_midpoint() {
-        int fw_lc = fw_label_count_.load(std::memory_order_relaxed);
-        int bw_lc = bw_label_count_.load(std::memory_order_relaxed);
-        int total = fw_lc + bw_lc;
-        if (total < 100) {
-            return;  // too few labels to reliably judge imbalance
-        }
-
-        double ratio = static_cast<double>(fw_lc) / static_cast<double>(total);
-        // ratio > 0.5 means forward is producing more labels
-        // ratio < 0.5 means backward is producing more labels
-        // Target: ratio = 0.5 (balanced)
-        //
-        // Fw operates on labels with q[0] <= mid (region [lb, mid]).
-        // Bw operates on labels with q[0] >= mid (region [mid, ub]).
-        // Shift midpoint DOWN → fw region shrinks, bw region grows.
-        // Shift midpoint UP   → fw region grows, bw region shrinks.
-        //
-        // To balance: if fw is producing more, shrink fw's region → shift DOWN.
-        // If bw is producing more, shrink bw's region → shift UP.
-        int desired = 0;
-        if (ratio > 0.55) {
-            desired = -1;  // fw producing more, shrink fw region → shift down
-        } else if (ratio < 0.45) {
-            desired = +1;  // bw producing more, shrink bw region → shift up
-        } else {
-            return;  // balanced enough, no adjustment needed
-        }
-
-        // Proportional adjustment: shift midpoint by a damped fraction of
-        // the imbalance magnitude, allowing corrective moves in either
-        // direction (no monotonicity lock — rely on damping to avoid
-        // thrashing). 0.3 caps the worst-case single-step shift to
-        // 0.3 * 0.5 = 15% of the remaining range, empirically stable
-        // on rcspp Type-2 instances without observable oscillation.
-        double mu = midpoint_.load(std::memory_order_relaxed);
-        constexpr double kCheckpointGain = 0.3;
-        double magnitude = std::abs(ratio - 0.5);  // in [0, 0.5]
-        double shift = 0.0;
-        if (desired > 0) {
-            shift = +kCheckpointGain * magnitude * (resource_max_ub_ - mu);
-        } else {
-            shift = -kCheckpointGain * magnitude * (mu - resource_min_lb_);
-        }
-        double new_mu = mu + shift;
-        // Clamp to valid range
-        new_mu = std::max(new_mu, resource_min_lb_);
-        new_mu = std::min(new_mu, resource_max_ub_);
-        midpoint_.store(new_mu, std::memory_order_relaxed);
-    }
-
     std::vector<Path> solve_bidirectional() {
         timings_.reset();
         refresh_arc_costs();
@@ -3294,10 +3238,6 @@ private:
 
         if (run_parallel) {
             // ── Parallel bidirectional labeling ──
-            // Reset dynamic midpoint adjustment state for this solve.
-            fw_label_count_.store(0, std::memory_order_relaxed);
-            bw_label_count_.store(0, std::memory_order_relaxed);
-
             // Create initial labels before spawning threads (pool_for needs
             // parallel_ = false during seed creation on main thread for fw,
             // but bw seed goes to bw_pool_ when parallel_ is true).
@@ -3343,17 +3283,17 @@ private:
 
             auto t_parallel_start = Clock_::now();
 
-            // Run forward and backward labeling via the executor.
-            // After each SCC, checkpoint label counts and adjust midpoint.
+            // Run forward and backward labeling via the executor. The midpoint
+            // is fixed for the duration of the solve — adjusting µ mid-run
+            // would leave one side's SCC traversal past the region the other
+            // side is trying to newly cover, dropping concatenation paths.
+            // Between-solve balancing is handled by adjust_midpoint().
             SolveTimings::Duration bw_duration{};
             executor_.parallel_invoke(
                 [this, &bw_duration]() {
                     auto t_bw = Clock_::now();
                     for (int scc : bw_scc_topo_order_) {
                         process_scc(scc, Direction::Backward, bw_scc_buckets_, bw_labels_);
-                        // Checkpoint: update atomic label counter and adjust midpoint
-                        bw_label_count_.store(bw_counters_.label_count, std::memory_order_relaxed);
-                        checkpoint_midpoint();
                     }
                     bw_duration = Clock_::now() - t_bw;
                 },
@@ -3361,9 +3301,6 @@ private:
                     auto t_fw_start = Clock_::now();
                     for (int scc : fw_scc_topo_order_) {
                         process_scc(scc, Direction::Forward, fw_scc_buckets_, fw_labels_);
-                        // Checkpoint: update atomic label counter and adjust midpoint
-                        fw_label_count_.store(fw_counters_.label_count, std::memory_order_relaxed);
-                        checkpoint_midpoint();
                     }
                     timings_.forward_labeling = Clock_::now() - t_fw_start;
                 });
@@ -4070,13 +4007,7 @@ private:
     std::atomic<double> midpoint_{0.0};
     bool midpoint_initialized_ = false;
 
-    // Dynamic midpoint adjustment state (parallel bidir only).
-    // Atomic label counters for intra-solve checkpointing. Separate from
-    // DirCounters::label_count which is non-atomic and used by post-solve
-    // adjust_midpoint().
-    alignas(64) std::atomic<int> fw_label_count_{0};
-    alignas(64) std::atomic<int> bw_label_count_{0};
-    // Cached resource bounds for midpoint adjustment (set before labeling).
+    // Cached resource bounds for post-solve midpoint adjustment.
     double resource_min_lb_ = 0.0;
     double resource_max_ub_ = 0.0;
 
