@@ -8,7 +8,7 @@ import pytest
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
-from convert_to_pathwyse import parse_graph, parse_sppcc, parse_vrp, write_pathwyse
+from convert_to_pathwyse import _scale_int, parse_graph, parse_sppcc, parse_vrp, write_pathwyse
 
 
 @pytest.fixture
@@ -184,3 +184,60 @@ class TestWritePathwyse:
         content = outpath.read_text()
         assert "RESOURCES : 1" in content
         assert "EDGE_COST" in content
+
+
+class TestScaleInt:
+    def test_positive(self):
+        assert _scale_int(10.5, 1_000_000) == 10_500_000
+
+    def test_negative(self):
+        assert _scale_int(-3.7, 1000) == -3700
+
+    def test_zero(self):
+        assert _scale_int(0, 1_000_000) == 0
+
+    def test_identity(self):
+        assert _scale_int(42, 1) == 42
+
+    def test_overflow_raises(self):
+        with pytest.raises(OverflowError):
+            _scale_int(3000.0, 1_000_000)
+
+
+class TestWriteScaling:
+    def test_edge_costs_are_integers(self, graph_instance, tmp_path):
+        inst = parse_graph(str(graph_instance))
+        outpath = tmp_path / "out.txt"
+        write_pathwyse(inst, str(outpath))
+        content = outpath.read_text()
+        in_section = False
+        for line in content.splitlines():
+            if line.strip() == "EDGE_COST":
+                in_section = True
+                continue
+            if line.strip() == "END" and in_section:
+                break
+            if in_section:
+                parts = line.split()
+                assert parts[2].lstrip("-").isdigit(), f"Non-integer cost: {parts[2]}"
+
+    def test_sidecar_file_created(self, graph_instance, tmp_path):
+        inst = parse_graph(str(graph_instance))
+        outpath = tmp_path / "out.txt"
+        write_pathwyse(inst, str(outpath))
+        scales_path = tmp_path / "out.scales"
+        assert scales_path.exists()
+        content = scales_path.read_text()
+        assert "cost_scale=1000000" in content
+        assert "time_scale=1000" in content
+        assert "cap_scale=1" in content
+
+    def test_custom_scales(self, sppcc_instance, tmp_path):
+        inst = parse_sppcc(str(sppcc_instance))
+        outpath = tmp_path / "out.txt"
+        write_pathwyse(inst, str(outpath), cost_scale=100, time_scale=10, cap_scale=2)
+        scales_path = tmp_path / "out.scales"
+        content = scales_path.read_text()
+        assert "cost_scale=100" in content
+        assert "time_scale=10" in content
+        assert "cap_scale=2" in content

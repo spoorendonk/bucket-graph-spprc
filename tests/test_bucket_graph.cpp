@@ -2801,7 +2801,7 @@ TEST_CASE("Batch-extend: bidir with coarse steps matches mono") {
 TEST_CASE("Dynamic midpoint: parallel bidir finds correct result") {
     // Imbalanced instance: loose forward time windows, tight backward time
     // windows. This forces forward to produce more labels than backward,
-    // which should trigger the midpoint adjustment in checkpoint_midpoint().
+    // which creates label imbalance that adjust_midpoint() corrects post-solve.
     //
     // Graph: 0=source, 6=sink
     //   0→1 (c=2, t=1)    0→2 (c=3, t=1)    0→3 (c=4, t=1)
@@ -2925,17 +2925,12 @@ TEST_CASE("Dynamic midpoint: midpoint adjusts under imbalance") {
     CHECK(post_mid <= 20.0);
 }
 
-TEST_CASE("Dynamic midpoint: parallel checkpoint smoke test") {
-    // Smoke test for the parallel-bidir checkpoint_midpoint() path. Exercises
-    // a layered DAG large enough to cross the 100-label activation threshold,
-    // verifying (a) the solve returns a correct path, (b) neither direction
-    // collapses to a trivial label count, and (c) the midpoint stays strictly
-    // inside the resource range.
-    //
-    // This is a coarse smoke test — it catches catastrophic regressions
-    // (starvation, midpoint pinned to a boundary, no paths) but will not
-    // detect a subtle sign flip in isolation. The empirical validation for
-    // checkpoint_midpoint() correctness lives in the rcspp benchmark results.
+TEST_CASE("Dynamic midpoint: parallel bidir smoke test") {
+    // Smoke test for the parallel-bidir labeling path. Exercises a layered
+    // DAG large enough to produce many labels, verifying (a) the solve
+    // returns a correct path, (b) neither direction collapses to a trivial
+    // label count, and (c) the midpoint stays strictly inside the resource
+    // range.
     const std::vector<int> layer_widths = {6, 6, 6, 6, 6, 6};
     const int n_layers = static_cast<int>(layer_widths.size());
     int n_verts = 2;  // source + sink

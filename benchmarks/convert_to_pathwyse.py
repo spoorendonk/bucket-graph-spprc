@@ -44,10 +44,19 @@ DEFAULT_TIME_SCALE = 1_000
 DEFAULT_CAP_SCALE = 1
 
 
+_INT32_MAX = 2_147_483_647
+
+
 def _scale_int(value, scale):
     """Multiply by scale and round to nearest int. Pathwyse stores all fields
-    as int, so callers must scale back on output side."""
-    return int(round(float(value) * scale))
+    as int (std::stoi → 32-bit), so callers must scale back on output side."""
+    result = int(round(float(value) * scale))
+    if abs(result) > _INT32_MAX:
+        raise OverflowError(
+            f"scaled value {result} exceeds int32 range "
+            f"(value={value}, scale={scale}). Use a smaller --cost-scale."
+        )
+    return result
 
 
 def parse_sppcc(filepath):

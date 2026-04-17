@@ -137,8 +137,8 @@ fi
 # point). convert_to_pathwyse.py pre-multiplies EDGE_COST by cost_scale
 # (default 1e6) and writes a sidecar `.scales` file; we read it per-instance
 # and divide the reported Obj by cost_scale to recover the true objective.
-# `problem/scaling` is left at the Pathwyse default since our own scaling
-# already carries all the precision we need.
+# `problem/scaling` is forced to 1.0 (no additional scaling by Pathwyse)
+# since our own pre-scaling already carries all the precision we need.
 write_pathwyse_settings() {
   local ng_val="$1"
   local ng_mode="off"
@@ -168,11 +168,11 @@ SETTINGS
 read_cost_scale() {
   local pw_file="$1"
   local scales_file="${pw_file%.txt}.scales"
+  local val=""
   if [[ -f "$scales_file" ]]; then
-    awk -F= '$1=="cost_scale" {print $2; exit}' "$scales_file"
-  else
-    echo 1
+    val="$(awk -F= '$1=="cost_scale" {print $2; exit}' "$scales_file")"
   fi
+  echo "${val:-1}"
 }
 
 # ── Write CSV header ──

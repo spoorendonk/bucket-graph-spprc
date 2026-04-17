@@ -3169,7 +3169,7 @@ private:
         }
         double mu = midpoint_.load(std::memory_order_relaxed);
         // Post-solve corrective step (fixed magnitude, applied between solves).
-        // See checkpoint_midpoint() for the per-region geometry rationale.
+        // Shift proportional to remaining range on the overloaded side.
         constexpr double kPostSolveStep = 0.05;
         if (fw_lc > 1.2 * bw_lc) {
             midpoint_.store(mu - kPostSolveStep * (mu - resource_min_lb_),
