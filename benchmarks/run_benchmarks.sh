@@ -2,17 +2,22 @@
 # run_benchmarks.sh — Run bgspprc-solve on benchmark instances and produce CSV results.
 #
 # Runs bgspprc-solve on instance files (.sppcc/.vrp/.graph), parses stdout,
-# and writes rows to benchmarks/bgspprc.csv (one row per instance+set+ng combo,
-# replaced on re-run).
+# and writes rows to benchmarks/bgspprc.csv (one row per instance+set+ng+mode
+# combo, replaced on re-run).
 #
 # Usage:
-#   ./benchmarks/run_benchmarks.sh [--ng K] [--timeout S] [PATH...]
+#   ./benchmarks/run_benchmarks.sh [--ng K] [--mode M] [--timeout S] [PATH...]
 #
 # Arguments:
 #   PATH           Instance file or directory of instances.
 #                  Default: benchmarks/instances/spprclib and
 #                  benchmarks/instances/roberti.
 #   --ng K         Pass --ng K to solver (ng-neighborhood size).
+#   --mode M       Solver mode: mono | bidir | para-bidir (default: para-bidir).
+#                  Data-parallelism is always on; modes differ on bidir axis.
+#                    mono       → --mono
+#                    bidir      → --no-parallel-bidir (sequential fw/bw)
+#                    para-bidir → default (bidir + parallel + parallel_bidir)
 #   --max-paths N  Pass --max-paths N to solver.
 #   --timeout S    Per-instance timeout in seconds (default: 120).
 #
@@ -21,8 +26,9 @@
 #
 # Output:
 #   benchmarks/bgspprc.csv — CSV with columns:
-#     instance, set, ng, cost, paths, time_s, timestamp
-#   Existing rows for re-run instances are replaced; other rows preserved.
+#     instance, set, ng, mode, cost, paths, time_s, timestamp
+#   Existing rows for the same (instance, set, ng, mode) are replaced;
+#   other rows preserved.
 #
 # Parsed fields from bgspprc-solve stdout:
 #   "name  type  n=NN  arcs=NN  cost=X.XXX  paths=N  X.Xms"
@@ -52,17 +58,31 @@ CSV="${SCRIPTDIR}/bgspprc.csv"
 NG_FLAG=()
 MAX_PATHS_FLAG=()
 TIMEOUT=120
+MODE="para-bidir"
 PATHS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ng)        NG_FLAG=(--ng "$2"); shift 2 ;;
+    --mode)      MODE="$2"; shift 2 ;;
     --max-paths) MAX_PATHS_FLAG=(--max-paths "$2"); shift 2 ;;
     --timeout)   TIMEOUT="$2"; shift 2 ;;
     -h|--help)   usage ;;
     *)           PATHS+=("$1"); shift ;;
   esac
 done
+
+# Map mode to solver flags
+MODE_FLAGS=()
+case "$MODE" in
+  mono)       MODE_FLAGS=(--mono) ;;
+  bidir)      MODE_FLAGS=(--no-parallel-bidir) ;;
+  para-bidir) MODE_FLAGS=() ;;  # default bgspprc-solve behaviour
+  *)
+    echo "Invalid --mode: $MODE (expected: mono | bidir | para-bidir)" >&2
+    exit 1
+    ;;
+esac
 
 # Default paths
 if [[ ${#PATHS[@]} -eq 0 ]]; then
@@ -98,7 +118,7 @@ fi
 
 # ── Ensure CSV header ──
 if [[ ! -f "$CSV" ]]; then
-  echo "instance,set,ng,cost,paths,time_s,timestamp" > "$CSV"
+  echo "instance,set,ng,mode,cost,paths,time_s,timestamp" > "$CSV"
 fi
 
 # ── Infer set and ng from path ──
@@ -143,7 +163,7 @@ for file in "${FILES[@]}"; do
   # Run solver with timeout
   output=""
   status="OK"
-  if output=$(timeout "${TIMEOUT}s" "$SOLVE" "${NG_FLAG[@]}" "${MAX_PATHS_FLAG[@]}" "$file" 2>&1); then
+  if output=$(timeout "${TIMEOUT}s" "$SOLVE" "${MODE_FLAGS[@]}" "${NG_FLAG[@]}" "${MAX_PATHS_FLAG[@]}" "$file" 2>&1); then
     :
   else
     rc=$?
@@ -180,16 +200,16 @@ for file in "${FILES[@]}"; do
   printf "%-30s  %8s  %5s  %8s  %s  [%d/%d]\n" \
     "$stem" "${cost:--}" "${paths:--}" "${time_ms:--}" "$status" "$IDX" "$TOTAL"
 
-  # Deduplicate: remove existing rows for this instance+set+ng
+  # Deduplicate: remove existing rows for this instance+set+ng+mode
   if [[ -f "$CSV" ]]; then
     tmp="$(mktemp)"
-    awk -F, -v inst="$stem" -v s="$set_name" -v n="$ng_val" \
-      'NR==1 || !($1==inst && $2==s && $3==n)' "$CSV" > "$tmp"
+    awk -F, -v inst="$stem" -v s="$set_name" -v n="$ng_val" -v m="$MODE" \
+      'NR==1 || !($1==inst && $2==s && $3==n && $4==m)' "$CSV" > "$tmp"
     mv "$tmp" "$CSV"
   fi
 
   # Append result (even for failures, with empty fields)
-  echo "${stem},${set_name},${ng_val},${cost},${paths},${time_s},${TIMESTAMP}" >> "$CSV"
+  echo "${stem},${set_name},${ng_val},${MODE},${cost},${paths},${time_s},${TIMESTAMP}" >> "$CSV"
 done
 
 echo

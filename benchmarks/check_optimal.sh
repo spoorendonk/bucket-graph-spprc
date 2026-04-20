@@ -111,11 +111,11 @@ lookup_optimal() {
 # ── Check results ──
 PASS=0 FAIL=0 SKIP=0 TOTAL=0
 
-printf "%-30s  %4s  %10s  %10s  %s\n" "Instance" "ng" "Got" "Optimal" "Result"
-printf '%.0s-' {1..72}; echo
+printf "%-30s  %4s  %-10s  %10s  %10s  %s\n" "Instance" "ng" "Mode" "Got" "Optimal" "Result"
+printf '%.0s-' {1..82}; echo
 
 # Read CSV, skip header
-while IFS=, read -r inst set ng cost paths time_s ts; do
+while IFS=, read -r inst set ng mode cost paths time_s ts; do
   # Apply ng filter
   if [[ -n "$NG_FILTER" && "$ng" != "$NG_FILTER" ]]; then
     continue
@@ -137,20 +137,20 @@ while IFS=, read -r inst set ng cost paths time_s ts; do
   opt="$_lookup_result"
 
   if [[ -z "$opt" ]]; then
-    printf "%-30s  %4s  %10s  %10s  SKIP\n" "$inst" "${ng:--}" "${cost:--}" "-"
+    printf "%-30s  %4s  %-10s  %10s  %10s  SKIP\n" "$inst" "${ng:--}" "${mode:--}" "${cost:--}" "-"
     SKIP=$((SKIP + 1))
     continue
   fi
 
   if [[ -z "$cost" ]]; then
-    printf "%-30s  %4s  %10s  %10s  FAIL (no result)\n" "$inst" "${ng:--}" "-" "$opt"
+    printf "%-30s  %4s  %-10s  %10s  %10s  FAIL (no result)\n" "$inst" "${ng:--}" "${mode:--}" "-" "$opt"
     FAIL=$((FAIL + 1))
     continue
   fi
 
   # Compare: cost <= optimal + eps
   result="$(awk -v c="$cost" -v o="$opt" -v e="$EPS" 'BEGIN{print (c <= o + e) ? "PASS" : "FAIL"}')"
-  printf "%-30s  %4s  %10s  %10s  %s\n" "$inst" "${ng:--}" "$cost" "$opt" "$result"
+  printf "%-30s  %4s  %-10s  %10s  %10s  %s\n" "$inst" "${ng:--}" "${mode:--}" "$cost" "$opt" "$result"
   if [[ "$result" == "PASS" ]]; then
     PASS=$((PASS + 1))
   else

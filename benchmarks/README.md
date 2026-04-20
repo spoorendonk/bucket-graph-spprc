@@ -51,10 +51,12 @@ benchmarks/
 cmake -B build -DCMAKE_CXX_COMPILER=g++-14
 cmake --build build
 
-# 3. Run all benchmarks
-for ng in 8 16 24; do
-  ./benchmarks/run_benchmarks.sh --ng $ng --timeout 120 benchmarks/instances/spprclib
-  ./benchmarks/run_benchmarks.sh --ng $ng --timeout 120 benchmarks/instances/roberti
+# 3. Run all benchmarks (3 modes × 3 ng values)
+for mode in mono bidir para-bidir; do
+  for ng in 8 16 24; do
+    ./benchmarks/run_benchmarks.sh --mode $mode --ng $ng --timeout 120 benchmarks/instances/spprclib
+    ./benchmarks/run_benchmarks.sh --mode $mode --ng $ng --timeout 120 benchmarks/instances/roberti
+  done
 done
 
 # 4. Verify
@@ -66,7 +68,7 @@ done
 | Script | Description | Input | Output |
 |--------|-------------|-------|--------|
 | `fetch_instances.sh` | Download all instance sets | — | `instances/` |
-| `run_benchmarks.sh` | Run solver on instances, deduplicate results | Instance files/dirs, `--ng K`, `--timeout S` | `bgspprc.csv` |
+| `run_benchmarks.sh` | Run solver on instances, deduplicate results | Instance files/dirs, `--ng K`, `--mode M`, `--timeout S` | `bgspprc.csv` |
 | `check_optimal.sh` | Verify costs against reference optima | `bgspprc.csv`, `optimal*.csv` | Pass/fail table |
 | `run_comparison.sh` | Compare rcspp runtimes vs Petersen & Spoorendonk 2025 | `instances/rcspp/`, `pull_algo_runtimes.csv` | `comparison_rcspp.csv` |
 | `run_pathwyse.sh` | Build Pathwyse, convert instances, compare both solvers | Instance files/dirs, `--ng K`, `--timeout S` | `comparison_pathwyse.csv` |
@@ -78,17 +80,29 @@ done
 ### Full benchmark run
 
 ```bash
-# spprclib + roberti at ng=8,16,24
-for ng in 8 16 24; do
-  ./benchmarks/run_benchmarks.sh --ng $ng --timeout 120 benchmarks/instances/spprclib
-  ./benchmarks/run_benchmarks.sh --ng $ng --timeout 120 benchmarks/instances/roberti
+# spprclib + roberti at ng=8,16,24 across all 3 solver modes
+for mode in mono bidir para-bidir; do
+  for ng in 8 16 24; do
+    ./benchmarks/run_benchmarks.sh --mode $mode --ng $ng --timeout 120 benchmarks/instances/spprclib
+    ./benchmarks/run_benchmarks.sh --mode $mode --ng $ng --timeout 120 benchmarks/instances/roberti
+  done
 done
 
 # rcspp at ng=8,16,24 (also populates bgspprc.csv)
-for ng in 8 16 24; do
-  ./benchmarks/run_benchmarks.sh --ng $ng --timeout 120 benchmarks/instances/rcspp/ng$ng
+for mode in mono bidir para-bidir; do
+  for ng in 8 16 24; do
+    ./benchmarks/run_benchmarks.sh --mode $mode --ng $ng --timeout 120 benchmarks/instances/rcspp/ng$ng
+  done
 done
 ```
+
+Solver modes (data-parallelism always on; differ on bidir axis):
+
+| `--mode`      | bgspprc-solve flags |
+|---------------|---------------------|
+| `mono`        | `--mono` |
+| `bidir`       | `--no-parallel-bidir` (sequential fw/bw) |
+| `para-bidir`  | default (bidir + parallel + parallel_bidir) |
 
 ### Verification
 
@@ -140,6 +154,7 @@ bgspprc cost <= Pathwyse cost (expected relationship).
 | `instance` | Instance name (filename without extension) |
 | `set` | Instance set (`spprclib`, `roberti`, `ng8`, `ng16`, `ng24`) |
 | `ng` | ng-neighborhood size used |
+| `mode` | Solver mode (`mono`, `bidir`, `para-bidir`) |
 | `cost` | Optimal cost found (empty on timeout/error) |
 | `paths` | Number of optimal paths found |
 | `time_s` | Wall-clock time in seconds |
