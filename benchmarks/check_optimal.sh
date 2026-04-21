@@ -11,12 +11,14 @@
 #   rcspp instances (set matches ng[0-9]+) always have optimal=0.
 #
 # Usage:
-#   ./benchmarks/check_optimal.sh [--ng K] [--csv FILE] [PATH...]
+#   ./benchmarks/check_optimal.sh [--ng K] [--mode M] [--csv FILE] [PATH...]
 #
 # Arguments:
 #   PATH           Instance file or directory — filter CSV to these instances.
 #                  If omitted, all CSV rows are checked.
 #   --ng K         Filter CSV to rows with this ng value.
+#   --mode M       Filter CSV to rows with this solver mode
+#                  (mono | bidir | para-bidir).
 #   --csv FILE     Results CSV (default: benchmarks/bgspprc.csv).
 #
 # Verdict:
@@ -36,12 +38,14 @@ usage() {
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
 CSV="${SCRIPTDIR}/bgspprc.csv"
 NG_FILTER=""
+MODE_FILTER=""
 PATHS=()
 EPS=0.001
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ng)   NG_FILTER="$2"; shift 2 ;;
+    --mode) MODE_FILTER="$2"; shift 2 ;;
     --csv)  CSV="$2"; shift 2 ;;
     -h|--help) usage ;;
     *)      PATHS+=("$1"); shift ;;
@@ -118,6 +122,11 @@ printf '%.0s-' {1..82}; echo
 while IFS=, read -r inst set ng mode cost paths time_s ts; do
   # Apply ng filter
   if [[ -n "$NG_FILTER" && "$ng" != "$NG_FILTER" ]]; then
+    continue
+  fi
+
+  # Apply mode filter
+  if [[ -n "$MODE_FILTER" && "$mode" != "$MODE_FILTER" ]]; then
     continue
   fi
 

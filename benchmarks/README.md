@@ -51,11 +51,12 @@ benchmarks/
 cmake -B build -DCMAKE_CXX_COMPILER=g++-14
 cmake --build build
 
-# 3. Run all benchmarks (3 modes × 3 ng values)
+# 3. Run all benchmarks (3 modes × 3 ng values × 3 sets = ~1188 rows)
 for mode in mono bidir para-bidir; do
   for ng in 8 16 24; do
     ./benchmarks/run_benchmarks.sh --mode $mode --ng $ng --timeout 120 benchmarks/instances/spprclib
     ./benchmarks/run_benchmarks.sh --mode $mode --ng $ng --timeout 120 benchmarks/instances/roberti
+    ./benchmarks/run_benchmarks.sh --mode $mode --ng $ng --timeout 120 benchmarks/instances/rcspp/ng$ng
   done
 done
 
