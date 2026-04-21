@@ -27,7 +27,7 @@ benchmarks/
 ├── fetch_instances.sh     download all instance sets
 ├── run_benchmarks.sh      run solver, produce bgspprc.csv
 ├── run_comparison.sh      run solver on rcspp, compare vs paper
-├── run_pathwyse.sh        build Pathwyse, convert instances, run comparison
+├── compare_pathwyse.sh    run Pathwyse, join against bgspprc.csv
 ├── convert_to_pathwyse.py convert .sppcc/.vrp/.graph to Pathwyse format
 ├── compare_mono_bidir.sh  compare mono vs bidir mode
 ├── check_optimal.sh       verify results against reference optima
@@ -74,7 +74,7 @@ done
 | `check_optimal.sh` | Verify costs against reference optima | `bgspprc.csv`, `optimal*.csv` | Pass/fail table |
 | `check_consistency.py` | Cross-mode sanity check: mono/bidir/para-bidir must agree on cost within tolerance | `bgspprc.csv`, `--eps EPS` | Summary + exit 1 on mismatch |
 | `run_comparison.sh` | Compare rcspp runtimes vs Petersen & Spoorendonk 2025 | `instances/rcspp/`, `pull_algo_runtimes.csv` | `comparison_rcspp.csv` |
-| `run_pathwyse.sh` | Build Pathwyse, convert instances, compare both solvers | Instance files/dirs, `--ng K`, `--timeout S` | `comparison_pathwyse.csv` |
+| `compare_pathwyse.sh` | Run Pathwyse, join against `bgspprc.csv`, emit comparison | Instance files/dirs, `--ng K`, `--timeout S` | `comparison_pathwyse.csv` |
 | `convert_to_pathwyse.py` | Convert instances to Pathwyse format | `.sppcc`/`.vrp`/`.graph` files | `instances/pathwyse/` |
 | `compare_mono_bidir.sh` | Side-by-side mono vs bidir comparison | Instance files/dirs | Terminal table |
 
@@ -139,16 +139,16 @@ Solver modes (data-parallelism always on; differ on bidir axis):
 
 ```bash
 # Run on rcspp ng=8 instances (default)
-./benchmarks/run_pathwyse.sh
+./benchmarks/compare_pathwyse.sh
 
 # Run on specific instances with custom ng
-./benchmarks/run_pathwyse.sh --ng 8 benchmarks/instances/rcspp/ng8
+./benchmarks/compare_pathwyse.sh --ng 8 benchmarks/instances/rcspp/ng8
 
 # Skip rebuilding Pathwyse (reuse previous build)
-./benchmarks/run_pathwyse.sh --skip-build
+./benchmarks/compare_pathwyse.sh --skip-build
 
 # Run on all three datasets
-./benchmarks/run_pathwyse.sh --ng 8 \
+./benchmarks/compare_pathwyse.sh --ng 8 \
   benchmarks/instances/rcspp/ng8 \
   benchmarks/instances/spprclib \
   benchmarks/instances/roberti

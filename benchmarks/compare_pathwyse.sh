@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-# run_pathwyse.sh — Build Pathwyse, convert instances, run Pathwyse, join against
+# compare_pathwyse.sh — Build Pathwyse, convert instances, run Pathwyse, join against
 # pre-computed bgspprc results, produce comparison CSV.
 #
 # bgspprc rows are read from benchmarks/bgspprc.csv (mode=para-bidir) — this
 # script does NOT invoke bgspprc-solve. Re-run benchmarks/run_benchmarks.sh
 # first if bgspprc.csv is stale.
 #
+# Note on ng-metric: on rcspp .graph instances bgspprc's auto-default uses
+# `cost` for ng neighborhoods (cli/main.cpp ng_metric==-1 branch), while
+# Pathwyse builds ng neighborhoods from distance internally. The rcspp
+# comparison rows are therefore not strictly apples-to-apples; sppcc/vrp
+# instances both use distance and do compare directly.
+#
 # Usage:
-#   ./benchmarks/run_pathwyse.sh [--ng K] [--timeout S] [--skip-build] [--append]
+#   ./benchmarks/compare_pathwyse.sh [--ng K] [--timeout S] [--skip-build] [--append]
 #                                [--bgspprc-csv FILE] [PATH...]
 #
 # Arguments:
@@ -280,15 +286,17 @@ for file in "${FILES[@]}"; do
   fi
 
   # Cost comparison: bg cost <= pw cost expected (weaker dominance finds more
-  # paths). Tolerance accounts for accumulated per-arc rounding in the int
-  # scaling used by the converter (≈ n_arcs / cost_scale). A bg cost of 0
-  # typically means bgspprc found no improving path — label `bg_zero` so these
-  # rows don't get lumped with real `bg_gt` regressions.
+  # paths). Tolerance `1000 / cost_scale` covers accumulated int-scaling
+  # rounding plus the 3-decimal quantum used for bg_cost in bgspprc.csv
+  # (the tighter 100/cost_scale bound flagged ~6 spprclib E_*_a/_b rows
+  # where |bg - pw| ≈ 1-4e-4 as bg_gt). A bg cost of 0 typically means
+  # bgspprc found no improving path — label `bg_zero` so these rows don't
+  # get lumped with real `bg_gt` regressions.
   bg_leq=""
   if [[ -n "$bg_cost" && -n "$pw_cost" ]]; then
     bg_leq="$(awk -v bg="$bg_cost" -v pw="$pw_cost" -v s="$pw_cost_scale" '
       BEGIN{
-        tol = 100.0 / s
+        tol = 1000.0 / s
         if (bg+0 > -1e-9 && bg+0 < 1e-9) print "bg_zero"
         else print (bg <= pw + tol) ? "bg_leq" : "bg_gt"
       }')"

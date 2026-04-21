@@ -425,7 +425,7 @@ def write_pathwyse(
                     f.write(f"1 {arc[0]} {arc[1]} {_scale_int(time_val, time_scale)}\n")
             f.write("END\n")
 
-    # Sidecar file with the scales used, so run_pathwyse.sh can divide Obj back.
+    # Sidecar file with the scales used, so compare_pathwyse.sh can divide Obj back.
     scales_path = str(outpath).rsplit(".", 1)[0] + ".scales"
     with open(scales_path, "w") as f:
         f.write(f"cost_scale={cost_scale}\n")
