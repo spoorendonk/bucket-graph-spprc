@@ -117,8 +117,18 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
 fi
 
 # ── Ensure CSV header ──
+EXPECTED_HEADER="instance,set,ng,mode,cost,paths,time_s,timestamp"
 if [[ ! -f "$CSV" ]]; then
-  echo "instance,set,ng,mode,cost,paths,time_s,timestamp" > "$CSV"
+  echo "$EXPECTED_HEADER" > "$CSV"
+else
+  existing_header="$(head -1 "$CSV")"
+  if [[ "$existing_header" != "$EXPECTED_HEADER" ]]; then
+    echo "Error: $CSV has an outdated header." >&2
+    echo "  expected: $EXPECTED_HEADER" >&2
+    echo "  found:    $existing_header" >&2
+    echo "Remove the file and re-run to regenerate with the current schema." >&2
+    exit 1
+  fi
 fi
 
 # ── Infer set and ng from path ──

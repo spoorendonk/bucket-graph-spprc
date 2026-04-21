@@ -52,6 +52,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -n "$MODE_FILTER" && ! "$MODE_FILTER" =~ ^(mono|bidir|para-bidir)$ ]]; then
+  echo "Invalid --mode: $MODE_FILTER (expected: mono | bidir | para-bidir)" >&2
+  exit 1
+fi
+
 if [[ ! -f "$CSV" ]]; then
   echo "CSV not found: $CSV" >&2
   exit 1
