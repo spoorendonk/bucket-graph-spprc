@@ -1,20 +1,13 @@
 #!/usr/bin/env bash
-# compare_pathwyse.sh — Build Pathwyse, convert instances, run Pathwyse, join against
-# pre-computed bgspprc results, produce comparison CSV.
+# run_pathwyse.sh — Build Pathwyse, convert instances, run Pathwyse, append rows
+# to benchmarks/pathwyse.csv. One row per (instance, ng) with cost + runtime.
 #
-# bgspprc rows are read from benchmarks/bgspprc.csv (mode=para-bidir) — this
-# script does NOT invoke bgspprc-solve. Re-run benchmarks/run_benchmarks.sh
-# first if bgspprc.csv is stale.
-#
-# Note on ng-metric: on rcspp .graph instances bgspprc's auto-default uses
-# `cost` for ng neighborhoods (cli/main.cpp ng_metric==-1 branch), while
-# Pathwyse builds ng neighborhoods from distance internally. The rcspp
-# comparison rows are therefore not strictly apples-to-apples; sppcc/vrp
-# instances both use distance and do compare directly.
+# No comparison logic — use build_comparison_pathwyse.py to join pathwyse.csv
+# against bgspprc.csv into benchmarks/comparison_pathwyse.csv.
 #
 # Usage:
-#   ./benchmarks/compare_pathwyse.sh [--ng K] [--timeout S] [--skip-build] [--append]
-#                                [--bgspprc-csv FILE] [PATH...]
+#   ./benchmarks/run_pathwyse.sh [--ng K] [--timeout S] [--skip-build] [--append]
+#                                [PATH...]
 #
 # Arguments:
 #   PATH              Instance file or directory of instances.
@@ -23,24 +16,23 @@
 #   --timeout S       Per-instance Pathwyse timeout in seconds (default: 120).
 #   --skip-build      Skip cloning/building Pathwyse (reuse existing build).
 #   --append          Append rows to existing CSV (skip header write + overwrite).
-#   --bgspprc-csv F   Source of bgspprc rows (default: benchmarks/bgspprc.csv).
 #
 # Environment:
 #   PATHWYSE_DIR      Path to Pathwyse repo (default: ./build/pathwyse).
 #
 # Output:
-#   benchmarks/comparison_pathwyse.csv — CSV with columns:
-#     instance, ng, bgspprc_s, pathwyse_s, bgspprc_cost, pathwyse_cost,
-#     bg_leq, ratio
+#   benchmarks/pathwyse.csv — CSV with columns:
+#     instance, set, ng, cost, time_s, cost_scale, timestamp
+#   cost_scale is the per-instance int32 scaling used by convert_to_pathwyse.py;
+#   downstream consumers use it to size float-comparison tolerances.
 set -euo pipefail
 
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
 REPODIR="$(cd "$SCRIPTDIR/.." && pwd)"
 PATHWYSE_DIR="${PATHWYSE_DIR:-$REPODIR/build/pathwyse}"
 PATHWYSE_BIN="$PATHWYSE_DIR/bin/pathwyse"
-OUT_CSV="$SCRIPTDIR/comparison_pathwyse.csv"
+OUT_CSV="$SCRIPTDIR/pathwyse.csv"
 CONVERTED_DIR="$SCRIPTDIR/instances/pathwyse"
-BG_CSV="$SCRIPTDIR/bgspprc.csv"
 TIMEOUT=120
 NG=8
 SKIP_BUILD=0
@@ -60,7 +52,6 @@ while [[ $# -gt 0 ]]; do
     --timeout)    TIMEOUT="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --append)     APPEND=1; shift ;;
-    --bgspprc-csv) BG_CSV="$2"; shift 2 ;;
     -h|--help)    usage ;;
     *)            PATHS+=("$1"); shift ;;
   esac
@@ -70,27 +61,6 @@ done
 if [[ ${#PATHS[@]} -eq 0 ]]; then
   PATHS=("$SCRIPTDIR/instances/rcspp/ng${NG}")
 fi
-
-# ── Verify bgspprc results CSV ──
-if [[ ! -f "$BG_CSV" ]]; then
-  echo "Error: bgspprc results CSV not found at $BG_CSV" >&2
-  echo "Run benchmarks/run_benchmarks.sh first, or pass --bgspprc-csv FILE." >&2
-  exit 1
-fi
-BG_CSV_HEADER_EXPECTED="instance,set,ng,mode,cost,paths,time_s,timestamp"
-if [[ "$(head -1 "$BG_CSV")" != "$BG_CSV_HEADER_EXPECTED" ]]; then
-  echo "Error: $BG_CSV header mismatch. Expected: $BG_CSV_HEADER_EXPECTED" >&2
-  exit 1
-fi
-
-# Look up (cost,time_s) for a (stem, ng) pair from bgspprc.csv (mode=para-bidir).
-# Prints "cost,time_s" or empty string on miss.
-lookup_bg() {
-  local stem="$1" ng="$2"
-  awk -F, -v s="$stem" -v n="$ng" '
-    NR>1 && $1==s && $3==n && $4=="para-bidir" {print $5","$7; exit}
-  ' "$BG_CSV"
-}
 
 # ── Build Pathwyse ──
 build_pathwyse() {
@@ -199,29 +169,23 @@ read_cost_scale() {
 
 # ── Write CSV header ──
 if [[ $APPEND -eq 0 ]]; then
-  echo "instance,ng,bgspprc_s,pathwyse_s,bgspprc_cost,pathwyse_cost,bg_leq,ratio" > "$OUT_CSV"
+  echo "instance,set,ng,cost,time_s,cost_scale,timestamp" > "$OUT_CSV"
 fi
 
 # Pathwyse settings are ng-dependent, not instance-dependent, so write once.
 # Concurrent script invocations would race on this file.
 write_pathwyse_settings "$NG"
 
-# ── Run comparison ──
+# ── Run ──
 echo
 TOTAL=${#FILES[@]}
 IDX=0
-# Costs are NOT expected to match: bgspprc uses compressed ng-path (weaker
-# dominance, more negative paths found), while Pathwyse uses full O(|V|)
-# unreachable vectors (tighter dominance, fewer paths). bgspprc cost <= Pathwyse
-# cost is the expected relationship. We report bg_leq (bg <= pw) as a sanity check.
 
-printf "%-20s  %3s  %10s  %10s  %12s  %10s  %10s  %s\n" \
-  "Instance" "ng" "bg(s)" "pw(s)" "bg_cost" "pw_cost" "ratio" "bg<=pw"
-printf '%.0s-' {1..90}; echo
+printf "%-20s  %3s  %10s  %12s  %s\n" "Instance" "ng" "time(s)" "cost" "status"
+printf '%.0s-' {1..70}; echo
 
 # Accumulate for geometric mean
-SUM_LOG_BG=0
-SUM_LOG_PW=0
+SUM_LOG=0
 COUNT=0
 SHIFT=1
 
@@ -229,8 +193,6 @@ for file in "${FILES[@]}"; do
   IDX=$((IDX + 1))
   stem="$(basename "$file")"
   stem="${stem%.*}"
-
-  # Determine Pathwyse converted file
   parent="$(basename "$(dirname "$file")")"
   pw_file="$CONVERTED_DIR/$parent/${stem}.txt"
 
@@ -239,25 +201,7 @@ for file in "${FILES[@]}"; do
     continue
   fi
 
-  # ── Look up bgspprc result ──
-  # Three cases: row absent (MISSING — skip pathwyse), row present with empty
-  # cost/time (BG_TIMEOUT — bgspprc itself didn't finish; still run pathwyse
-  # to see if it finds a path bgspprc missed), or populated row (OK).
-  bg_cost="" bg_time_s="" bg_status="OK"
-  bg_row="$(lookup_bg "$stem" "$NG")"
-  if [[ -z "$bg_row" ]]; then
-    echo "Warning: no bgspprc row for $stem ng=$NG, skipping" >&2
-    continue
-  elif [[ "$bg_row" == "," ]]; then
-    bg_status="BG_TIMEOUT"
-  else
-    bg_cost="${bg_row%,*}"
-    bg_time_s="${bg_row#*,}"
-  fi
-
-  # ── Run Pathwyse ──
   pw_cost="" pw_time_s="" pw_status="OK"
-  # Run Pathwyse from its directory so it picks up pathwyse.set
   pw_raw=""
   if pw_raw=$(cd "$PATHWYSE_DIR" && timeout "${TIMEOUT}s" "$PATHWYSE_BIN" "$pw_file" 2>&1); then
     :
@@ -270,70 +214,42 @@ for file in "${FILES[@]}"; do
     fi
   fi
 
-  # Parse Pathwyse output. Obj is an integer; divide by per-instance cost_scale
-  # (read from the sidecar written by convert_to_pathwyse.py) to recover the
-  # true objective.
   pw_cost_scale="$(read_cost_scale "$pw_file")"
   if [[ "$pw_status" == "OK" && -n "$pw_raw" ]]; then
     if [[ "$pw_raw" =~ Obj:[[:space:]]*(-?[0-9]+) ]]; then
       pw_cost_raw="${BASH_REMATCH[1]}"
       pw_cost="$(awk -v raw="$pw_cost_raw" -v scale="$pw_cost_scale" 'BEGIN{printf "%.6f", raw / scale}')"
     fi
-    # Extract global time
     if [[ "$pw_raw" =~ global\ time:[[:space:]]*([0-9.eE+-]+) ]]; then
       pw_time_s="${BASH_REMATCH[1]}"
     fi
   fi
 
-  # Cost comparison: bg cost <= pw cost expected (weaker dominance finds more
-  # paths). Tolerance `1000 / cost_scale` covers accumulated int-scaling
-  # rounding plus the 3-decimal quantum used for bg_cost in bgspprc.csv
-  # (the tighter 100/cost_scale bound flagged ~6 spprclib E_*_a/_b rows
-  # where |bg - pw| ≈ 1-4e-4 as bg_gt). A bg cost of 0 typically means
-  # bgspprc found no improving path — label `bg_zero` so these rows don't
-  # get lumped with real `bg_gt` regressions.
-  bg_leq=""
-  if [[ -n "$bg_cost" && -n "$pw_cost" ]]; then
-    bg_leq="$(awk -v bg="$bg_cost" -v pw="$pw_cost" -v s="$pw_cost_scale" '
-      BEGIN{
-        tol = 1000.0 / s
-        if (bg+0 > -1e-9 && bg+0 < 1e-9) print "bg_zero"
-        else print (bg <= pw + tol) ? "bg_leq" : "bg_gt"
-      }')"
-  fi
+  # Set label from parent directory (matches bgspprc.csv convention:
+  # spprclib/roberti/ng8/ng16/ng24).
+  set_label="$parent"
 
-  # Ratio
-  ratio=""
-  if [[ -n "$bg_time_s" && -n "$pw_time_s" && "$bg_time_s" != "0.000" && "$pw_time_s" != "0.000" ]]; then
-    ratio="$(awk -v bg="$bg_time_s" -v pw="$pw_time_s" 'BEGIN{printf "%.2f", bg / pw}')"
-  fi
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-  # Print row
-  printf "%-20s  %3d  %10s  %10s  %12s  %10s  %10s  %s  [%d/%d]\n" \
-    "$stem" "$NG" "${bg_time_s:--}" "${pw_time_s:--}" \
-    "${bg_cost:--}" "${pw_cost:--}" "${ratio:--}" "${bg_leq:--}" "$IDX" "$TOTAL"
+  printf "%-20s  %3d  %10s  %12s  %s  [%d/%d]\n" \
+    "$stem" "$NG" "${pw_time_s:--}" "${pw_cost:--}" "$pw_status" "$IDX" "$TOTAL"
 
-  # Write CSV row
-  echo "${stem},${NG},${bg_time_s},${pw_time_s},${bg_cost},${pw_cost},${bg_leq},${ratio}" >> "$OUT_CSV"
+  echo "${stem},${set_label},${NG},${pw_cost},${pw_time_s},${pw_cost_scale},${ts}" >> "$OUT_CSV"
 
-  # Accumulate for geometric mean (only if both have valid times)
-  if [[ -n "$bg_time_s" && -n "$pw_time_s" && "$bg_status" == "OK" && "$pw_status" == "OK" ]]; then
-    SUM_LOG_BG="$(awk -v s="$SUM_LOG_BG" -v t="$bg_time_s" -v sh="$SHIFT" 'BEGIN{print s + log(t + sh)}')"
-    SUM_LOG_PW="$(awk -v s="$SUM_LOG_PW" -v t="$pw_time_s" -v sh="$SHIFT" 'BEGIN{print s + log(t + sh)}')"
+  if [[ -n "$pw_time_s" && "$pw_status" == "OK" ]]; then
+    SUM_LOG="$(awk -v s="$SUM_LOG" -v t="$pw_time_s" -v sh="$SHIFT" 'BEGIN{print s + log(t + sh)}')"
     COUNT=$((COUNT + 1))
   fi
 done
 
 # ── Geometric mean summary ──
 echo
-printf '%.0s-' {1..90}; echo
-printf "Shifted geometric mean (shift=%ds, n=%d):\n" "$SHIFT" "$COUNT"
+printf '%.0s-' {1..70}; echo
+printf "Pathwyse shifted geometric mean (shift=%ds, n=%d):\n" "$SHIFT" "$COUNT"
 
 if [[ "$COUNT" -gt 0 ]]; then
-  geo_bg="$(awk -v s="$SUM_LOG_BG" -v n="$COUNT" -v sh="$SHIFT" 'BEGIN{printf "%.3f", exp(s / n) - sh}')"
-  geo_pw="$(awk -v s="$SUM_LOG_PW" -v n="$COUNT" -v sh="$SHIFT" 'BEGIN{printf "%.3f", exp(s / n) - sh}')"
-  geo_ratio="$(awk -v bg="$geo_bg" -v pw="$geo_pw" -v sh="$SHIFT" 'BEGIN{printf "%.2f", (bg + sh) / (pw + sh)}')"
-  printf "  bgspprc: %ss  pathwyse: %ss  ratio: %s\n" "$geo_bg" "$geo_pw" "$geo_ratio"
+  geo="$(awk -v s="$SUM_LOG" -v n="$COUNT" -v sh="$SHIFT" 'BEGIN{printf "%.3f", exp(s / n) - sh}')"
+  printf "  %ss\n" "$geo"
 else
   printf "  No valid results to summarize.\n"
 fi
