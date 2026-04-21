@@ -30,7 +30,8 @@ benchmarks/
 ├── run_pathwyse.sh        build Pathwyse, convert instances, run comparison
 ├── convert_to_pathwyse.py convert .sppcc/.vrp/.graph to Pathwyse format
 ├── compare_mono_bidir.sh  compare mono vs bidir mode
-└── check_optimal.sh       verify results against reference optima
+├── check_optimal.sh       verify results against reference optima
+└── check_consistency.py   verify mono/bidir/para-bidir agree on cost
 ```
 
 ## Instance sources
@@ -71,6 +72,7 @@ done
 | `fetch_instances.sh` | Download all instance sets | — | `instances/` |
 | `run_benchmarks.sh` | Run solver on instances, deduplicate results | Instance files/dirs, `--ng K`, `--mode M`, `--timeout S` | `bgspprc.csv` |
 | `check_optimal.sh` | Verify costs against reference optima | `bgspprc.csv`, `optimal*.csv` | Pass/fail table |
+| `check_consistency.py` | Cross-mode sanity check: mono/bidir/para-bidir must agree on cost within tolerance | `bgspprc.csv`, `--eps EPS` | Summary + exit 1 on mismatch |
 | `run_comparison.sh` | Compare rcspp runtimes vs Petersen & Spoorendonk 2025 | `instances/rcspp/`, `pull_algo_runtimes.csv` | `comparison_rcspp.csv` |
 | `run_pathwyse.sh` | Build Pathwyse, convert instances, compare both solvers | Instance files/dirs, `--ng K`, `--timeout S` | `comparison_pathwyse.csv` |
 | `convert_to_pathwyse.py` | Convert instances to Pathwyse format | `.sppcc`/`.vrp`/`.graph` files | `instances/pathwyse/` |
@@ -112,6 +114,12 @@ Solver modes (data-parallelism always on; differ on bidir axis):
 # PASS = cost ≤ optimal + 0.001
 # FAIL = cost too high or no result (timeout)
 # SKIP = no reference optimal available
+
+./benchmarks/check_consistency.py
+# Groups rows by (instance, set, ng) and asserts that every mode
+# (mono / bidir / para-bidir) that solved the group reports the same cost.
+# A mismatch indicates a correctness bug in one of the modes.
+# Exit code 0 = all consistent, 1 = mismatch found.
 ```
 
 ### Paper comparison (rcspp only)
