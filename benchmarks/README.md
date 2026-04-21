@@ -166,6 +166,156 @@ ng-metric is `cost` on `.graph` while Pathwyse builds ng neighborhoods from
 distance, so the ng-relaxations literally differ. Pathwyse runtimes are still
 recorded in `pathwyse.csv` if you run Pathwyse on the rcspp dirs.
 
+## Results
+
+All numbers below are derived from the committed CSVs. Each table is followed
+by a one-liner that reproduces it, so every cell is checkable. The shifted
+geometric mean is `sgm_s(x) = exp(mean(log(x + s))) − s`. Convention differs
+per table and matches the script that emits the underlying CSV — each table
+notes its shift and timeout handling.
+
+### Runtime
+
+bgspprc wall-clock per `(set, ng, mode)`. `n` instances per set: 45 (spprclib),
+31 (roberti), 56 (rcspp). Timeouts counted from empty `cost` cells.
+
+| set       | ng | mode       | sgm (s) | max (s) | #to |
+|-----------|---:|------------|--------:|--------:|----:|
+| spprclib  |  8 | mono       |   0.209 |   6.777 |   0 |
+| spprclib  |  8 | bidir      |   0.619 | 120.000 |   1 |
+| spprclib  |  8 | para-bidir |   0.624 | 120.000 |   1 |
+| spprclib  | 16 | mono       |   1.394 |  22.222 |   0 |
+| spprclib  | 16 | bidir      |   1.944 | 120.000 |   1 |
+| spprclib  | 16 | para-bidir |   1.649 | 120.000 |   1 |
+| spprclib  | 24 | mono       |   9.787 | 120.000 |   3 |
+| spprclib  | 24 | bidir      |   6.114 | 120.000 |   5 |
+| spprclib  | 24 | para-bidir |   5.376 | 120.000 |   4 |
+| roberti   |  8 | mono       |   0.843 |  10.284 |   0 |
+| roberti   |  8 | bidir      |   0.726 |  13.082 |   0 |
+| roberti   |  8 | para-bidir |   0.563 |   9.621 |   0 |
+| roberti   | 16 | mono       |   7.299 | 120.000 |   3 |
+| roberti   | 16 | bidir      |   4.316 | 120.000 |   3 |
+| roberti   | 16 | para-bidir |   3.378 | 120.000 |   3 |
+| roberti   | 24 | mono       |  50.488 | 120.000 |  14 |
+| roberti   | 24 | bidir      |  19.895 | 120.000 |   9 |
+| roberti   | 24 | para-bidir |  15.381 | 120.000 |   8 |
+| rcspp     |  8 | mono       |   1.267 |  19.458 |   0 |
+| rcspp     |  8 | bidir      |   2.353 |  59.863 |   0 |
+| rcspp     |  8 | para-bidir |   1.889 |  43.706 |   0 |
+| rcspp     | 16 | mono       |   1.563 |  51.294 |   0 |
+| rcspp     | 16 | bidir      |   3.021 | 120.000 |   1 |
+| rcspp     | 16 | para-bidir |   2.265 |  95.024 |   0 |
+| rcspp     | 24 | mono       |   1.983 | 120.000 |   2 |
+| rcspp     | 24 | bidir      |   3.149 | 120.000 |   5 |
+| rcspp     | 24 | para-bidir |   2.587 | 120.000 |   4 |
+
+Reproduce:
+
+```bash
+python3 -c '
+import csv, math, collections
+rows = list(csv.DictReader(open("benchmarks/bgspprc.csv")))
+canon = lambda s: {"ng8":"rcspp","ng16":"rcspp","ng24":"rcspp"}.get(s, s)
+g = collections.defaultdict(list)
+for r in rows: g[(canon(r["set"]), r["ng"], r["mode"])].append(r)
+for k in sorted(g):
+    ts = [120.0 if r["cost"]=="" else float(r["time_s"]) for r in g[k]]
+    to = sum(1 for r in g[k] if r["cost"]=="")
+    sgm = math.exp(sum(math.log(t+1) for t in ts)/len(ts))-1
+    print(f"{k[0]:<10}{k[1]:<4}{k[2]:<12}{sgm:>10.3f}{max(ts):>10.3f}{to:>5}")
+'
+```
+
+### Paper comparison (rcspp)
+
+bgspprc `para-bidir` (all opts on) vs Petersen & Spoorendonk 2025
+(arXiv:2511.01397) `all_s` column (all opts on). Shared 120 s timeout budget —
+`TL` rows are substituted with 120 s before the sgm (conservative: actual is
+≥ 120 s). Matches `run_comparison.sh`: shift = 10 s, ratio computed on shifted
+means as `(bg_sgm + 10) / (paper_sgm + 10)`. 56 Solomon instances per ng.
+
+| ng | bgspprc sgm (s) | paper sgm (s) | ratio | n  |
+|---:|----------------:|--------------:|------:|---:|
+|  8 |           3.645 |         0.334 | 1.320 | 56 |
+| 16 |           4.764 |         1.367 | 1.299 | 56 |
+| 24 |           6.064 |         2.890 | 1.246 | 56 |
+
+Reproduce:
+
+```bash
+python3 -c '
+import csv, math, collections
+rows = list(csv.DictReader(open("benchmarks/comparison_rcspp.csv")))
+SHIFT = 10.0
+to_s = lambda v: 120.0 if v=="TL" else float(v)
+g = collections.defaultdict(list)
+for r in rows: g[r["ng"]].append(r)
+for ng in sorted(g, key=int):
+    rs = g[ng]
+    bgs = [to_s(r["bgspprc_s"]) for r in rs]
+    pps = [to_s(r["paper_all_s"]) for r in rs]
+    bg_sgm = math.exp(sum(math.log(t+SHIFT) for t in bgs)/len(bgs))-SHIFT
+    pp_sgm = math.exp(sum(math.log(t+SHIFT) for t in pps)/len(pps))-SHIFT
+    ratio = (bg_sgm+SHIFT)/(pp_sgm+SHIFT)
+    print(f"{ng:<4}{bg_sgm:>8.3f}{pp_sgm:>8.3f}{ratio:>8.3f}{len(rs):>5}")
+'
+```
+
+### Pathwyse comparison
+
+bgspprc uses compressed ng-path (weaker dominance, more negative paths) whereas
+Pathwyse uses O(|V|) unreachable vectors (tighter dominance), so `bgspprc_cost ≤
+pathwyse_cost` is the expected inequality, not equality. The interesting
+quality signal is `#bg_eq`: rows where bgspprc finds a path of the same cost
+as Pathwyse — i.e. the weaker ng-path relaxation was already tight enough to
+match the unreachable-vector relaxation. Only `ng ∈ {8, 16, 24}` is compared —
+`ng=0` (elementary) is out of scope because neither side ships an elementary
+configuration in this benchmark setup. The rcspp `.graph` set is excluded
+entirely: the two solvers build ng neighborhoods from different metrics
+(cost vs. distance), so the relaxations literally differ.
+
+One row per `(instance, ng)` from `comparison_pathwyse.csv`. Matches
+`build_comparison_pathwyse.py`: shift = 1 s, **rows where either side timed
+out are dropped** from the sgm (not substituted), ratio computed on shifted
+means as `(bg_sgm + 1) / (pathwyse_sgm + 1)`. `n` is the paired count (both
+sides finished); `#bg_eq` counts rows where
+`|bgspprc_cost − pathwyse_cost| ≤ 1e-3` across all `n_total` rows.
+
+| set      | ng | bgspprc sgm (s) | pathwyse sgm (s) | ratio | #bg_eq | n  | n_total |
+|----------|---:|----------------:|-----------------:|------:|-------:|---:|--------:|
+| spprclib |  8 |           0.091 |            4.359 | 0.204 |      7 | 35 |      45 |
+| spprclib | 16 |           0.320 |            7.625 | 0.153 |     20 | 28 |      45 |
+| spprclib | 24 |           0.923 |            8.567 | 0.201 |     16 | 19 |      45 |
+| roberti  |  8 |           0.313 |            4.790 | 0.227 |     13 | 24 |      31 |
+| roberti  | 16 |           0.518 |            9.217 | 0.149 |     14 | 16 |      31 |
+| roberti  | 24 |           2.429 |           29.017 | 0.114 |     10 | 11 |      31 |
+
+Reproduce:
+
+```bash
+python3 -c '
+import csv, math, collections
+rows = list(csv.DictReader(open("benchmarks/comparison_pathwyse.csv")))
+bg = {(r["instance"], r["ng"]): r["set"] for r in csv.DictReader(open("benchmarks/bgspprc.csv")) if r["mode"]=="para-bidir"}
+SHIFT = 1.0
+def eq(a, b):
+    return a!="" and b!="" and abs(float(a)-float(b)) <= 1e-3
+g = collections.defaultdict(list)
+for r in rows:
+    s = bg.get((r["instance"], r["ng"]))
+    if s: g[(s, r["ng"])].append(r)
+for k in sorted(g):
+    rs = g[k]
+    pairs = [(float(r["bgspprc_s"]), float(r["pathwyse_s"])) for r in rs if r["bgspprc_s"] and r["pathwyse_s"]]
+    bgs = [p[0] for p in pairs]; pps = [p[1] for p in pairs]
+    beq = sum(1 for r in rs if eq(r["bgspprc_cost"], r["pathwyse_cost"]))
+    bg_sgm = math.exp(sum(math.log(t+SHIFT) for t in bgs)/len(bgs))-SHIFT
+    pp_sgm = math.exp(sum(math.log(t+SHIFT) for t in pps)/len(pps))-SHIFT
+    ratio = (bg_sgm+SHIFT)/(pp_sgm+SHIFT)
+    print(f"{k[0]:<10}{k[1]:<4}{bg_sgm:>8.3f}{pp_sgm:>8.3f}{ratio:>8.3f}{beq:>5}{len(pairs):>5}{len(rs):>5}")
+'
+```
+
 ## CSV columns
 
 ### `bgspprc.csv`

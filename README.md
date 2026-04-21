@@ -137,7 +137,45 @@ benchmarks/fetch_instances.sh
 benchmarks/run_benchmarks.sh
 ```
 
-See [`benchmarks/README.md`](benchmarks/README.md) for details on instance sets and expected results.
+### Results at a glance
+
+Headline numbers from the committed CSVs, 120 s timeout per instance. Full
+tables, methodology, and reproducer one-liners in
+[`benchmarks/README.md`](benchmarks/README.md#results).
+
+**Runtime** — `para-bidir` shifted geomean (s) / #timeouts per `(set, ng)`:
+
+| set      | ng 8 | ng 16 | ng 24 |
+|----------|-----:|------:|------:|
+| spprclib |   0.62 / 1 |  1.65 / 1 |  5.38 / 4 |
+| roberti  |   0.56 / 0 |  3.38 / 3 | 15.38 / 8 |
+| rcspp    |   1.89 / 0 |  2.27 / 0 |  2.59 / 4 |
+
+**Paper comparison (rcspp)** — bgspprc `para-bidir` vs Petersen & Spoorendonk
+2025 `all_s` (shift = 10 s, TL → 120 s, 56 instances/ng):
+
+| ng | ratio |
+|---:|------:|
+|  8 | 1.32  |
+| 16 | 1.30  |
+| 24 | 1.25  |
+
+**Pathwyse comparison** — bgspprc `para-bidir` vs Pathwyse (shift = 1 s, TL
+rows dropped; `#bg_eq` is where `bgspprc_cost = pathwyse_cost`, i.e. compressed
+ng-path matched unreachable-vector quality):
+
+| set      | ng | ratio | #bg_eq | n  |
+|----------|---:|------:|-------:|---:|
+| spprclib |  8 | 0.20  |      7 | 35 |
+| spprclib | 16 | 0.15  |     20 | 28 |
+| spprclib | 24 | 0.20  |     16 | 19 |
+| roberti  |  8 | 0.23  |     13 | 24 |
+| roberti  | 16 | 0.15  |     14 | 16 |
+| roberti  | 24 | 0.11  |     10 | 11 |
+
+bgspprc is ~25-30% slower than the paper on rcspp at the sgm (both solvers
+under the same 120 s budget; the paper is a highly tuned pull-based implementation)
+and 5-10× faster than Pathwyse on spprclib + roberti where both finish.
 
 ## Custom Resources
 
@@ -173,11 +211,14 @@ See [`examples/custom_resource.cpp`](examples/custom_resource.cpp) for a complet
 
 4. **Pessoa, Sadykov, Uchoa, Vanderbeck (2020)** — *A generic exact solver for vehicle routing and related problems* (VRPSolver). Mathematical Programming, 183:483-523. DOI: [10.1007/s10107-020-01523-z](https://doi.org/10.1007/s10107-020-01523-z)
 
+5. **Salani, Basso, Giuffrida (2024)** — *PathWyse: a flexible, open-source library for the resource constrained shortest path problem*. Optimization Methods and Software, 1–23. DOI: [10.1080/10556788.2023.2296978](https://doi.org/10.1080/10556788.2023.2296978)
+
+6. **Seman, Munari, Bulhões, Camponogara (2024)** — *BALDES: a modern C++ Bucket Graph Labeling Algorithm for Vehicle Routing*. GitHub: <https://github.com/lseman/baldes>
+
 ## Related Projects
 
-- [**Baldes**](https://github.com/lseman/baldes) — Bucket graph labeling for CVRP (BG2021 implementation in C++)
-- [**Pathwyse**](https://github.com/pathwyse/pathwyse) — Standard labeling + DSSR for RCSPP
-- [**Flowty**](https://flowty.ai) — Commercial solver for vehicle routing and scheduling
+- [**Baldes**](https://github.com/lseman/baldes) — Bucket graph labeling for CVRP/VRPTW in C++ (Seman et al. 2024, ref [6]); BG2021 with R1C cuts and HGS-VRPTW heuristics
+- [**Pathwyse**](https://github.com/pathwyse/pathwyse) — Standard labeling + DSSR for RCSPP (Salani, Basso, Giuffrida 2024, ref [5])
 
 ## License
 
