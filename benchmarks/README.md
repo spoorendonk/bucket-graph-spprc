@@ -177,7 +177,8 @@ notes its shift and timeout handling.
 ### Runtime
 
 bgspprc wall-clock per `(set, ng, mode)`. `n` instances per set: 45 (spprclib),
-31 (roberti), 56 (rcspp). Timeouts counted from empty `cost` cells.
+31 (roberti), 56 (rcspp). Shift = 1 s, timeouts (empty `cost` cells) substituted
+with 120 s in the sgm.
 
 | set       | ng | mode       | sgm (s) | max (s) | #to |
 |-----------|---:|------------|--------:|--------:|----:|

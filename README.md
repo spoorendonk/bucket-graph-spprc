@@ -173,9 +173,9 @@ ng-path matched unreachable-vector quality):
 | roberti  | 16 | 0.15  |     14 | 16 |
 | roberti  | 24 | 0.11  |     10 | 11 |
 
-bgspprc is ~25-30% slower than the paper on rcspp at the sgm (both solvers
-under the same 120 s budget; the paper is a highly tuned pull-based implementation)
-and 5-10× faster than Pathwyse on spprclib + roberti where both finish.
+bgspprc is ~25-32% slower than the paper on rcspp at the sgm (both solvers
+share the same 120 s budget) and ~4-9× faster than Pathwyse on spprclib +
+roberti where both finish.
 
 ## Custom Resources
 
@@ -218,7 +218,7 @@ See [`examples/custom_resource.cpp`](examples/custom_resource.cpp) for a complet
 ## Related Projects
 
 - [**Baldes**](https://github.com/lseman/baldes) — Bucket graph labeling for CVRP/VRPTW in C++ (Seman et al. 2024, ref [6]); BG2021 with R1C cuts and HGS-VRPTW heuristics
-- [**Pathwyse**](https://github.com/pathwyse/pathwyse) — Standard labeling + DSSR for RCSPP (Salani, Basso, Giuffrida 2024, ref [5])
+- [**PathWyse**](https://github.com/pathwyse/pathwyse) — Standard labeling + DSSR for RCSPP (Salani, Basso, Giuffrida 2024, ref [5])
 
 ## License
 

@@ -100,3 +100,5 @@ See [References](README.md#references) for full citations. Key papers:
 - Dominance cost early-exit (`existing->cost > L->cost + EPS`) is unsafe when resource domination_cost can be negative. Use `c_best + min_dom_cost_ > L->cost + EPS`.
 - Solver starts at `Stage::Heuristic1` by default. Benchmarks should call `set_stage(Stage::Exact)` for deterministic results.
 - F-class Roberti instances with large capacity windows are inherently slow with step=10 bidir — filter them from benchmarks.
+- Benchmark sgm conventions differ by script: `run_comparison.sh` uses shift=10 s, TL substituted with 120 s; `build_comparison_pathwyse.py` uses shift=1 s, TL rows dropped. When reproducing headline numbers, match the script that emits the CSV — mixing conventions will misreport ratios.
+- `bgspprc.csv` encodes rcspp as `set ∈ {ng8, ng16, ng24}` (one per ng dir). Canonicalize to a single `rcspp` bucket before grouping by set. `comparison_pathwyse.csv` excludes rcspp rows entirely (the ng metric differs between bgspprc and Pathwyse on `.graph` instances).
