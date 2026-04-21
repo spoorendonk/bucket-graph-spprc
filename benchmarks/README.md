@@ -126,8 +126,13 @@ Solver modes (data-parallelism always on; differ on bidir axis):
 
 ```bash
 ./benchmarks/run_comparison.sh
-# Compares bgspprc wall-clock times vs Petersen & Spoorendonk 2025 "Base" column
-# Produces shifted geometric mean summary per ng group
+# Pure join over bgspprc.csv (mode=para-bidir) and pull_algo_runtimes.csv (all_s column,
+# all optimizations enabled). Does NOT rerun the solver — refresh bgspprc.csv first
+# via run_benchmarks.sh if needed.
+#
+# Timeouts on either side are marked "TL" in the output and substituted with 120s
+# (the timeout budget) when computing the shifted geometric mean — a conservative
+# bound since actual time is ≥ 120s for TL rows.
 ```
 
 ### Pathwyse comparison
@@ -171,13 +176,18 @@ bgspprc cost <= Pathwyse cost (expected relationship).
 
 ### `comparison_rcspp.csv`
 
+Compares bgspprc `para-bidir` times (from `bgspprc.csv`) against the paper's
+`all_s` column (all optimizations enabled). Both solvers share a 120s timeout budget:
+rows that exceeded it on either side are marked `TL` and substituted with 120s
+in the SGM (a conservative bound — actual time is ≥ 120s).
+
 | Column | Description |
 |--------|-------------|
 | `instance` | Solomon instance name |
 | `ng` | ng-neighborhood size (8, 16, or 24) |
-| `bgspprc_s` | bgspprc wall-clock time in seconds |
-| `paper_base_s` | Petersen & Spoorendonk 2025 "Base" time in seconds |
-| `ratio` | `bgspprc_s / paper_base_s` |
+| `bgspprc_s` | bgspprc `para-bidir` wall-clock time in seconds, or `TL` if >120s |
+| `paper_all_s` | Petersen & Spoorendonk 2025 "all optimizations" time in seconds, or `TL` if >120s |
+| `ratio` | `bgspprc_s / paper_all_s`, with `TL` sides substituted as 120s |
 
 ### `comparison_pathwyse.csv`
 

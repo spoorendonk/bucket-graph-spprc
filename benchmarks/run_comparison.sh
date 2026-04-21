@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
-# run_comparison.sh — Compare bgspprc runtimes against Petersen & Spoorendonk 2025 (arXiv:2511.01397) "Base" column.
+# run_comparison.sh — Compare bgspprc para-bidir vs paper `all_s` on rcspp instances.
 #
-# Runs bgspprc-solve on all 56 Solomon RCSPP instances × {ng8, ng16, ng24},
-# compares wall-clock times against the paper's sequential scalar baseline,
-# and produces a ratio table plus shifted geometric mean summaries.
+# Pure CSV join over existing data:
+#   - bgspprc times: `bgspprc.csv`, mode=para-bidir, set∈{ng8,ng16,ng24}
+#   - paper times:   `pull_algo_runtimes.csv`, column `all_s` (all optimizations)
+#
+# Timeouts on either side are shown in the output as "TL" and substituted with
+# TIMEOUT seconds when computing the shifted geometric mean — a conservative
+# bound (actual time is ≥ TIMEOUT). Both sides use the same timeout budget, so
+# the ratio is apples-to-apples.
 #
 # Usage:
 #   ./benchmarks/run_comparison.sh [--ng 8|16|24] [--timeout S]
 #
-# Prerequisites:
-#   cmake -B build -DCMAKE_CXX_COMPILER=g++-14 && cmake --build build
+# Does NOT run the solver. Refresh bgspprc.csv with run_benchmarks.sh first
+# if you want updated bgspprc times. --timeout should match the timeout that
+# was used to generate bgspprc.csv — substituting a different value for TL
+# bgspprc rows would misreport their runtime.
 set -euo pipefail
 
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
-REPODIR="$(cd "$SCRIPTDIR/.." && pwd)"
-SOLVE="${SOLVE:-$REPODIR/build/bgspprc-solve}"
+BGSPPRC_CSV="$SCRIPTDIR/bgspprc.csv"
 PAPER_CSV="$SCRIPTDIR/pull_algo_runtimes.csv"
 OUT_CSV="$SCRIPTDIR/comparison_rcspp.csv"
 TIMEOUT=120
@@ -31,117 +37,105 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! -x "$SOLVE" ]]; then
-  echo "Error: solver not found at $SOLVE" >&2
-  echo "Build first: cmake -B build -DCMAKE_CXX_COMPILER=g++-14 && cmake --build build" >&2
+if [[ ! -f "$BGSPPRC_CSV" ]]; then
+  echo "Error: $BGSPPRC_CSV not found — run run_benchmarks.sh first" >&2
   exit 1
 fi
-
 if [[ ! -f "$PAPER_CSV" ]]; then
-  echo "Error: paper data not found at $PAPER_CSV" >&2
+  echo "Error: $PAPER_CSV not found" >&2
   exit 1
 fi
 
-# Load paper data into associative array: key="instance,ng" -> base_s
-declare -A PAPER_BASE
-while IFS=, read -r inst ng base_s _rest; do
-  [[ "$inst" == "instance" ]] && continue
-  PAPER_BASE["${inst},${ng}"]="$base_s"
-done < "$PAPER_CSV"
+BGSPPRC_CSV="$BGSPPRC_CSV" PAPER_CSV="$PAPER_CSV" OUT_CSV="$OUT_CSV" \
+TIMEOUT="$TIMEOUT" NG_GROUPS="${NG_GROUPS[*]}" \
+python3 <<'PY'
+import csv, math, os
 
-# Write CSV header
-echo "instance,ng,bgspprc_s,paper_base_s,ratio" > "$OUT_CSV"
+bgspprc_csv = os.environ['BGSPPRC_CSV']
+paper_csv   = os.environ['PAPER_CSV']
+out_csv     = os.environ['OUT_CSV']
+timeout     = float(os.environ['TIMEOUT'])
+ng_groups   = [int(x) for x in os.environ['NG_GROUPS'].split()]
+SHIFT = 10
 
-# Print table header
-printf "\n"
-printf "%-10s  %3s  %10s  %10s  %8s  %s\n" "Instance" "ng" "bgspprc(s)" "paper(s)" "ratio" "status"
-printf '%.0s─' {1..60}; echo
+# Paper all_s — mark >timeout as TL (None).
+paper = {}  # (inst, ng) -> float or None (TL)
+with open(paper_csv) as f:
+    for r in csv.DictReader(f):
+        ng = int(r['ng'])
+        if ng not in ng_groups:
+            continue
+        try:
+            t = float(r['all_s'])
+        except (TypeError, ValueError):
+            continue
+        paper[(r['instance'], ng)] = None if t > timeout else t
 
-# Accumulators for shifted geometric mean per ng group
-declare -A SUM_LOG  # sum of ln(t + shift)
-declare -A COUNT    # count per ng group
-SHIFT=10
+# bgspprc para-bidir rows on rcspp sets (set prefix 'ng') — empty cost = TL (None).
+bg = {}  # (inst, ng) -> float or None (TL)
+with open(bgspprc_csv) as f:
+    for r in csv.DictReader(f):
+        if r['mode'] != 'para-bidir' or not r['set'].startswith('ng'):
+            continue
+        try:
+            ng = int(r['ng'])
+        except ValueError:
+            continue
+        if ng not in ng_groups:
+            continue
+        key = (r['instance'], ng)
+        if not r['cost'] or not r['time_s']:
+            bg[key] = None
+        else:
+            bg[key] = float(r['time_s'])
 
-for ng in "${NG_GROUPS[@]}"; do
-  INSTDIR="$SCRIPTDIR/instances/rcspp/ng${ng}"
-  if [[ ! -d "$INSTDIR" ]]; then
-    echo "Warning: instance directory $INSTDIR not found, skipping ng$ng" >&2
-    continue
-  fi
+# Join — only instances present in both CSVs.
+rows = []
+for key in sorted(set(bg) & set(paper), key=lambda k: (k[1], k[0])):
+    bg_v, paper_v = bg[key], paper[key]
+    bg_sgm    = timeout if bg_v    is None else bg_v
+    paper_sgm = timeout if paper_v is None else paper_v
+    ratio = bg_sgm / paper_sgm
+    rows.append((key[0], key[1], bg_v, paper_v, bg_sgm, paper_sgm, ratio))
 
-  for file in "$INSTDIR"/*.graph; do
-    stem="$(basename "$file" .graph)"
-    paper_key="${stem},${ng}"
-    paper_val="${PAPER_BASE[$paper_key]:-}"
+def fmt(v):
+    return 'TL' if v is None else f'{v:.3f}'
 
-    if [[ -z "$paper_val" ]]; then
-      echo "Warning: no paper data for $paper_key, skipping" >&2
-      continue
-    fi
+with open(out_csv, 'w', newline='') as f:
+    w = csv.writer(f)
+    w.writerow(['instance', 'ng', 'bgspprc_s', 'paper_all_s', 'ratio'])
+    for inst, ng, bg_v, paper_v, _, _, ratio in rows:
+        w.writerow([inst, ng, fmt(bg_v), fmt(paper_v), f'{ratio:.2f}'])
 
-    # Run solver
-    status="OK"
-    time_s=""
-    if output=$(timeout "${TIMEOUT}s" "$SOLVE" --ng "$ng" "$file" 2>&1); then
-      # Parse time from "...X.Xms" on first line
-      line="$(echo "$output" | head -1)"
-      if [[ "$line" =~ ([0-9.]+)ms ]]; then
-        time_ms="${BASH_REMATCH[1]}"
-        time_s="$(awk "BEGIN{printf \"%.3f\", $time_ms/1000}")"
-      else
-        status="PARSE_ERR"
-      fi
-    else
-      rc=$?
-      if [[ $rc -eq 124 ]]; then
-        status="TIMEOUT"
-        time_s="TL"
-      else
-        status="ERROR($rc)"
-      fi
-    fi
+print()
+print(f'{"Instance":<12} {"ng":>3} {"bgspprc(s)":>12} {"paper(s)":>10} {"ratio":>8}')
+print('─' * 52)
+for inst, ng, bg_v, paper_v, _, _, ratio in rows:
+    print(f'{inst:<12} {ng:>3} {fmt(bg_v):>12} {fmt(paper_v):>10} {ratio:>8.2f}')
 
-    # Compute ratio (skip timeouts)
-    ratio=""
-    if [[ -n "$time_s" && "$time_s" != "TL" && -n "$paper_val" ]]; then
-      ratio="$(awk "BEGIN{printf \"%.2f\", $time_s / $paper_val}")"
-    fi
+print()
+print('─' * 52)
+print(f'Shifted geometric mean (shift={SHIFT}s, TL substituted with {timeout:g}s):')
+print()
+print(f'{"Group":<10} {"bgspprc(s)":>12} {"paper(s)":>10} {"ratio":>8} {"n":>5} {"bg_TL":>6} {"p_TL":>5}')
+print('─' * 66)
+bg_tl_total = paper_tl_total = 0
+for ng in ng_groups:
+    grp = [r for r in rows if r[1] == ng]
+    n = len(grp)
+    if not n:
+        print(f'{"ng"+str(ng):<10} {"-":>12} {"-":>10} {"-":>8} {n:>5}')
+        continue
+    bg_tl    = sum(1 for r in grp if r[2] is None)
+    paper_tl = sum(1 for r in grp if r[3] is None)
+    bg_tl_total    += bg_tl
+    paper_tl_total += paper_tl
+    go = math.exp(sum(math.log(r[4] + SHIFT) for r in grp) / n) - SHIFT
+    gp = math.exp(sum(math.log(r[5] + SHIFT) for r in grp) / n) - SHIFT
+    gr = (go + SHIFT) / (gp + SHIFT)
+    print(f'{"ng"+str(ng):<10} {go:>12.3f} {gp:>10.3f} {gr:>8.2f} {n:>5} {bg_tl:>6} {paper_tl:>5}')
 
-    # Print row
-    printf "%-10s  %3d  %10s  %10s  %8s  %s\n" \
-      "$stem" "$ng" "${time_s:--}" "$paper_val" "${ratio:--}" "$status"
-
-    # Write CSV row
-    echo "${stem},${ng},${time_s},${paper_val},${ratio}" >> "$OUT_CSV"
-
-    # Accumulate for geometric mean (only if we have a valid time)
-    if [[ -n "$time_s" && "$status" == "OK" ]]; then
-      log_ours="$(awk "BEGIN{print log($time_s + $SHIFT)}")"
-      log_paper="$(awk "BEGIN{print log($paper_val + $SHIFT)}")"
-      SUM_LOG["ours_$ng"]="$(awk "BEGIN{print ${SUM_LOG[ours_$ng]:-0} + $log_ours}")"
-      SUM_LOG["paper_$ng"]="$(awk "BEGIN{print ${SUM_LOG[paper_$ng]:-0} + $log_paper}")"
-      COUNT[$ng]="$(( ${COUNT[$ng]:-0} + 1 ))"
-    fi
-  done
-done
-
-# Print geometric mean summary
-printf "\n"
-printf '%.0s─' {1..60}; echo
-printf "Shifted geometric mean (shift=%ds):\n\n" "$SHIFT"
-printf "%-10s  %10s  %10s  %8s  %5s\n" "Group" "bgspprc(s)" "paper(s)" "ratio" "n"
-printf '%.0s─' {1..50}; echo
-
-for ng in "${NG_GROUPS[@]}"; do
-  n="${COUNT[$ng]:-0}"
-  if [[ "$n" -eq 0 ]]; then
-    printf "%-10s  %10s  %10s  %8s  %5d\n" "ng$ng" "-" "-" "-" 0
-    continue
-  fi
-  geo_ours="$(awk "BEGIN{printf \"%.3f\", exp(${SUM_LOG[ours_$ng]} / $n) - $SHIFT}")"
-  geo_paper="$(awk "BEGIN{printf \"%.3f\", exp(${SUM_LOG[paper_$ng]} / $n) - $SHIFT}")"
-  geo_ratio="$(awk "BEGIN{printf \"%.2f\", ($geo_ours + $SHIFT) / ($geo_paper + $SHIFT)}")"
-  printf "%-10s  %10s  %10s  %8s  %5d\n" "ng$ng" "$geo_ours" "$geo_paper" "$geo_ratio" "$n"
-done
-
-printf "\nResults written to %s\n" "$OUT_CSV"
+print()
+print(f'Results written to {out_csv}')
+print(f'Timeouts: bgspprc={bg_tl_total}, paper={paper_tl_total} (both substituted with {timeout:g}s in SGM)')
+PY
