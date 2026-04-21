@@ -16,3 +16,6 @@ tests/doctest.h
 *.o
 *.d
 __pycache__/
+.cache/
+.venv/
+.claude/*.lock
