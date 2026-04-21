@@ -316,6 +316,29 @@ def write_pathwyse(
     sink = inst["sink"]
     has_tw = inst["has_tw"]
 
+    # Auto-adapt cost_scale per instance so |cost * scale| fits in int32. Raw
+    # costs on spprclib distance instances reach ~1e5; with the default 1e6
+    # scale that overflows. Reducing the scale (powers of 10) keeps the sidecar
+    # decode side simple and round-trips cleanly.
+    orig_cost_scale = cost_scale
+    max_abs_cost = max((abs(float(a[2])) for a in inst["arcs"]), default=0.0)
+    if max_abs_cost > 0:
+        while cost_scale > 1 and max_abs_cost * cost_scale > _INT32_MAX:
+            new_scale = max(cost_scale // 10, 1)
+            if new_scale == cost_scale:
+                break
+            cost_scale = new_scale
+        if max_abs_cost * cost_scale > _INT32_MAX:
+            raise OverflowError(
+                f"cannot fit |cost|={max_abs_cost} in int32 even at scale=1"
+            )
+    if cost_scale != orig_cost_scale:
+        print(
+            f"  note: {inst['name']}: reduced cost_scale "
+            f"{orig_cost_scale}→{cost_scale} (max|c|={max_abs_cost:.0f})",
+            file=sys.stderr,
+        )
+
     # Determine resources
     n_res = 0
     res_types = []

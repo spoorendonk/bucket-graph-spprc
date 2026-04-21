@@ -1,44 +1,44 @@
 #!/usr/bin/env bash
-# run_pathwyse.sh — Build Pathwyse, convert instances, run both solvers, produce comparison CSV.
+# run_pathwyse.sh — Build Pathwyse, convert instances, run Pathwyse, join against
+# pre-computed bgspprc results, produce comparison CSV.
 #
-# Clones, builds, and runs Pathwyse (https://github.com/pathwyse/pathwyse) on
-# benchmark instances alongside bgspprc-solve. Produces a comparison CSV with
-# runtime and cost verification. Pathwyse does not expose label counts.
+# bgspprc rows are read from benchmarks/bgspprc.csv (mode=para-bidir) — this
+# script does NOT invoke bgspprc-solve. Re-run benchmarks/run_benchmarks.sh
+# first if bgspprc.csv is stale.
 #
 # Usage:
-#   ./benchmarks/run_pathwyse.sh [--ng K] [--timeout S] [--skip-build] [PATH...]
+#   ./benchmarks/run_pathwyse.sh [--ng K] [--timeout S] [--skip-build] [--append]
+#                                [--bgspprc-csv FILE] [PATH...]
 #
 # Arguments:
-#   PATH            Instance file or directory of instances.
-#                   Default: benchmarks/instances/rcspp/ng8
-#   --ng K          ng-neighborhood size (default: 8).
-#   --timeout S     Per-instance timeout in seconds (default: 120).
-#   --skip-build    Skip cloning/building Pathwyse (reuse existing build).
+#   PATH              Instance file or directory of instances.
+#                     Default: benchmarks/instances/rcspp/ng8
+#   --ng K            ng-neighborhood size (default: 8).
+#   --timeout S       Per-instance Pathwyse timeout in seconds (default: 120).
+#   --skip-build      Skip cloning/building Pathwyse (reuse existing build).
+#   --append          Append rows to existing CSV (skip header write + overwrite).
+#   --bgspprc-csv F   Source of bgspprc rows (default: benchmarks/bgspprc.csv).
 #
 # Environment:
-#   SOLVE           Path to bgspprc-solve binary (default: ./build/bgspprc-solve).
-#   PATHWYSE_DIR    Path to Pathwyse repo (default: ./build/pathwyse).
+#   PATHWYSE_DIR      Path to Pathwyse repo (default: ./build/pathwyse).
 #
 # Output:
 #   benchmarks/comparison_pathwyse.csv — CSV with columns:
 #     instance, ng, bgspprc_s, pathwyse_s, bgspprc_cost, pathwyse_cost,
 #     bg_leq, ratio
-#
-# Prerequisites:
-#   bgspprc-solve must be built:
-#     cmake -B build -DCMAKE_CXX_COMPILER=g++-14 && cmake --build build
 set -euo pipefail
 
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
 REPODIR="$(cd "$SCRIPTDIR/.." && pwd)"
-SOLVE="${SOLVE:-$REPODIR/build/bgspprc-solve}"
 PATHWYSE_DIR="${PATHWYSE_DIR:-$REPODIR/build/pathwyse}"
 PATHWYSE_BIN="$PATHWYSE_DIR/bin/pathwyse"
 OUT_CSV="$SCRIPTDIR/comparison_pathwyse.csv"
 CONVERTED_DIR="$SCRIPTDIR/instances/pathwyse"
+BG_CSV="$SCRIPTDIR/bgspprc.csv"
 TIMEOUT=120
 NG=8
 SKIP_BUILD=0
+APPEND=0
 PATHS=()
 
 # ── Usage ──
@@ -53,6 +53,8 @@ while [[ $# -gt 0 ]]; do
     --ng)         NG="$2"; shift 2 ;;
     --timeout)    TIMEOUT="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
+    --append)     APPEND=1; shift ;;
+    --bgspprc-csv) BG_CSV="$2"; shift 2 ;;
     -h|--help)    usage ;;
     *)            PATHS+=("$1"); shift ;;
   esac
@@ -63,12 +65,26 @@ if [[ ${#PATHS[@]} -eq 0 ]]; then
   PATHS=("$SCRIPTDIR/instances/rcspp/ng${NG}")
 fi
 
-# ── Verify bgspprc-solve ──
-if [[ ! -x "$SOLVE" ]]; then
-  echo "Error: bgspprc-solve not found at $SOLVE" >&2
-  echo "Build first: cmake -B build -DCMAKE_CXX_COMPILER=g++-14 && cmake --build build" >&2
+# ── Verify bgspprc results CSV ──
+if [[ ! -f "$BG_CSV" ]]; then
+  echo "Error: bgspprc results CSV not found at $BG_CSV" >&2
+  echo "Run benchmarks/run_benchmarks.sh first, or pass --bgspprc-csv FILE." >&2
   exit 1
 fi
+BG_CSV_HEADER_EXPECTED="instance,set,ng,mode,cost,paths,time_s,timestamp"
+if [[ "$(head -1 "$BG_CSV")" != "$BG_CSV_HEADER_EXPECTED" ]]; then
+  echo "Error: $BG_CSV header mismatch. Expected: $BG_CSV_HEADER_EXPECTED" >&2
+  exit 1
+fi
+
+# Look up (cost,time_s) for a (stem, ng) pair from bgspprc.csv (mode=para-bidir).
+# Prints "cost,time_s" or empty string on miss.
+lookup_bg() {
+  local stem="$1" ng="$2"
+  awk -F, -v s="$stem" -v n="$ng" '
+    NR>1 && $1==s && $3==n && $4=="para-bidir" {print $5","$7; exit}
+  ' "$BG_CSV"
+}
 
 # ── Build Pathwyse ──
 build_pathwyse() {
@@ -176,7 +192,13 @@ read_cost_scale() {
 }
 
 # ── Write CSV header ──
-echo "instance,ng,bgspprc_s,pathwyse_s,bgspprc_cost,pathwyse_cost,bg_leq,ratio" > "$OUT_CSV"
+if [[ $APPEND -eq 0 ]]; then
+  echo "instance,ng,bgspprc_s,pathwyse_s,bgspprc_cost,pathwyse_cost,bg_leq,ratio" > "$OUT_CSV"
+fi
+
+# Pathwyse settings are ng-dependent, not instance-dependent, so write once.
+# Concurrent script invocations would race on this file.
+write_pathwyse_settings "$NG"
 
 # ── Run comparison ──
 echo
@@ -211,31 +233,23 @@ for file in "${FILES[@]}"; do
     continue
   fi
 
-  # ── Run bgspprc-solve ──
-  bg_cost="" bg_time_s="" bg_time_ms="" bg_status="OK"
-  if bg_output=$(timeout "${TIMEOUT}s" "$SOLVE" --ng "$NG" --ng-metric distance "$file" 2>&1); then
-    bg_line="$(echo "$bg_output" | head -1)"
-    if [[ "$bg_line" =~ cost=([0-9.eE+-]+) ]]; then
-      bg_cost="${BASH_REMATCH[1]}"
-    fi
-    if [[ "$bg_line" =~ ([0-9.]+)ms ]]; then
-      bg_time_ms="${BASH_REMATCH[1]}"
-      bg_time_s="$(awk -v ms="$bg_time_ms" 'BEGIN{printf "%.3f", ms/1000}')"
-    fi
-    :  # paths count not needed for comparison
+  # ── Look up bgspprc result ──
+  # Three cases: row absent (MISSING — skip pathwyse), row present with empty
+  # cost/time (BG_TIMEOUT — bgspprc itself didn't finish; still run pathwyse
+  # to see if it finds a path bgspprc missed), or populated row (OK).
+  bg_cost="" bg_time_s="" bg_status="OK"
+  bg_row="$(lookup_bg "$stem" "$NG")"
+  if [[ -z "$bg_row" ]]; then
+    echo "Warning: no bgspprc row for $stem ng=$NG, skipping" >&2
+    continue
+  elif [[ "$bg_row" == "," ]]; then
+    bg_status="BG_TIMEOUT"
   else
-    rc=$?
-    if [[ $rc -eq 124 ]]; then
-      bg_status="TIMEOUT"
-    else
-      bg_status="ERROR($rc)"
-    fi
+    bg_cost="${bg_row%,*}"
+    bg_time_s="${bg_row#*,}"
   fi
 
   # ── Run Pathwyse ──
-  # Configure Pathwyse with ng settings
-  write_pathwyse_settings "$NG"
-
   pw_cost="" pw_time_s="" pw_status="OK"
   # Run Pathwyse from its directory so it picks up pathwyse.set
   pw_raw=""
@@ -267,11 +281,17 @@ for file in "${FILES[@]}"; do
 
   # Cost comparison: bg cost <= pw cost expected (weaker dominance finds more
   # paths). Tolerance accounts for accumulated per-arc rounding in the int
-  # scaling used by the converter (≈ n_arcs / cost_scale).
+  # scaling used by the converter (≈ n_arcs / cost_scale). A bg cost of 0
+  # typically means bgspprc found no improving path — label `bg_zero` so these
+  # rows don't get lumped with real `bg_gt` regressions.
   bg_leq=""
   if [[ -n "$bg_cost" && -n "$pw_cost" ]]; then
-    bg_leq="$(awk -v bg="$bg_cost" -v pw="$pw_cost" -v s="$pw_cost_scale" \
-      'BEGIN{tol = 100.0 / s; print (bg <= pw + tol) ? "bg_leq" : "bg_gt"}')"
+    bg_leq="$(awk -v bg="$bg_cost" -v pw="$pw_cost" -v s="$pw_cost_scale" '
+      BEGIN{
+        tol = 100.0 / s
+        if (bg+0 > -1e-9 && bg+0 < 1e-9) print "bg_zero"
+        else print (bg <= pw + tol) ? "bg_leq" : "bg_gt"
+      }')"
   fi
 
   # Ratio
