@@ -155,16 +155,8 @@ done
 python3 benchmarks/build_comparison_pathwyse.py
 ```
 
-Note: Costs are not expected to match exactly. bgspprc uses compressed ng-path
-(weaker dominance, finds more negative paths), while Pathwyse uses full O(|V|)
-unreachable vectors (tighter dominance). The `bg_leq` column checks that
-bgspprc cost ≤ Pathwyse cost (expected). `bg_zero` marks rows where bgspprc
-found no improving path (cost ≈ 0).
-
-`rcspp` `.graph` instances are excluded from the comparison: bgspprc's auto
-ng-metric is `cost` on `.graph` while Pathwyse builds ng neighborhoods from
-distance, so the ng-relaxations literally differ. Pathwyse runtimes are still
-recorded in `pathwyse.csv` if you run Pathwyse on the rcspp dirs.
+See `## Results → Pathwyse comparison` below for the cost-inequality and
+rcspp-exclusion rationale.
 
 ## Results
 

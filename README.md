@@ -213,11 +213,11 @@ See [`examples/custom_resource.cpp`](examples/custom_resource.cpp) for a complet
 
 5. **Salani, Basso, Giuffrida (2024)** — *PathWyse: a flexible, open-source library for the resource constrained shortest path problem*. Optimization Methods and Software, 1–23. DOI: [10.1080/10556788.2023.2296978](https://doi.org/10.1080/10556788.2023.2296978)
 
-6. **Seman, Munari, Bulhões, Camponogara (2024)** — *BALDES: a modern C++ Bucket Graph Labeling Algorithm for Vehicle Routing*. GitHub: <https://github.com/lseman/baldes>
+6. **Seman, Munari, Bulhões, Camponogara (2024)** — *BALDES: A Branch-Cut-and-Price Bucket Graph Labeling Algorithm for Vehicle Routing*. GitHub: <https://github.com/lseman/baldes>
 
 ## Related Projects
 
-- [**Baldes**](https://github.com/lseman/baldes) — Bucket graph labeling for CVRP/VRPTW in C++ (Seman et al. 2024, ref [6]); BG2021 with R1C cuts and HGS-VRPTW heuristics
+- [**BALDES**](https://github.com/lseman/baldes) — Branch-Cut-and-Price bucket graph labeling for CVRP/VRPTW in C++ (Seman et al. 2024, ref [6]); BG2021 with R1C cuts and HGS-VRPTW heuristics
 - [**PathWyse**](https://github.com/pathwyse/pathwyse) — Standard labeling + DSSR for RCSPP (Salani, Basso, Giuffrida 2024, ref [5])
 
 ## License
