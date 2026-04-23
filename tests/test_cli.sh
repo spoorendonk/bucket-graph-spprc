@@ -43,6 +43,9 @@ expect_exit_and_output() {
 run_test "no args → exit 1" \
   expect_exit 1 "$SOLVER"
 
+run_test "--version → exit 0, prints bgspprc" \
+  expect_exit_and_output 0 "bgspprc " "$SOLVER" --version
+
 run_test "unknown option → exit 1" \
   expect_exit 1 "$SOLVER" --bogus
 

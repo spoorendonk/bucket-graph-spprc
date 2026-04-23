@@ -35,19 +35,37 @@ endif()
 option(BGSPPRC_BUILD_CLI "Build bgspprc-solve CLI" ${PROJECT_IS_TOP_LEVEL})
 
 if(BGSPPRC_BUILD_CLI)
+    # Regenerate version.h on every build so the embedded git hash tracks HEAD
+    # without a reconfigure. configure_file is content-idempotent, so this
+    # doesn't trigger spurious relinks when the hash hasn't changed.
+    set(BGSPPRC_VERSION_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/version.h)
+    add_custom_target(bgspprc_version ALL
+        BYPRODUCTS ${BGSPPRC_VERSION_HEADER}
+        COMMAND ${CMAKE_COMMAND}
+            -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DVERSION_IN=${CMAKE_CURRENT_SOURCE_DIR}/cli/version.h.in
+            -DVERSION_OUT=${BGSPPRC_VERSION_HEADER}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/generate_version.cmake
+        COMMENT "Generating bgspprc version.h"
+        VERBATIM)
+
     add_executable(bgspprc-solve cli/main.cpp)
+    add_dependencies(bgspprc-solve bgspprc_version)
     target_link_libraries(bgspprc-solve PRIVATE bgspprc)
     target_include_directories(bgspprc-solve PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/cli)
+        ${CMAKE_CURRENT_SOURCE_DIR}/cli
+        ${CMAKE_CURRENT_BINARY_DIR}/generated)
     target_compile_options(bgspprc-solve PRIVATE
         -Wall -Wextra -Wpedantic -O2 ${BGSPPRC_PROJECT_FLAGS})
 
     # Parity CLI with SIMD code paths disabled, used by benchmarks to isolate
     # the SIMD contribution (the *_base modes in run_benchmarks.sh).
     add_executable(bgspprc-solve-nosimd cli/main.cpp)
+    add_dependencies(bgspprc-solve-nosimd bgspprc_version)
     target_link_libraries(bgspprc-solve-nosimd PRIVATE bgspprc)
     target_include_directories(bgspprc-solve-nosimd PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/cli)
+        ${CMAKE_CURRENT_SOURCE_DIR}/cli
+        ${CMAKE_CURRENT_BINARY_DIR}/generated)
     target_compile_options(bgspprc-solve-nosimd PRIVATE
         -Wall -Wextra -Wpedantic -O2 ${BGSPPRC_PROJECT_FLAGS})
     target_compile_definitions(bgspprc-solve-nosimd PRIVATE BGSPPRC_DISABLE_SIMD)

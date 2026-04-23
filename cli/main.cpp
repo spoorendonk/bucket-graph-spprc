@@ -6,6 +6,7 @@
 ///   <path>    Instance file or directory (recurse, detect type by extension)
 ///
 /// Options:
+///   --version       Print build git hash and exit
 ///   --mono          Use mono solver (default: bidir)
 ///   --stage STAGE   heuristic1|heuristic2|exact (default: exact)
 ///   --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;
@@ -21,6 +22,7 @@
 ///   --timing        Print phase timing breakdown
 
 #include "instance_io.h"
+#include "version.h"
 
 #include <algorithm>
 #include <bgspprc/executor_thread.h>
@@ -496,7 +498,10 @@ int main(int argc, char** argv) {
     std::vector<std::string> paths;
 
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--mono") == 0) {
+        if (std::strcmp(argv[i], "--version") == 0) {
+            std::printf("bgspprc %s\n", BGSPPRC_GIT_HASH);
+            return 0;
+        } else if (std::strcmp(argv[i], "--mono") == 0) {
             opts.bidir = false;
         } else if (std::strcmp(argv[i], "--stage") == 0 && i + 1 < argc) {
             opts.stage = parse_stage(argv[++i]);
@@ -546,6 +551,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr,
                      "Usage: bgspprc-solve [OPTIONS] <path>...\n"
                      "Options:\n"
+                     "  --version       Print build git hash and exit\n"
                      "  --mono          Use mono solver (default: bidir)\n"
                      "  --stage STAGE   heuristic1|heuristic2|exact (default: exact)\n"
                      "  --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;\n"
@@ -564,6 +570,8 @@ int main(int argc, char** argv) {
                      "  --no-parallel-bidir  Data-parallel only, sequential fw/bw labeling\n");
         return 1;
     }
+
+    std::fprintf(stderr, "bgspprc %s\n", BGSPPRC_GIT_HASH);
 
     // Validate: parallel_bidir without parallel executor is meaningless.
     if (!opts.parallel && opts.parallel_bidir) {

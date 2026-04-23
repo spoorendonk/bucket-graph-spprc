@@ -1,0 +1,4 @@
+#pragma once
+
+// Populated by cmake/generate_version.cmake at build time.
+#define BGSPPRC_GIT_HASH "@BGSPPRC_GIT_DESCRIBE@"
