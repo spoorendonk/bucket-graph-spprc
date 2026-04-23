@@ -18,114 +18,35 @@ Header-only C++23 template library implementing the bucket graph labeling algori
 
 ## Quick Start
 
-Add as a CMake dependency:
-
-```cmake
-include(FetchContent)
-FetchContent_Declare(
-    bgspprc
-    GIT_REPOSITORY https://github.com/spoorendonk/bucket-graph-spprc.git
-    GIT_TAG main)
-FetchContent_MakeAvailable(bgspprc)
-
-target_link_libraries(your_target PRIVATE bgspprc)
-```
-
-Minimal usage:
-
-```cpp
-#include <bgspprc/solver.h>
-
-using namespace bgspprc;
-
-// Set up problem data (caller owns all arrays)
-ProblemView pv;
-pv.n_vertices = N;
-pv.source = 0;
-pv.sink = N - 1;
-pv.n_arcs = M;
-pv.arc_from = from.data();
-pv.arc_to = to.data();
-pv.arc_base_cost = cost.data();
-pv.n_resources = 1;
-pv.arc_resource = &arc_resource_ptr;
-pv.vertex_lb = &vertex_lb_ptr;
-pv.vertex_ub = &vertex_ub_ptr;
-
-// Create solver with no extra resources
-Solver<EmptyPack> solver(pv, EmptyPack{},
-    {.bucket_steps = {10.0, 1.0}});
-solver.set_stage(Stage::Exact);
-solver.build();
-
-auto paths = solver.solve();
-for (auto& p : paths)
-    printf("cost=%.2f  vertices=%zu\n", p.reduced_cost, p.vertices.size());
-```
-
-## Build from Source
-
 Requires GCC 14+ and CMake 3.25+.
 
 ```bash
 cmake -B build -DCMAKE_CXX_COMPILER=g++-14
 cmake --build build
+
+# One-time: fetch benchmark instances
+benchmarks/fetch_instances.sh
+
+# Solve an SPPRC instance
+./build/bgspprc-solve --stats --timing benchmarks/instances/spprclib/A-n54-k7-149.sppcc
 ```
 
-## Running Tests
-
-```bash
-# Run all tests (~195 unit tests)
-ctest --test-dir build
-
-# Run a specific test by name
-./build/test_runner --test-case="Bucket construction"
-
-# Run tests matching a pattern
-./build/test_runner "*NgPath*"
-
-# List all test cases
-./build/test_runner --list-test-cases
-```
-
-## Examples
-
-The [`examples/`](examples/) directory contains standalone programs:
-
-- **`basic_spprc.cpp`** — Solve a 5-vertex SPPRC with time windows
-- **`custom_resource.cpp`** — Implement a custom capacity resource using the `Resource` concept and `ResourcePack`
-
-```bash
-# Build (examples are built by default at top level)
-cmake -B build -DCMAKE_CXX_COMPILER=g++-14
-cmake --build build
-
-# Run
-./build/examples/example_basic_spprc
-./build/examples/example_custom_resource
-```
-
-## CLI Usage
+Sample output:
 
 ```
-Usage: bgspprc-solve [OPTIONS] <path>...
-
-Arguments:
-  <path>    Instance file or directory (recurse, detect type by extension)
-
-Options:
-  --mono          Use mono solver (default: bidir)
-  --stage STAGE   heuristic1|heuristic2|exact (default: exact)
-  --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;
-                  from file or 8 for graph; 0 disables)
-  --steps S1,S2   Bucket step sizes (default: per-type)
-  --max-paths N   Number of paths to return (0=all, 1=best; default: 1)
-  --theta T       Pricing threshold θ (default: -1e-6 for CG)
-  --auto-steps    Compute per-vertex auto-computed steps
-  --parallel      Use parallel bidir labeling (two threads)
+bgspprc 1e749ce
+bgspprc: executor=StdThread  bidir=parallel
+A-n54-k7-149   sppcc  n=55  arcs=2862  theta=-1e-06  cost=-56718.000  paths=1  18.1ms
+  0 34 41 25 47 25 47 25 41 34 54
+  n_buckets=550  n_labels_created=113210  n_dominance_checks=128977  n_non_dominated=12059
+  n_dominance_checks_fw=53407  n_dominance_checks_bw=75570
+  n_non_dominated_fw=4854  n_non_dominated_bw=7205
+  n_fixed_buckets=0  n_eliminated_arcs=0  label_state_bytes=1
+  timing:  fw=5.721ms  bw=9.660ms  completion=0.987ms  concat=2.291ms  paths=1.109ms  sum=19.768ms
 ```
 
-Supported formats: `.sppcc` (SPPCC), `.vrp` (Roberti VRPTW), `.graph` (Solomon RCSPP).
+Supported instance formats: `.sppcc` (SPPCC), `.vrp` (Roberti VRPTW), `.graph` (Solomon RCSPP).
+Full flag reference in [CLI Reference](#cli-reference) below.
 
 ## Benchmarks
 
@@ -177,6 +98,53 @@ bgspprc is ~25-32% slower than the paper on rcspp at the sgm (both solvers
 share the same 120 s budget) and ~4-9× faster than Pathwyse on spprclib +
 roberti where both finish.
 
+## Use as a Library
+
+Add via CMake FetchContent:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(
+    bgspprc
+    GIT_REPOSITORY https://github.com/spoorendonk/bucket-graph-spprc.git
+    GIT_TAG main)
+FetchContent_MakeAvailable(bgspprc)
+
+target_link_libraries(your_target PRIVATE bgspprc)
+```
+
+Minimal usage:
+
+```cpp
+#include <bgspprc/solver.h>
+
+using namespace bgspprc;
+
+// Set up problem data (caller owns all arrays)
+ProblemView pv;
+pv.n_vertices = N;
+pv.source = 0;
+pv.sink = N - 1;
+pv.n_arcs = M;
+pv.arc_from = from.data();
+pv.arc_to = to.data();
+pv.arc_base_cost = cost.data();
+pv.n_resources = 1;
+pv.arc_resource = &arc_resource_ptr;
+pv.vertex_lb = &vertex_lb_ptr;
+pv.vertex_ub = &vertex_ub_ptr;
+
+// Create solver with no extra resources
+Solver<EmptyPack> solver(pv, EmptyPack{},
+    {.bucket_steps = {10.0, 1.0}});
+solver.set_stage(Stage::Exact);
+solver.build();
+
+auto paths = solver.solve();
+for (auto& p : paths)
+    printf("cost=%.2f  vertices=%zu\n", p.reduced_cost, p.vertices.size());
+```
+
 ## Custom Resources
 
 Implement the `Resource` concept to define custom resource types:
@@ -200,6 +168,56 @@ Solver<MyPack> solver(pv, MyPack{std_res, my_res}, opts);
 ```
 
 See [`examples/custom_resource.cpp`](examples/custom_resource.cpp) for a complete working example, [`include/bgspprc/resource.h`](include/bgspprc/resource.h) for the full concept definition, and [`include/bgspprc/resources/`](include/bgspprc/resources/) for built-in implementations.
+
+## Examples
+
+The [`examples/`](examples/) directory contains standalone programs, built by default at top level:
+
+- **`basic_spprc.cpp`** — Solve a 5-vertex SPPRC with time windows
+- **`custom_resource.cpp`** — Implement a custom capacity resource using the `Resource` concept
+
+```bash
+./build/examples/example_basic_spprc
+./build/examples/example_custom_resource
+```
+
+## CLI Reference
+
+```
+Usage: bgspprc-solve [OPTIONS] <path>...
+
+Arguments:
+  <path>    Instance file or directory (recurse, detect type by extension)
+
+Options:
+  --version       Print build git hash and exit
+  --mono          Use mono solver (default: bidir)
+  --stage STAGE   heuristic1|heuristic2|exact (default: exact)
+  --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;
+                  from file or 8 for graph; 0 disables)
+  --steps S1,S2   Bucket step sizes (default: per-type)
+  --max-paths N   Number of paths to return (0=all, 1=best; default: 1)
+  --theta T       Pricing threshold θ (default: -1e-6 for CG)
+  --auto-steps    Use per-vertex auto-computed steps
+  --stats         Print solve statistics after each instance
+  --csv           Machine-readable CSV output
+  --timing        Print phase timing breakdown
+  --no-parallel   Use sequential executor (default: parallel)
+  --no-parallel-bidir  Sequential fw/bw labeling
+```
+
+## Running Tests
+
+```bash
+# Run all tests (~195 unit tests)
+ctest --test-dir build
+
+# Run a specific test by name
+./build/test_runner --test-case="Bucket construction"
+
+# Run tests matching a pattern
+./build/test_runner "*NgPath*"
+```
 
 ## References
 
