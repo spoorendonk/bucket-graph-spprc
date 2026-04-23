@@ -143,32 +143,32 @@ Headline numbers from the committed CSVs, 120 s timeout per instance. Full
 tables, methodology, and reproducer one-liners in
 [`benchmarks/README.md`](benchmarks/README.md#results).
 
-**Runtime** — `para-bidir` shifted geomean (s) / #timeouts per `(set, ng)`:
+**Runtime** — `para_bidir` shifted geomean (s) / #timeouts per `(set, ng)`:
 
 | set      | ng 8 | ng 16 | ng 24 |
 |----------|-----:|------:|------:|
-| spprclib |   0.62 / 1 |  1.65 / 1 |  5.38 / 4 |
-| roberti  |   0.56 / 0 |  3.38 / 3 | 15.38 / 8 |
-| rcspp    |   1.89 / 0 |  2.27 / 0 |  2.59 / 4 |
+| spprclib |   0.60 / 1 |  1.66 / 1 |  5.08 / 4 |
+| roberti  |   0.57 / 0 |  3.26 / 3 | 15.27 / 8 |
+| rcspp    |   1.91 / 0 |  2.22 / 0 |  2.62 / 4 |
 
-**Paper comparison (rcspp)** — bgspprc `para-bidir` vs Petersen & Spoorendonk
+**Paper comparison (rcspp)** — bgspprc `para_bidir` vs Petersen & Spoorendonk
 2025 `all_s` (shift = 10 s, TL → 120 s, 56 instances/ng):
 
 | ng | ratio |
 |---:|------:|
 |  8 | 1.32  |
-| 16 | 1.30  |
+| 16 | 1.29  |
 | 24 | 1.25  |
 
-**Pathwyse comparison** — bgspprc `para-bidir` vs Pathwyse (shift = 1 s, TL
+**Pathwyse comparison** — bgspprc `para_bidir` vs Pathwyse (shift = 1 s, TL
 rows dropped; `#bg_eq` is where `bgspprc_cost = pathwyse_cost`, i.e. compressed
 ng-path matched unreachable-vector quality):
 
 | set      | ng | ratio | #bg_eq | n  |
 |----------|---:|------:|-------:|---:|
-| spprclib |  8 | 0.20  |      7 | 35 |
+| spprclib |  8 | 0.21  |      7 | 35 |
 | spprclib | 16 | 0.15  |     20 | 28 |
-| spprclib | 24 | 0.20  |     16 | 19 |
+| spprclib | 24 | 0.19  |     16 | 19 |
 | roberti  |  8 | 0.23  |     13 | 24 |
 | roberti  | 16 | 0.15  |     14 | 16 |
 | roberti  | 24 | 0.11  |     10 | 11 |

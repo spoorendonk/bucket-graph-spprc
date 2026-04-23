@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# run_comparison.sh — Compare bgspprc para-bidir vs paper `all_s` on rcspp instances.
+# run_comparison.sh — Compare bgspprc para_bidir vs paper `all_s` on rcspp instances.
 #
 # Pure CSV join over existing data:
-#   - bgspprc times: `bgspprc.csv`, mode=para-bidir, set∈{ng8,ng16,ng24}
+#   - bgspprc times: `bgspprc.csv`, mode=para_bidir, set∈{ng8,ng16,ng24}
 #   - paper times:   `pull_algo_runtimes.csv`, column `all_s` (all optimizations)
 #
 # Timeouts on either side are shown in the output as "TL" and substituted with
@@ -71,11 +71,11 @@ with open(paper_csv) as f:
             continue
         paper[(r['instance'], ng)] = None if t > timeout else t
 
-# bgspprc para-bidir rows on rcspp sets (set prefix 'ng') — empty cost = TL (None).
+# bgspprc para_bidir rows on rcspp sets (set prefix 'ng') — empty cost = TL (None).
 bg = {}  # (inst, ng) -> float or None (TL)
 with open(bgspprc_csv) as f:
     for r in csv.DictReader(f):
-        if r['mode'] != 'para-bidir' or not r['set'].startswith('ng'):
+        if r['mode'] != 'para_bidir' or not r['set'].startswith('ng'):
             continue
         try:
             ng = int(r['ng'])

@@ -2,9 +2,9 @@
 """check_consistency.py — Cross-mode sanity check on bgspprc.csv.
 
 For each (instance, set, ng) group, verify that every solver mode that
-produced a cost (mono / bidir / para-bidir) agrees within tolerance.
-A mismatch means one of the modes is returning an infeasible or wrong
-optimum — a correctness bug, not a performance issue.
+produced a cost agrees within tolerance across all six modes (bidir axis
+× SIMD axis). A mismatch means one of the modes is returning an
+infeasible or wrong optimum — a correctness bug, not a performance issue.
 
 Usage:
   ./benchmarks/check_consistency.py [--csv FILE] [--eps EPS]
@@ -21,7 +21,14 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-MODES = ("mono", "bidir", "para-bidir")
+MODES = (
+    "mono_base",
+    "mono_vec",
+    "bidir_base",
+    "bidir_vec",
+    "para_bidir_base",
+    "para_bidir",
+)
 
 
 def main() -> int:

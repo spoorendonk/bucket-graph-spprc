@@ -33,7 +33,7 @@ benchmarks/
 ├── convert_to_pathwyse.py convert .sppcc/.vrp/.graph to Pathwyse format
 ├── compare_mono_bidir.sh  compare mono vs bidir mode
 ├── check_optimal.sh       verify results against reference optima
-└── check_consistency.py   verify mono/bidir/para-bidir agree on cost
+└── check_consistency.py   verify all 6 modes (bidir × SIMD) agree on cost
 ```
 
 ## Instance sources
@@ -54,14 +54,8 @@ benchmarks/
 cmake -B build -DCMAKE_CXX_COMPILER=g++-14
 cmake --build build
 
-# 3. Run all benchmarks (3 modes × 3 ng values × 3 sets = ~1188 rows)
-for mode in mono bidir para-bidir; do
-  for ng in 8 16 24; do
-    ./benchmarks/run_benchmarks.sh --mode $mode --ng $ng --timeout 120 benchmarks/instances/spprclib
-    ./benchmarks/run_benchmarks.sh --mode $mode --ng $ng --timeout 120 benchmarks/instances/roberti
-    ./benchmarks/run_benchmarks.sh --mode $mode --ng $ng --timeout 120 benchmarks/instances/rcspp/ng$ng
-  done
-done
+# 3. Run all benchmarks across the 6-mode cross-product (bidir × SIMD)
+./benchmarks/regen_all_modes.sh
 
 # 4. Verify
 ./benchmarks/check_optimal.sh
@@ -74,10 +68,10 @@ done
 | `fetch_instances.sh` | Download all instance sets | — | `instances/` |
 | `run_benchmarks.sh` | Run solver on instances, deduplicate results | Instance files/dirs, `--ng K`, `--mode M`, `--timeout S` | `bgspprc.csv` |
 | `check_optimal.sh` | Verify costs against reference optima | `bgspprc.csv`, `optimal*.csv` | Pass/fail table |
-| `check_consistency.py` | Cross-mode sanity check: mono/bidir/para-bidir must agree on cost within tolerance | `bgspprc.csv`, `--eps EPS` | Summary + exit 1 on mismatch |
+| `check_consistency.py` | Cross-mode sanity check: all 6 modes (bidir × SIMD) must agree on cost within tolerance | `bgspprc.csv`, `--eps EPS` | Summary + exit 1 on mismatch |
 | `run_comparison.sh` | Compare rcspp runtimes vs Petersen & Spoorendonk 2025 | `instances/rcspp/`, `pull_algo_runtimes.csv` | `comparison_rcspp.csv` |
 | `run_pathwyse.sh` | Run Pathwyse, append rows to `pathwyse.csv` | Instance files/dirs, `--ng K`, `--timeout S` | `pathwyse.csv` |
-| `build_comparison_pathwyse.py` | Inner-join `bgspprc.csv` (`mode=para-bidir`) and `pathwyse.csv`, filter to `spprclib`/`roberti` | `bgspprc.csv`, `pathwyse.csv` | `comparison_pathwyse.csv` |
+| `build_comparison_pathwyse.py` | Inner-join `bgspprc.csv` (`mode=para_bidir`) and `pathwyse.csv`, filter to `spprclib`/`roberti` | `bgspprc.csv`, `pathwyse.csv` | `comparison_pathwyse.csv` |
 | `convert_to_pathwyse.py` | Convert instances to Pathwyse format | `.sppcc`/`.vrp`/`.graph` files | `instances/pathwyse/` |
 | `compare_mono_bidir.sh` | Side-by-side mono vs bidir comparison | Instance files/dirs | Terminal table |
 
@@ -86,29 +80,32 @@ done
 ### Full benchmark run
 
 ```bash
-# spprclib + roberti at ng=8,16,24 across all 3 solver modes
-for mode in mono bidir para-bidir; do
+# spprclib + roberti + rcspp at ng=8,16,24 across all 6 modes.
+# regen_all_modes.sh wraps the nested loop below and is the recommended entry point.
+./benchmarks/regen_all_modes.sh
+
+# Expanded form, for reference:
+for mode in mono_base mono_vec bidir_base bidir_vec para_bidir_base para_bidir; do
   for ng in 8 16 24; do
     ./benchmarks/run_benchmarks.sh --mode $mode --ng $ng --timeout 120 benchmarks/instances/spprclib
     ./benchmarks/run_benchmarks.sh --mode $mode --ng $ng --timeout 120 benchmarks/instances/roberti
-  done
-done
-
-# rcspp at ng=8,16,24 (also populates bgspprc.csv)
-for mode in mono bidir para-bidir; do
-  for ng in 8 16 24; do
     ./benchmarks/run_benchmarks.sh --mode $mode --ng $ng --timeout 120 benchmarks/instances/rcspp/ng$ng
   done
 done
 ```
 
-Solver modes (data-parallelism always on; differ on bidir axis):
+Solver modes cross a bidir axis (`mono` / `bidir` / `para_bidir`) with a SIMD
+axis (`_base` = SIMD disabled build, `_vec` = SIMD enabled; `para_bidir` with no
+suffix is the SIMD-on default):
 
-| `--mode`      | bgspprc-solve flags |
-|---------------|---------------------|
-| `mono`        | `--mono` |
-| `bidir`       | `--no-parallel-bidir` (sequential fw/bw) |
-| `para-bidir`  | default (bidir + parallel + parallel_bidir) |
+| `--mode`            | binary                  | bgspprc-solve flags                        |
+|---------------------|-------------------------|--------------------------------------------|
+| `mono_base`         | `bgspprc-solve-nosimd`  | `--mono`                                   |
+| `mono_vec`          | `bgspprc-solve`         | `--mono`                                   |
+| `bidir_base`        | `bgspprc-solve-nosimd`  | `--no-parallel-bidir` (sequential fw/bw)   |
+| `bidir_vec`         | `bgspprc-solve`         | `--no-parallel-bidir`                      |
+| `para_bidir_base`   | `bgspprc-solve-nosimd`  | default (bidir + parallel + parallel_bidir)|
+| `para_bidir`        | `bgspprc-solve`         | default                                    |
 
 ### Verification
 
@@ -119,9 +116,9 @@ Solver modes (data-parallelism always on; differ on bidir axis):
 # SKIP = no reference optimal available
 
 ./benchmarks/check_consistency.py
-# Groups rows by (instance, set, ng) and asserts that every mode
-# (mono / bidir / para-bidir) that solved the group reports the same cost.
-# A mismatch indicates a correctness bug in one of the modes.
+# Groups rows by (instance, set, ng) and asserts that every mode in the
+# 6-mode cross-product (bidir axis × SIMD axis) that solved the group reports
+# the same cost. A mismatch indicates a correctness bug in one of the modes.
 # Exit code 0 = all consistent, 1 = mismatch found.
 ```
 
@@ -129,7 +126,7 @@ Solver modes (data-parallelism always on; differ on bidir axis):
 
 ```bash
 ./benchmarks/run_comparison.sh
-# Pure join over bgspprc.csv (mode=para-bidir) and pull_algo_runtimes.csv (all_s column,
+# Pure join over bgspprc.csv (mode=para_bidir) and pull_algo_runtimes.csv (all_s column,
 # all optimizations enabled). Does NOT rerun the solver — refresh bgspprc.csv first
 # via run_benchmarks.sh if needed.
 #
@@ -170,37 +167,66 @@ notes its shift and timeout handling.
 
 bgspprc wall-clock per `(set, ng, mode)`. `n` instances per set: 45 (spprclib),
 31 (roberti), 56 (rcspp). Shift = 1 s, timeouts (empty `cost` cells) substituted
-with 120 s in the sgm.
+with 120 s in the sgm. Modes cross the bidir axis (`mono|bidir|para_bidir`) with
+the SIMD axis (`_base` = dominance SIMD disabled, `_vec` = enabled; `para_bidir`
+without a suffix is the SIMD-on variant to match the default CLI build).
 
-| set       | ng | mode       | sgm (s) | max (s) | #to |
-|-----------|---:|------------|--------:|--------:|----:|
-| spprclib  |  8 | mono       |   0.209 |   6.777 |   0 |
-| spprclib  |  8 | bidir      |   0.619 | 120.000 |   1 |
-| spprclib  |  8 | para-bidir |   0.624 | 120.000 |   1 |
-| spprclib  | 16 | mono       |   1.394 |  22.222 |   0 |
-| spprclib  | 16 | bidir      |   1.944 | 120.000 |   1 |
-| spprclib  | 16 | para-bidir |   1.649 | 120.000 |   1 |
-| spprclib  | 24 | mono       |   9.787 | 120.000 |   3 |
-| spprclib  | 24 | bidir      |   6.114 | 120.000 |   5 |
-| spprclib  | 24 | para-bidir |   5.376 | 120.000 |   4 |
-| roberti   |  8 | mono       |   0.843 |  10.284 |   0 |
-| roberti   |  8 | bidir      |   0.726 |  13.082 |   0 |
-| roberti   |  8 | para-bidir |   0.563 |   9.621 |   0 |
-| roberti   | 16 | mono       |   7.299 | 120.000 |   3 |
-| roberti   | 16 | bidir      |   4.316 | 120.000 |   3 |
-| roberti   | 16 | para-bidir |   3.378 | 120.000 |   3 |
-| roberti   | 24 | mono       |  50.488 | 120.000 |  14 |
-| roberti   | 24 | bidir      |  19.895 | 120.000 |   9 |
-| roberti   | 24 | para-bidir |  15.381 | 120.000 |   8 |
-| rcspp     |  8 | mono       |   1.267 |  19.458 |   0 |
-| rcspp     |  8 | bidir      |   2.353 |  59.863 |   0 |
-| rcspp     |  8 | para-bidir |   1.889 |  43.706 |   0 |
-| rcspp     | 16 | mono       |   1.563 |  51.294 |   0 |
-| rcspp     | 16 | bidir      |   3.021 | 120.000 |   1 |
-| rcspp     | 16 | para-bidir |   2.265 |  95.024 |   0 |
-| rcspp     | 24 | mono       |   1.983 | 120.000 |   2 |
-| rcspp     | 24 | bidir      |   3.149 | 120.000 |   5 |
-| rcspp     | 24 | para-bidir |   2.587 | 120.000 |   4 |
+| set       | ng | mode             | sgm (s) | max (s) | #to |
+|-----------|---:|------------------|--------:|--------:|----:|
+| spprclib  |  8 | mono_base        |   0.237 |   8.709 |   0 |
+| spprclib  |  8 | mono_vec         |   0.218 |   7.194 |   0 |
+| spprclib  |  8 | bidir_base       |   0.609 | 120.000 |   1 |
+| spprclib  |  8 | bidir_vec        |   0.627 | 120.000 |   1 |
+| spprclib  |  8 | para_bidir_base  |   0.626 | 120.000 |   1 |
+| spprclib  |  8 | para_bidir       |   0.598 | 120.000 |   1 |
+| spprclib  | 16 | mono_base        |   1.211 |  16.768 |   0 |
+| spprclib  | 16 | mono_vec         |   1.435 |  23.043 |   0 |
+| spprclib  | 16 | bidir_base       |   1.972 | 120.000 |   2 |
+| spprclib  | 16 | bidir_vec        |   1.885 | 120.000 |   1 |
+| spprclib  | 16 | para_bidir_base  |   1.628 | 120.000 |   1 |
+| spprclib  | 16 | para_bidir       |   1.664 | 120.000 |   1 |
+| spprclib  | 24 | mono_base        |   6.939 | 120.000 |   3 |
+| spprclib  | 24 | mono_vec         |   9.937 | 120.000 |   3 |
+| spprclib  | 24 | bidir_base       |   4.867 | 120.000 |   5 |
+| spprclib  | 24 | bidir_vec        |   5.969 | 120.000 |   4 |
+| spprclib  | 24 | para_bidir_base  |   4.271 | 120.000 |   4 |
+| spprclib  | 24 | para_bidir       |   5.081 | 120.000 |   4 |
+| roberti   |  8 | mono_base        |   0.885 |  12.342 |   0 |
+| roberti   |  8 | mono_vec         |   0.867 |  10.095 |   0 |
+| roberti   |  8 | bidir_base       |   0.696 |  13.554 |   0 |
+| roberti   |  8 | bidir_vec        |   0.742 |  13.885 |   0 |
+| roberti   |  8 | para_bidir_base  |   0.597 |  11.429 |   0 |
+| roberti   |  8 | para_bidir       |   0.571 |   9.592 |   0 |
+| roberti   | 16 | mono_base        |   5.865 | 120.000 |   3 |
+| roberti   | 16 | mono_vec         |   7.458 | 120.000 |   3 |
+| roberti   | 16 | bidir_base       |   3.511 | 120.000 |   3 |
+| roberti   | 16 | bidir_vec        |   4.264 | 120.000 |   3 |
+| roberti   | 16 | para_bidir_base  |   2.936 | 120.000 |   3 |
+| roberti   | 16 | para_bidir       |   3.261 | 120.000 |   3 |
+| roberti   | 24 | mono_base        |  38.657 | 120.000 |  11 |
+| roberti   | 24 | mono_vec         |  51.561 | 120.000 |  14 |
+| roberti   | 24 | bidir_base       |  14.972 | 120.000 |   8 |
+| roberti   | 24 | bidir_vec        |  20.541 | 120.000 |  10 |
+| roberti   | 24 | para_bidir_base  |  11.566 | 120.000 |   6 |
+| roberti   | 24 | para_bidir       |  15.266 | 120.000 |   8 |
+| rcspp     |  8 | mono_base        |   1.498 |  33.934 |   0 |
+| rcspp     |  8 | mono_vec         |   1.287 |  19.874 |   0 |
+| rcspp     |  8 | bidir_base       |   2.359 |  57.965 |   0 |
+| rcspp     |  8 | bidir_vec        |   2.384 |  58.860 |   0 |
+| rcspp     |  8 | para_bidir_base  |   1.878 |  43.540 |   0 |
+| rcspp     |  8 | para_bidir       |   1.908 |  44.721 |   0 |
+| rcspp     | 16 | mono_base        |   1.579 |  48.347 |   0 |
+| rcspp     | 16 | mono_vec         |   1.593 |  52.757 |   0 |
+| rcspp     | 16 | bidir_base       |   2.791 | 120.000 |   1 |
+| rcspp     | 16 | bidir_vec        |   2.845 | 120.000 |   1 |
+| rcspp     | 16 | para_bidir_base  |   2.183 |  94.223 |   0 |
+| rcspp     | 16 | para_bidir       |   2.221 |  93.674 |   0 |
+| rcspp     | 24 | mono_base        |   1.956 | 120.000 |   2 |
+| rcspp     | 24 | mono_vec         |   1.974 | 120.000 |   2 |
+| rcspp     | 24 | bidir_base       |   3.156 | 120.000 |   5 |
+| rcspp     | 24 | bidir_vec        |   3.180 | 120.000 |   5 |
+| rcspp     | 24 | para_bidir_base  |   2.555 | 120.000 |   4 |
+| rcspp     | 24 | para_bidir       |   2.617 | 120.000 |   4 |
 
 Reproduce:
 
@@ -221,7 +247,7 @@ for k in sorted(g):
 
 ### Paper comparison (rcspp)
 
-bgspprc `para-bidir` (all opts on) vs Petersen & Spoorendonk 2025
+bgspprc `para_bidir` (all opts on) vs Petersen & Spoorendonk 2025
 (arXiv:2511.01397) `all_s` column (all opts on). Shared 120 s timeout budget —
 `TL` rows are substituted with 120 s before the sgm (conservative: actual is
 ≥ 120 s). Matches `run_comparison.sh`: shift = 10 s, ratio computed on shifted
@@ -229,9 +255,9 @@ means as `(bg_sgm + 10) / (paper_sgm + 10)`. 56 Solomon instances per ng.
 
 | ng | bgspprc sgm (s) | paper sgm (s) | ratio | n  |
 |---:|----------------:|--------------:|------:|---:|
-|  8 |           3.645 |         0.334 | 1.320 | 56 |
-| 16 |           4.764 |         1.367 | 1.299 | 56 |
-| 24 |           6.064 |         2.890 | 1.246 | 56 |
+|  8 |           3.669 |         0.334 | 1.323 | 56 |
+| 16 |           4.658 |         1.367 | 1.289 | 56 |
+| 24 |           6.102 |         2.890 | 1.249 | 56 |
 
 Reproduce:
 
@@ -276,12 +302,12 @@ sides finished); `#bg_eq` counts rows where
 
 | set      | ng | bgspprc sgm (s) | pathwyse sgm (s) | ratio | #bg_eq | n  | n_total |
 |----------|---:|----------------:|-----------------:|------:|-------:|---:|--------:|
-| spprclib |  8 |           0.091 |            4.359 | 0.204 |      7 | 35 |      45 |
-| spprclib | 16 |           0.320 |            7.625 | 0.153 |     20 | 28 |      45 |
-| spprclib | 24 |           0.923 |            8.567 | 0.201 |     16 | 19 |      45 |
-| roberti  |  8 |           0.313 |            4.790 | 0.227 |     13 | 24 |      31 |
-| roberti  | 16 |           0.518 |            9.217 | 0.149 |     14 | 16 |      31 |
-| roberti  | 24 |           2.429 |           29.017 | 0.114 |     10 | 11 |      31 |
+| spprclib |  8 |           0.096 |            4.359 | 0.205 |      7 | 35 |      45 |
+| spprclib | 16 |           0.327 |            7.625 | 0.154 |     20 | 28 |      45 |
+| spprclib | 24 |           0.794 |            8.567 | 0.188 |     16 | 19 |      45 |
+| roberti  |  8 |           0.320 |            4.790 | 0.228 |     13 | 24 |      31 |
+| roberti  | 16 |           0.513 |            9.217 | 0.148 |     14 | 16 |      31 |
+| roberti  | 24 |           2.410 |           29.017 | 0.114 |     10 | 11 |      31 |
 
 Reproduce:
 
@@ -289,7 +315,7 @@ Reproduce:
 python3 -c '
 import csv, math, collections
 rows = list(csv.DictReader(open("benchmarks/comparison_pathwyse.csv")))
-bg = {(r["instance"], r["ng"]): r["set"] for r in csv.DictReader(open("benchmarks/bgspprc.csv")) if r["mode"]=="para-bidir"}
+bg = {(r["instance"], r["ng"]): r["set"] for r in csv.DictReader(open("benchmarks/bgspprc.csv")) if r["mode"]=="para_bidir"}
 SHIFT = 1.0
 def eq(a, b):
     return a!="" and b!="" and abs(float(a)-float(b)) <= 1e-3
@@ -318,7 +344,7 @@ for k in sorted(g):
 | `instance` | Instance name (filename without extension) |
 | `set` | Instance set (`spprclib`, `roberti`, `ng8`, `ng16`, `ng24`) |
 | `ng` | ng-neighborhood size used |
-| `mode` | Solver mode (`mono`, `bidir`, `para-bidir`) |
+| `mode` | Solver mode (`mono_base`, `mono_vec`, `bidir_base`, `bidir_vec`, `para_bidir_base`, `para_bidir`) |
 | `cost` | Optimal cost found (empty on timeout/error) |
 | `paths` | Number of optimal paths found |
 | `time_s` | Wall-clock time in seconds |
@@ -326,7 +352,7 @@ for k in sorted(g):
 
 ### `comparison_rcspp.csv`
 
-Compares bgspprc `para-bidir` times (from `bgspprc.csv`) against the paper's
+Compares bgspprc `para_bidir` times (from `bgspprc.csv`) against the paper's
 `all_s` column (all optimizations enabled). Both solvers share a 120s timeout budget:
 rows that exceeded it on either side are marked `TL` and substituted with 120s
 in the SGM (a conservative bound — actual time is ≥ 120s).
@@ -335,7 +361,7 @@ in the SGM (a conservative bound — actual time is ≥ 120s).
 |--------|-------------|
 | `instance` | Solomon instance name |
 | `ng` | ng-neighborhood size (8, 16, or 24) |
-| `bgspprc_s` | bgspprc `para-bidir` wall-clock time in seconds, or `TL` if >120s |
+| `bgspprc_s` | bgspprc `para_bidir` wall-clock time in seconds, or `TL` if >120s |
 | `paper_all_s` | Petersen & Spoorendonk 2025 "all optimizations" time in seconds, or `TL` if >120s |
 | `ratio` | `bgspprc_s / paper_all_s`, with `TL` sides substituted as 120s |
 
@@ -357,7 +383,7 @@ picks the last-seen row). Empty `cost`/`time_s` means Pathwyse timed out.
 
 ### `comparison_pathwyse.csv`
 
-Inner-join of `bgspprc.csv` (`mode=para-bidir`) with `pathwyse.csv` on
+Inner-join of `bgspprc.csv` (`mode=para_bidir`) with `pathwyse.csv` on
 `(instance, ng)`, filtered to `spprclib` and `roberti` instances only
 (rcspp `.graph` rows are excluded — see the ng-metric note above).
 Rebuild with `python3 benchmarks/build_comparison_pathwyse.py` whenever

@@ -7,7 +7,7 @@ bgspprc's auto-default ng-metric is `cost` on .graph while Pathwyse builds
 ng neighborhoods from distance — the ng-relaxations differ and the rows
 aren't strictly apples-to-apples.
 
-The bgspprc side picks `mode=para-bidir` (consistently fastest across
+The bgspprc side picks `mode=para_bidir` (consistently fastest across
 ng=16/24 per bgspprc.csv analysis; mono wins at ng=8 only).
 
 Usage:
@@ -20,7 +20,15 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-BG_MODE = "para-bidir"
+BG_MODE = "para_bidir"
+VALID_BG_MODES = [
+    "mono_base",
+    "mono_vec",
+    "bidir_base",
+    "bidir_vec",
+    "para_bidir_base",
+    "para_bidir",
+]
 INCLUDED_SETS = {"spprclib", "roberti"}
 
 
@@ -73,7 +81,7 @@ def main() -> int:
     ap.add_argument("--bg", default="benchmarks/bgspprc.csv")
     ap.add_argument("--pw", default="benchmarks/pathwyse.csv")
     ap.add_argument("--out", default="benchmarks/comparison_pathwyse.csv")
-    ap.add_argument("--bg-mode", default=BG_MODE, choices=["mono", "bidir", "para-bidir"])
+    ap.add_argument("--bg-mode", default=BG_MODE, choices=VALID_BG_MODES)
     args = ap.parse_args()
 
     bg = read_bg(Path(args.bg), args.bg_mode)
