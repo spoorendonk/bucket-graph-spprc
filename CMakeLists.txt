@@ -41,6 +41,16 @@ if(BGSPPRC_BUILD_CLI)
         ${CMAKE_CURRENT_SOURCE_DIR}/cli)
     target_compile_options(bgspprc-solve PRIVATE
         -Wall -Wextra -Wpedantic -O2 ${BGSPPRC_PROJECT_FLAGS})
+
+    # Parity CLI with SIMD code paths disabled, used by benchmarks to isolate
+    # the SIMD contribution (the *_base modes in run_benchmarks.sh).
+    add_executable(bgspprc-solve-nosimd cli/main.cpp)
+    target_link_libraries(bgspprc-solve-nosimd PRIVATE bgspprc)
+    target_include_directories(bgspprc-solve-nosimd PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/cli)
+    target_compile_options(bgspprc-solve-nosimd PRIVATE
+        -Wall -Wextra -Wpedantic -O2 ${BGSPPRC_PROJECT_FLAGS})
+    target_compile_definitions(bgspprc-solve-nosimd PRIVATE BGSPPRC_DISABLE_SIMD)
 endif()
 
 # Tests (opt-in, off by default when consumed as submodule)

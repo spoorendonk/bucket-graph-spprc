@@ -13,16 +13,23 @@
 #                  Default: benchmarks/instances/spprclib and
 #                  benchmarks/instances/roberti.
 #   --ng K         Pass --ng K to solver (ng-neighborhood size).
-#   --mode M       Solver mode: mono | bidir | para-bidir (default: para-bidir).
-#                  Data-parallelism is always on; modes differ on bidir axis.
-#                    mono       → --mono
-#                    bidir      → --no-parallel-bidir (sequential fw/bw)
-#                    para-bidir → default (bidir + parallel + parallel_bidir)
+#   --mode M       Solver mode (default: para_bidir). Two orthogonal axes:
+#                    bidir axis: mono | bidir | para_bidir
+#                    SIMD axis:  _base (SIMD off) | _vec (SIMD on)
+#                  Data-parallelism is always on.
+#
+#                    mono_base        → bgspprc-solve-nosimd --mono
+#                    mono_vec         → bgspprc-solve        --mono
+#                    bidir_base       → bgspprc-solve-nosimd --no-parallel-bidir
+#                    bidir_vec        → bgspprc-solve        --no-parallel-bidir
+#                    para_bidir_base  → bgspprc-solve-nosimd (defaults)
+#                    para_bidir       → bgspprc-solve        (defaults)
 #   --max-paths N  Pass --max-paths N to solver.
 #   --timeout S    Per-instance timeout in seconds (default: 120).
 #
 # Environment:
-#   SOLVE          Path to solver binary (default: ./build/bgspprc-solve).
+#   SOLVE          Path to SIMD-on solver    (default: ./build/bgspprc-solve).
+#   SOLVE_NOSIMD   Path to SIMD-off solver   (default: ./build/bgspprc-solve-nosimd).
 #
 # Output:
 #   benchmarks/bgspprc.csv — CSV with columns:
@@ -52,13 +59,14 @@ usage() {
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
 REPODIR="$(cd "$SCRIPTDIR/.." && pwd)"
 SOLVE="${SOLVE:-$REPODIR/build/bgspprc-solve}"
+SOLVE_NOSIMD="${SOLVE_NOSIMD:-$REPODIR/build/bgspprc-solve-nosimd}"
 CSV="${SCRIPTDIR}/bgspprc.csv"
 
 # ── Args ──
 NG_FLAG=()
 MAX_PATHS_FLAG=()
 TIMEOUT=120
-MODE="para-bidir"
+MODE="para_bidir"
 PATHS=()
 
 while [[ $# -gt 0 ]]; do
@@ -72,17 +80,29 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Map mode to solver flags
+# Map mode to (binary, flags). SIMD axis selects which binary; bidir axis
+# selects the --mono / --no-parallel-bidir flag.
+SOLVE_BIN="$SOLVE"
 MODE_FLAGS=()
 case "$MODE" in
-  mono)       MODE_FLAGS=(--mono) ;;
-  bidir)      MODE_FLAGS=(--no-parallel-bidir) ;;
-  para-bidir) MODE_FLAGS=() ;;  # default bgspprc-solve behaviour
+  mono_base)       SOLVE_BIN="$SOLVE_NOSIMD"; MODE_FLAGS=(--mono) ;;
+  mono_vec)        SOLVE_BIN="$SOLVE";        MODE_FLAGS=(--mono) ;;
+  bidir_base)      SOLVE_BIN="$SOLVE_NOSIMD"; MODE_FLAGS=(--no-parallel-bidir) ;;
+  bidir_vec)       SOLVE_BIN="$SOLVE";        MODE_FLAGS=(--no-parallel-bidir) ;;
+  para_bidir_base) SOLVE_BIN="$SOLVE_NOSIMD"; MODE_FLAGS=() ;;
+  para_bidir)      SOLVE_BIN="$SOLVE";        MODE_FLAGS=() ;;
   *)
-    echo "Invalid --mode: $MODE (expected: mono | bidir | para-bidir)" >&2
+    echo "Invalid --mode: $MODE" >&2
+    echo "Expected: mono_base | mono_vec | bidir_base | bidir_vec | para_bidir_base | para_bidir" >&2
     exit 1
     ;;
 esac
+
+if [[ ! -x "$SOLVE_BIN" ]]; then
+  echo "Solver binary not found or not executable: $SOLVE_BIN" >&2
+  echo "Build with: cmake --build build --target $(basename "$SOLVE_BIN")" >&2
+  exit 1
+fi
 
 # Default paths
 if [[ ${#PATHS[@]} -eq 0 ]]; then
@@ -173,7 +193,7 @@ for file in "${FILES[@]}"; do
   # Run solver with timeout
   output=""
   status="OK"
-  if output=$(timeout "${TIMEOUT}s" "$SOLVE" "${MODE_FLAGS[@]}" "${NG_FLAG[@]}" "${MAX_PATHS_FLAG[@]}" "$file" 2>&1); then
+  if output=$(timeout "${TIMEOUT}s" "$SOLVE_BIN" "${MODE_FLAGS[@]}" "${NG_FLAG[@]}" "${MAX_PATHS_FLAG[@]}" "$file" 2>&1); then
     :
   else
     rc=$?
