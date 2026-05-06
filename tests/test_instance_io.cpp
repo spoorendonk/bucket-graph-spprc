@@ -126,8 +126,9 @@ TEST_CASE("compute_ng_neighbors: on sppcc instance with k=2") {
         CHECK(inst.ng_neighbors[v].size() == 2);
         CHECK(inst.ng_neighbors[v][0] == v);  // self is first
     }
-    // Sink copies source's neighbors
-    CHECK(inst.ng_neighbors[4] == inst.ng_neighbors[0]);
+    // Sink is terminal — its ng-set is {sink} only.
+    REQUIRE(inst.ng_neighbors[4].size() == 1);
+    CHECK(inst.ng_neighbors[4][0] == 4);
 }
 
 // ── Solve-through-parser tests ──

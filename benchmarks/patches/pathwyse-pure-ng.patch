@@ -1,0 +1,45 @@
+Subject: [PATCH] PWDefault: pure-ng mode (disable 2-cycle elim)
+
+PathWyse's PWDefault enforces "no 2-cycles" (v→u→v) at both extension time
+and at bidirectional join, on top of the ng-path relaxation. The classic
+ng-relaxation (Baldacci et al. 2011) does not include 2-cycle elimination —
+it permits 2-cycles when they are not blocked by the ng-neighborhood
+structure.
+
+For comparison against pure-ng solvers, this patch disables the two
+2-cycle checks unconditionally. Suggested upstream version: gate behind a
+new parameter (e.g. `algo/default/two_cycle_elim`) — kept simple here so
+benchmarks can apply and revert it cleanly.
+
+Reproducible difference (instance A-n80-k10-14 from spprclib, ng/set_size=8):
+  unpatched: Obj = -124125 (3-cycle (75,47,65)×4, 2-cycles forbidden)
+  patched:   Obj = -135733 (also exploits (78,68,78) and similar 2-cycles)
+
+The patched value matches `bgspprc bidir --ng 8 --ng-metric cost` with the
+default `BGSPPRC_NO_2_CYCLE=OFF` build (paper-faithful pure ng).
+
+--- a/src/core/algorithms/dynamic_programming/PW_default/PW_default.cpp
++++ b/src/core/algorithms/dynamic_programming/PW_default/PW_default.cpp
+@@ -200,10 +200,6 @@ void PWDefault::extend(LabelAdv* candidate) {
+         if((active and label_manager->isNodeReachable(candidate, neigh)) or
+            (not active and label_manager->isExtensionFeasible(candidate, neigh))){
+
+-            //Eliminates k = 2 cycles
+-            if(candidate->getPredecessor() and candidate->getPredecessor()->getNode() == neigh)
+-                continue;
+-
+             //critical res extension check
+             if(bidirectional and not label_manager->isCriticalExtensionFeasible(candidate, neigh))
+                 continue;
+--- a/src/core/algorithms/dynamic_programming/PW_default/LM_default.cpp
++++ b/src/core/algorithms/dynamic_programming/PW_default/LM_default.cpp
+@@ -715,9 +715,6 @@ bool LMDefault::isJoinFeasible(LabelAdv* label_forward, LabelAdv* label_backward
+     int snapshot_forward, snapshot_backward;
+     std::vector<Resource*>& resources = problem->getResources();
+
+-    if (i == j_predecessor or j == i_predecessor)
+-        return false;
+-
+     for(int resID = 0; resID < problem->getNumRes(); resID++) {
+         snapshot_forward = label_forward->getSnapshot(resID);
+         snapshot_backward = label_backward->getSnapshot(resID);

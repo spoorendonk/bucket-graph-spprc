@@ -155,6 +155,38 @@ python3 benchmarks/build_comparison_pathwyse.py
 See `## Results → Pathwyse comparison` below for the cost-inequality and
 rcspp-exclusion rationale.
 
+#### Pathwyse patches for parity comparison
+
+`run_pathwyse.sh` clones upstream Pathwyse and builds it as-is. For the LP
+*cost* (not just runtime) to be an apples-to-apples comparison against
+bgspprc's pure-ng relaxation, two upstream-Pathwyse changes are needed.
+Patches for both are checked in under `benchmarks/patches/`:
+
+| Patch | What it fixes | Where |
+|---|---|---|
+| `pathwyse-skip-terminals-in-buildng.patch` | `PWDefault::buildNG` ranks all outgoing-arc neighbors by reduced cost; on `.sppcc`/`.vrp` the sink return-arc can land in the top k-1 and burn an ng-slot on a terminal vertex (operationally inert). With it, Pathwyse's ng-set construction matches bgspprc's `compute_ng_neighbors` on `.sppcc`/`.vrp`. | `PW_default.cpp::buildNG` |
+| `pathwyse-pure-ng.patch` | `PWDefault` hardcodes 2-cycle elimination (`v→u→v` forbidden) at extension and at bidirectional join. The Baldacci/Sadykov ng-relaxation does not include this — it's an extra tightening Pathwyse layers on top. With it removed, both solvers compute the same pure-ng LP. | `PW_default.cpp::extend`, `LM_default.cpp::isJoinFeasible` |
+
+bgspprc itself does **not** include 2-cycle elimination — it implements the
+paper's pure-ng relaxation. The patches make Pathwyse match.
+
+Apply both before running the comparison sweep:
+
+```bash
+./benchmarks/run_pathwyse.sh   # one-time clone+build into build/pathwyse
+( cd build/pathwyse \
+  && patch -p1 < ../../benchmarks/patches/pathwyse-skip-terminals-in-buildng.patch \
+  && patch -p1 < ../../benchmarks/patches/pathwyse-pure-ng.patch \
+  && cmake --build build -j )
+# now re-run with --skip-build
+```
+
+Without the patches, expect ~7% of cost rows to differ (Pathwyse will report
+*more negative* values on instances where 2-cycle exploitation pays off, and
+*equal* values on instances where ng-set parity is exact). With both
+patches, **integer-exact** cost agreement on every instance pair where both
+solvers complete (verified across spprclib at ng=8 — see commit history).
+
 ## Results
 
 All numbers below are derived from the committed CSVs. Each table is followed

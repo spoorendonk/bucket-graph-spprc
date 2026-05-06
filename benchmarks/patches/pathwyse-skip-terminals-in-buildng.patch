@@ -1,0 +1,44 @@
+Subject: [PATCH] PWDefault::buildNG: skip origin/destination as ng-candidates
+
+The current buildNG ranks the (k-1) nearest outgoing-arc neighbors of each
+vertex i, ordered by `objective->extend(0, i, j, true)`. On instances where
+i has an arc back to the origin or forward to the destination (the typical
+SPPRC route start/end split), those terminal vertices can fall within the
+k-1 cheapest j's. They then occupy a slot in `unreachable_ng[i]` even
+though they cannot be the target of an intermediate revisit during search:
+the origin has no incoming arcs from customers, the destination has no
+outgoing arcs. Tracking them in the bitset is operationally inert but
+costs one effective neighborhood slot per affected customer.
+
+Skipping origin and destination in the candidate loop frees that slot for
+a real customer-revisit guard, tightening the ng-relaxation at zero
+search-time cost.
+
+Reproducible difference (instance A-n62-k8-99, ng/set_size=8):
+  before patch: customers 15 and 28 ng-sets contain the destination (62)
+  after  patch: customers 15 and 28 ng-sets contain customers 36 and 20
+
+Reported by the bgspprc-spprc team during a parity comparison; the same
+two affected vertices and the same downstream LP-cost difference appear
+across the SPPRC `.sppcc` instance set.
+
+--- a/src/core/algorithms/dynamic_programming/PW_default/PW_default.cpp
++++ b/src/core/algorithms/dynamic_programming/PW_default/PW_default.cpp
+@@ -394,10 +394,15 @@ void PWDefault::buildNG(){
+     unreachable_ng.resize(problem->getNumNodes(), Bitset(problem->getNumNodes()));
+     std::set<std::pair<int, int>> neighbors;
+
++    // Origin and destination are terminal in the search (no intermediate
++    // revisits possible) and tracking them only burns an ng-slot.
++    int origin = problem->getOrigin();
++    int destination = problem->getDestination();
++
+     //Arc-cost based ordering (should take into account extension instead)
+     int neighborhood_max_size = ng_size - 1; //To account for node i in the set
+     for(int i = 0; i < problem->getNumNodes(); i++) {
+         for(int j = 0; j < problem->getNumNodes(); j++)
+-            if(problem->areNeighbors(i, j, true)) {
++            if(problem->areNeighbors(i, j, true) && j != origin && j != destination) {
+                 if(neighbors.size() < neighborhood_max_size)
+                     neighbors.insert(std::make_pair(objective->extend(0,i,j,true), j));
+                 else if(objective->extend(0,i,j,true) < neighbors.rbegin()->first) {

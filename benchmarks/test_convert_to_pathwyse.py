@@ -224,11 +224,11 @@ class TestWriteScaling:
     def test_sidecar_file_created(self, graph_instance, tmp_path):
         inst = parse_graph(str(graph_instance))
         outpath = tmp_path / "out.txt"
-        write_pathwyse(inst, str(outpath))
+        write_pathwyse(inst, str(outpath), cost_scale=1000)
         scales_path = tmp_path / "out.scales"
         assert scales_path.exists()
         content = scales_path.read_text()
-        assert "cost_scale=1000000" in content
+        assert "cost_scale=1000" in content
         assert "time_scale=1000" in content
         assert "cap_scale=1" in content
 

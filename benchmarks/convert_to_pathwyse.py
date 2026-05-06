@@ -8,8 +8,10 @@ Usage:
 Arguments:
     PATH            Instance file or directory of instances.
     --outdir DIR    Output directory (default: benchmarks/instances/pathwyse).
-    --cost-scale N  Multiplier applied to EDGE_COST before int truncation
-                    (default: 1000000 = 6-digit precision).
+    --cost-scale N  Multiplier applied to EDGE_COST before int truncation.
+                    Default: per-extension auto (sppcc=1, vrp=1000, graph=1000).
+                    Pathwyse accumulates path cost in int32, so the scale must
+                    leave headroom for summing along paths, not just for one arc.
     --time-scale N  Multiplier for TW bounds and arc times (default: 1000).
     --cap-scale N   Multiplier for capacity bounds and demands (default: 1).
 
@@ -37,9 +39,13 @@ import sys
 from pathlib import Path
 
 
-# Default scales. Pathwyse reads every field with std::stoi, so fractional
-# values are lost unless we pre-multiply by a scale and round to int.
-DEFAULT_COST_SCALE = 1_000_000
+# Per-format cost-scale defaults. Pathwyse reads every field with std::stoi
+# and accumulates path costs in int32, so the scale must leave headroom for
+# summing along long paths — not just for fitting one arc. Per-format:
+#   .sppcc   → 1     (spprclib costs are integers natively)
+#   .vrp     → 1000  (Roberti uses Euclidean distances, 3 decimals are plenty)
+#   .graph   → 1000  (rcspp reduced costs, 3 decimals are plenty)
+DEFAULT_COST_SCALES = {".sppcc": 1, ".vrp": 1000, ".graph": 1000}
 DEFAULT_TIME_SCALE = 1_000
 DEFAULT_CAP_SCALE = 1
 
@@ -305,38 +311,29 @@ def parse_graph(filepath):
 def write_pathwyse(
     inst,
     outpath,
-    cost_scale=DEFAULT_COST_SCALE,
+    cost_scale=1,
     time_scale=DEFAULT_TIME_SCALE,
     cap_scale=DEFAULT_CAP_SCALE,
 ):
     """Write instance in Pathwyse format. All numeric fields are scaled and
-    rounded to int since Pathwyse parses every value with std::stoi."""
+    rounded to int since Pathwyse parses every value with std::stoi.
+
+    Pathwyse accumulates label costs in int32, so an aggressively large
+    cost_scale will saturate the accumulator over long paths even when
+    individual arcs fit. Callers should choose cost_scale via
+    DEFAULT_COST_SCALES[ext]; this function only enforces the per-arc bound
+    as a final safety check.
+    """
     nv = inst["n_vertices"]
     source = inst["source"]
     sink = inst["sink"]
     has_tw = inst["has_tw"]
 
-    # Auto-adapt cost_scale per instance so |cost * scale| fits in int32. Raw
-    # costs on spprclib distance instances reach ~1e5; with the default 1e6
-    # scale that overflows. Reducing the scale (powers of 10) keeps the sidecar
-    # decode side simple and round-trips cleanly.
-    orig_cost_scale = cost_scale
     max_abs_cost = max((abs(float(a[2])) for a in inst["arcs"]), default=0.0)
-    if max_abs_cost > 0:
-        while cost_scale > 1 and max_abs_cost * cost_scale > _INT32_MAX:
-            new_scale = max(cost_scale // 10, 1)
-            if new_scale == cost_scale:
-                break
-            cost_scale = new_scale
-        if max_abs_cost * cost_scale > _INT32_MAX:
-            raise OverflowError(
-                f"cannot fit |cost|={max_abs_cost} in int32 even at scale=1"
-            )
-    if cost_scale != orig_cost_scale:
-        print(
-            f"  note: {inst['name']}: reduced cost_scale "
-            f"{orig_cost_scale}→{cost_scale} (max|c|={max_abs_cost:.0f})",
-            file=sys.stderr,
+    if max_abs_cost * cost_scale > _INT32_MAX:
+        raise OverflowError(
+            f"cost_scale={cost_scale} overflows int32 for "
+            f"|cost|={max_abs_cost} on instance {inst['name']}"
         )
 
     # Determine resources
@@ -434,7 +431,10 @@ def write_pathwyse(
 
 
 def convert_file(filepath, outdir, cost_scale, time_scale, cap_scale):
-    """Convert a single instance file to Pathwyse format."""
+    """Convert a single instance file to Pathwyse format.
+
+    cost_scale=None selects the per-extension default from DEFAULT_COST_SCALES.
+    """
     filepath = Path(filepath)
     ext = filepath.suffix
 
@@ -447,6 +447,9 @@ def convert_file(filepath, outdir, cost_scale, time_scale, cap_scale):
     else:
         print(f"  Skipping unknown extension: {filepath}", file=sys.stderr)
         return None
+
+    if cost_scale is None:
+        cost_scale = DEFAULT_COST_SCALES[ext]
 
     # Determine output subdirectory based on parent/grandparent dir
     parent_name = filepath.parent.name
@@ -473,8 +476,9 @@ def main():
     parser.add_argument(
         "--cost-scale",
         type=int,
-        default=DEFAULT_COST_SCALE,
-        help=f"Multiplier for EDGE_COST before int truncation (default: {DEFAULT_COST_SCALE})",
+        default=None,
+        help="Multiplier for EDGE_COST before int truncation. "
+        "Default: per-extension auto (sppcc=1, vrp=1000, graph=1000).",
     )
     parser.add_argument(
         "--time-scale",
@@ -517,9 +521,12 @@ def main():
         else:
             print(f"  Warning: {path} not found, skipping", file=sys.stderr)
 
+    cost_scale_label = (
+        "auto" if args.cost_scale is None else str(args.cost_scale)
+    )
     print(
         f"\nConverted {converted} instances to {args.outdir} "
-        f"(cost_scale={args.cost_scale}, time_scale={args.time_scale}, "
+        f"(cost_scale={cost_scale_label}, time_scale={args.time_scale}, "
         f"cap_scale={args.cap_scale})"
     )
 

@@ -143,13 +143,13 @@ problem/scaling/override = 1
 problem/scaling = 1.0
 main_algorithm = PWDefault
 algo/default/timelimit = ${TIMEOUT}.0
-algo/default/bidirectional = 0
-algo/default/dssr = standard
+algo/default/bidirectional = 1
+algo/default/dssr = off
 algo/default/ng = ${ng_mode}
 algo/default/ng/set_size = ${ng_val}
 algo/default/reserve = 10000000
-algo/default/use_visited = 1
-algo/default/compare_unreachables = 1
+algo/default/use_visited = ${USE_VISITED:-1}
+algo/default/compare_unreachables = ${COMPARE_UNREACHABLES:-1}
 data_collection/level = -1
 output/write = 0
 SETTINGS
