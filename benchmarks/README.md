@@ -181,15 +181,17 @@ Apply both before running the comparison sweep:
 # now re-run with --skip-build
 ```
 
-Without the patches, expect a small fraction of cost rows to differ
-(Pathwyse will report *more negative* values on instances where 2-cycle
-exploitation pays off, and *equal* values on instances where ng-set parity
-is exact). With both patches, **integer-exact** cost agreement on every
+Without the patches, Pathwyse's relaxation is strictly tighter than
+bgspprc's (pure ng + extra 2-cycle elimination). On instances where
+2-cycle exploitation lowers the LP, bgspprc reports a *more negative*
+reduced cost than unpatched Pathwyse; the values are equal where 2-cycles
+don't help. With both patches, **integer-exact** cost agreement on every
 instance pair where both solvers complete — verified at **ng=8** across
 spprclib (43/43) and roberti (29/30 completed pairs; one PathWyse
 timeout). Larger ng has not been swept under the patched setup; the
 existing `comparison_pathwyse.csv` table below (`bgspprc_cost ≤
-pathwyse_cost`) reflects unpatched-Pathwyse numbers.
+pathwyse_cost`) reflects unpatched-Pathwyse numbers and is consistent
+with this direction.
 
 ## Results
 
