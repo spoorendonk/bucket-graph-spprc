@@ -48,7 +48,7 @@ struct Options {
     bool bidir = true;
     Stage stage = Stage::Exact;
     int ng = -1;                  // -1 = use file default or 8, 0 = disable ng-path
-    int ng_metric = -1;           // -1 = auto (distance for sppcc/vrp, cost for graph)
+    int ng_metric = -1;           // -1 = auto: cost everywhere (parity with Pathwyse)
                                   //  0 = cost, 1 = distance
     double step1 = 0, step2 = 0;  // 0 = per-type default
     bool auto_steps = false;      // use per-vertex auto-computed steps
@@ -142,7 +142,7 @@ static Result run_sppcc(const std::string& path, const Options& opts, Exec execu
     r.type = "sppcc";
 
     if (opts.ng > 0) {
-        bool use_dist = opts.ng_metric != 0;  // auto (-1) or explicit distance (1)
+        bool use_dist = opts.ng_metric == 1;  // auto (-1) defaults to cost (parity with Pathwyse)
         io::compute_ng_neighbors(inst, opts.ng, use_dist);
         auto pv = inst.problem_view();
         r.n_verts = pv.n_vertices;
@@ -215,7 +215,7 @@ static Result run_vrp(const std::string& path, const Options& opts, Exec executo
     r.type = "vrp";
 
     if (opts.ng > 0) {
-        bool use_dist = opts.ng_metric != 0;  // auto (-1) or explicit distance (1)
+        bool use_dist = opts.ng_metric == 1;  // auto (-1) defaults to cost (parity with Pathwyse)
         io::compute_ng_neighbors(inst, opts.ng, use_dist);
         auto pv = inst.problem_view();
         r.n_verts = pv.n_vertices;
@@ -557,7 +557,7 @@ int main(int argc, char** argv) {
                      "  --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;\n"
                      "                  from file or 8 for graph; 0 disables)\n"
                      "  --ng-metric M   distance|cost — ng neighbor metric\n"
-                     "                  (default: distance for sppcc/vrp, cost for graph)\n"
+                     "                  (default: cost — parity with Pathwyse buildNG)\n"
                      "  --steps S1,S2   Bucket step sizes\n"
                      "  --no-jump-arcs  Disable jump arcs (for ablation studies)\n"
                      "  --max-paths N   Number of paths to return (0=all, 1=best; default: 1)\n"

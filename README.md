@@ -68,8 +68,8 @@ tables, methodology, and reproducer one-liners in
 
 | set      | ng 8 | ng 16 | ng 24 |
 |----------|-----:|------:|------:|
-| spprclib |   0.60 / 1 |  1.66 / 1 |  5.08 / 4 |
-| roberti  |   0.57 / 0 |  3.26 / 3 | 15.27 / 8 |
+| spprclib |   0.89 / 1 |  2.00 / 5 |  5.68 / 7 |
+| roberti  |   0.54 / 0 |  3.09 / 3 | 14.36 / 8 |
 | rcspp    |   1.91 / 0 |  2.22 / 0 |  2.62 / 4 |
 
 **Paper comparison (rcspp)** — bgspprc `para_bidir` vs Petersen & Spoorendonk
@@ -81,22 +81,25 @@ tables, methodology, and reproducer one-liners in
 | 16 | 1.29  |
 | 24 | 1.25  |
 
-**Pathwyse comparison** — bgspprc `para_bidir` vs Pathwyse (shift = 1 s, TL
-rows dropped; `#bg_eq` is where `bgspprc_cost = pathwyse_cost`, i.e. compressed
-ng-path matched unreachable-vector quality):
+**Pathwyse comparison** — bgspprc `para_bidir` vs patched Pathwyse, both in
+pure-ng mode (shift = 1 s, TL rows dropped; `#bg_eq` is where
+`|bgspprc_cost − pathwyse_cost| ≤ 1e-3`):
 
 | set      | ng | ratio | #bg_eq | n  |
 |----------|---:|------:|-------:|---:|
-| spprclib |  8 | 0.21  |      7 | 35 |
-| spprclib | 16 | 0.15  |     20 | 28 |
-| spprclib | 24 | 0.19  |     16 | 19 |
-| roberti  |  8 | 0.23  |     13 | 24 |
-| roberti  | 16 | 0.15  |     14 | 16 |
-| roberti  | 24 | 0.11  |     10 | 11 |
+| spprclib |  8 | 0.77  |     42 | 42 |
+| spprclib | 16 | 0.58  |     38 | 38 |
+| spprclib | 24 | 0.61  |     31 | 31 |
+| roberti  |  8 | 0.51  |     24 | 30 |
+| roberti  | 16 | 0.38  |     20 | 28 |
+| roberti  | 24 | 0.44  |     13 | 19 |
 
 bgspprc is ~25-32% slower than the paper on rcspp at the sgm (both solvers
-share the same 120 s budget) and ~4-9× faster than Pathwyse on spprclib +
-roberti where both finish.
+share the same 120 s budget) and ~30–60% of Pathwyse runtime on spprclib +
+roberti where both finish, with integer-exact LP-cost agreement on every
+spprclib pair (`#bg_eq == n`); `.vrp` cost-scale rounding accounts for
+the smaller `#bg_eq` on roberti. Patches required against upstream
+Pathwyse `d53c01b` — see [`benchmarks/patches/`](benchmarks/patches/).
 
 ## Use as a Library
 

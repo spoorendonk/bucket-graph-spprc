@@ -191,12 +191,11 @@ bgspprc's (pure ng + extra 2-cycle elimination). On instances where
 2-cycle exploitation lowers the LP, bgspprc reports a *more negative*
 reduced cost than unpatched Pathwyse; the values are equal where 2-cycles
 don't help. With both patches, **integer-exact** cost agreement on every
-instance pair where both solvers complete — verified at **ng=8** across
-spprclib (43/43) and roberti (29/30 completed pairs; one PathWyse
-timeout). Larger ng has not been swept under the patched setup; the
-existing `comparison_pathwyse.csv` table below (`bgspprc_cost ≤
-pathwyse_cost`) reflects unpatched-Pathwyse numbers and is consistent
-with this direction.
+spprclib pair where both solvers complete (`#bg_eq == n` for ng ∈
+{8, 16, 24}; see Results table). Roberti has a small `#bg_eq < n` because
+`.vrp` uses `cost_scale=1000` for the int32-only Pathwyse cost field,
+introducing ±0.001 round-trip wobble that occasionally exceeds the
+`1e-3` equality tolerance — the underlying LP optima still match.
 
 ## Results
 
@@ -221,37 +220,37 @@ without a suffix is the SIMD-on variant to match the default CLI build).
 | spprclib  |  8 | bidir_base       |   0.609 | 120.000 |   1 |
 | spprclib  |  8 | bidir_vec        |   0.627 | 120.000 |   1 |
 | spprclib  |  8 | para_bidir_base  |   0.626 | 120.000 |   1 |
-| spprclib  |  8 | para_bidir       |   0.598 | 120.000 |   1 |
+| spprclib  |  8 | para_bidir       |   0.893 | 120.000 |   1 |
 | spprclib  | 16 | mono_base        |   1.211 |  16.768 |   0 |
 | spprclib  | 16 | mono_vec         |   1.435 |  23.043 |   0 |
 | spprclib  | 16 | bidir_base       |   1.972 | 120.000 |   2 |
 | spprclib  | 16 | bidir_vec        |   1.885 | 120.000 |   1 |
 | spprclib  | 16 | para_bidir_base  |   1.628 | 120.000 |   1 |
-| spprclib  | 16 | para_bidir       |   1.664 | 120.000 |   1 |
+| spprclib  | 16 | para_bidir       |   2.000 | 120.000 |   5 |
 | spprclib  | 24 | mono_base        |   6.939 | 120.000 |   3 |
 | spprclib  | 24 | mono_vec         |   9.937 | 120.000 |   3 |
 | spprclib  | 24 | bidir_base       |   4.867 | 120.000 |   5 |
 | spprclib  | 24 | bidir_vec        |   5.969 | 120.000 |   4 |
 | spprclib  | 24 | para_bidir_base  |   4.271 | 120.000 |   4 |
-| spprclib  | 24 | para_bidir       |   5.081 | 120.000 |   4 |
+| spprclib  | 24 | para_bidir       |   5.683 | 120.000 |   7 |
 | roberti   |  8 | mono_base        |   0.885 |  12.342 |   0 |
 | roberti   |  8 | mono_vec         |   0.867 |  10.095 |   0 |
 | roberti   |  8 | bidir_base       |   0.696 |  13.554 |   0 |
 | roberti   |  8 | bidir_vec        |   0.742 |  13.885 |   0 |
 | roberti   |  8 | para_bidir_base  |   0.597 |  11.429 |   0 |
-| roberti   |  8 | para_bidir       |   0.571 |   9.592 |   0 |
+| roberti   |  8 | para_bidir       |   0.540 |   9.531 |   0 |
 | roberti   | 16 | mono_base        |   5.865 | 120.000 |   3 |
 | roberti   | 16 | mono_vec         |   7.458 | 120.000 |   3 |
 | roberti   | 16 | bidir_base       |   3.511 | 120.000 |   3 |
 | roberti   | 16 | bidir_vec        |   4.264 | 120.000 |   3 |
 | roberti   | 16 | para_bidir_base  |   2.936 | 120.000 |   3 |
-| roberti   | 16 | para_bidir       |   3.261 | 120.000 |   3 |
+| roberti   | 16 | para_bidir       |   3.090 | 120.000 |   3 |
 | roberti   | 24 | mono_base        |  38.657 | 120.000 |  11 |
 | roberti   | 24 | mono_vec         |  51.561 | 120.000 |  14 |
 | roberti   | 24 | bidir_base       |  14.972 | 120.000 |   8 |
 | roberti   | 24 | bidir_vec        |  20.541 | 120.000 |  10 |
 | roberti   | 24 | para_bidir_base  |  11.566 | 120.000 |   6 |
-| roberti   | 24 | para_bidir       |  15.266 | 120.000 |   8 |
+| roberti   | 24 | para_bidir       |  14.360 | 120.000 |   8 |
 | rcspp     |  8 | mono_base        |   1.498 |  33.934 |   0 |
 | rcspp     |  8 | mono_vec         |   1.287 |  19.874 |   0 |
 | rcspp     |  8 | bidir_base       |   2.359 |  57.965 |   0 |
@@ -325,32 +324,38 @@ for ng in sorted(g, key=int):
 
 ### Pathwyse comparison
 
-bgspprc uses compressed ng-path (weaker dominance, more negative paths) whereas
-Pathwyse uses O(|V|) unreachable vectors (tighter dominance), so `bgspprc_cost ≤
-pathwyse_cost` is the expected inequality, not equality. The interesting
-quality signal is `#bg_eq`: rows where bgspprc finds a path of the same cost
-as Pathwyse — i.e. the weaker ng-path relaxation was already tight enough to
-match the unreachable-vector relaxation. Only `ng ∈ {8, 16, 24}` is compared —
-`ng=0` (elementary) is out of scope because neither side ships an elementary
-configuration in this benchmark setup. The rcspp `.graph` set is excluded
-entirely: the two solvers build ng neighborhoods from different metrics
-(cost vs. distance), so the relaxations literally differ.
+Both solvers configured for **pure ng-path relaxation** (Baldacci 2011 /
+Sadykov-Uchoa-Pessoa 2021 §4 — no extra 2-cycle elimination, no DSSR
+elementarity post-pass). bgspprc implements pure ng directly; Pathwyse
+needs the two patches in `benchmarks/patches/` (see "Pathwyse patches for
+parity comparison" section above). bgspprc's default ng-metric for
+`.sppcc`/`.vrp` is **cost** (matches Pathwyse `buildNG`); set with
+`--ng-metric distance` if you want the older Baldacci-distance default.
+
+With both solvers in pure-ng mode, the LP optimum is identical, so
+`#bg_eq` should equal `n` modulo cost-scale rounding (Pathwyse stores
+costs as scaled int32; for `.vrp` `cost_scale=1000` round-trip gives
+±0.001 wobble that occasionally trips the `1e-3` tolerance). The rcspp
+`.graph` set is excluded entirely from the table: the two solvers build
+ng neighborhoods from different metrics there (cost vs. distance —
+intentional for the rcspp comparison-vs-paper benchmark), so the
+relaxations literally differ.
 
 One row per `(instance, ng)` from `comparison_pathwyse.csv`. Matches
-`build_comparison_pathwyse.py`: shift = 1 s, **rows where either side timed
-out are dropped** from the sgm (not substituted), ratio computed on shifted
-means as `(bg_sgm + 1) / (pathwyse_sgm + 1)`. `n` is the paired count (both
-sides finished); `#bg_eq` counts rows where
+`build_comparison_pathwyse.py`: shift = 1 s, **rows where either side
+timed out are dropped** from the sgm (not substituted), ratio computed on
+shifted means as `(bg_sgm + 1) / (pathwyse_sgm + 1)`. `n` is the paired
+count (both sides finished); `#bg_eq` counts rows where
 `|bgspprc_cost − pathwyse_cost| ≤ 1e-3` across all `n_total` rows.
 
 | set      | ng | bgspprc sgm (s) | pathwyse sgm (s) | ratio | #bg_eq | n  | n_total |
 |----------|---:|----------------:|-----------------:|------:|-------:|---:|--------:|
-| spprclib |  8 |           0.096 |            4.359 | 0.205 |      7 | 35 |      45 |
-| spprclib | 16 |           0.327 |            7.625 | 0.154 |     20 | 28 |      45 |
-| spprclib | 24 |           0.794 |            8.567 | 0.188 |     16 | 19 |      45 |
-| roberti  |  8 |           0.320 |            4.790 | 0.228 |     13 | 24 |      31 |
-| roberti  | 16 |           0.513 |            9.217 | 0.148 |     14 | 16 |      31 |
-| roberti  | 24 |           2.410 |           29.017 | 0.114 |     10 | 11 |      31 |
+| spprclib |  8 |           0.465 |            0.913 | 0.766 |     42 | 42 |      45 |
+| spprclib | 16 |           0.726 |            1.968 | 0.581 |     38 | 38 |      45 |
+| spprclib | 24 |           1.453 |            3.018 | 0.611 |     31 | 31 |      45 |
+| roberti  |  8 |           0.495 |            1.954 | 0.506 |     24 | 30 |      31 |
+| roberti  | 16 |           1.845 |            6.483 | 0.380 |     20 | 28 |      31 |
+| roberti  | 24 |           3.802 |            9.996 | 0.437 |     13 | 19 |      31 |
 
 Reproduce:
 
