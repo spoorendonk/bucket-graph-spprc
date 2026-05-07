@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Build benchmarks/comparison_pathwyse.csv from bgspprc.csv + pathwyse.csv.
 
-Inner-joins on (instance, ng). Filters to sppcc/vrp instances (sets
-`spprclib` and `roberti`); rcspp `.graph` instances are excluded because
-bgspprc's auto-default ng-metric is `cost` on .graph while Pathwyse builds
-ng neighborhoods from distance — the ng-relaxations differ and the rows
-aren't strictly apples-to-apples.
+Inner-joins on (instance, ng), filtered to `spprclib` and `roberti`. The
+rcspp `.graph` set is excluded — see INCLUDED_SETS comment for the
+reason.
 
 The bgspprc side picks `mode=para_bidir` (consistently fastest across
 ng=16/24 per bgspprc.csv analysis; mono wins at ng=8 only).
@@ -29,6 +27,14 @@ VALID_BG_MODES = [
     "para_bidir_base",
     "para_bidir",
 ]
+# Sets we publish in comparison_pathwyse.csv. rcspp `.graph` instances
+# (sets "ng8" / "ng16" / "ng24") are excluded because the two solvers
+# produce systematically different LP values on them: bgspprc reports
+# cost=0 (no improving column) on most rcspp instances, while patched
+# Pathwyse reports large-negative columns. The cause is preprocessing
+# divergence on .graph time-windowed instances, not ng-set construction —
+# both use cost-based ng on .graph. Runtime is comparable, LP values are
+# not.
 INCLUDED_SETS = {"spprclib", "roberti"}
 
 

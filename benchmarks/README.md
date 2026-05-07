@@ -170,21 +170,18 @@ Patches for both are checked in under `benchmarks/patches/`:
 bgspprc itself does **not** include 2-cycle elimination — it implements the
 paper's pure-ng relaxation. The patches make Pathwyse match.
 
-Apply both before running the comparison sweep. The patches are
-line-anchored against upstream Pathwyse commit
-[`d53c01b`](https://github.com/pathwyse/pathwyse/commit/d53c01b) (HEAD as
-of this comparison's authoring) — `git checkout` it first if upstream has
-moved on:
+`run_pathwyse.sh` applies both patches automatically as part of the
+build step. The script clones upstream Pathwyse, checks out pinned commit
+[`d53c01b`](https://github.com/pathwyse/pathwyse/commit/d53c01b), applies
+both patches in `benchmarks/patches/`, and builds. No manual step needed:
 
 ```bash
-./benchmarks/run_pathwyse.sh   # one-time clone+build into build/pathwyse
-( cd build/pathwyse \
-  && git checkout d53c01b \
-  && patch -p1 < ../../benchmarks/patches/pathwyse-skip-terminals-in-buildng.patch \
-  && patch -p1 < ../../benchmarks/patches/pathwyse-pure-ng.patch \
-  && cmake --build build -j )
-# now re-run with --skip-build
+./benchmarks/run_pathwyse.sh --ng 8 ...   # patches applied during build
 ```
+
+Bumping `PATHWYSE_REV` in `run_pathwyse.sh` to a newer upstream commit
+requires regenerating the patches' line numbers (or re-running
+`patch --merge` and committing the resolved hunks).
 
 Without the patches, Pathwyse's relaxation is strictly tighter than
 bgspprc's (pure ng + extra 2-cycle elimination). On instances where
@@ -332,14 +329,17 @@ parity comparison" section above). bgspprc's default ng-metric for
 `.sppcc`/`.vrp` is **cost** (matches Pathwyse `buildNG`); set with
 `--ng-metric distance` if you want the older Baldacci-distance default.
 
-With both solvers in pure-ng mode, the LP optimum is identical, so
-`#bg_eq` should equal `n` modulo cost-scale rounding (Pathwyse stores
-costs as scaled int32; for `.vrp` `cost_scale=1000` round-trip gives
-±0.001 wobble that occasionally trips the `1e-3` tolerance). The rcspp
-`.graph` set is excluded entirely from the table: the two solvers build
-ng neighborhoods from different metrics there (cost vs. distance —
-intentional for the rcspp comparison-vs-paper benchmark), so the
-relaxations literally differ.
+With both solvers in pure-ng mode on `.sppcc`/`.vrp`, the LP optimum is
+identical, so `#bg_eq` should equal `n` modulo cost-scale rounding
+(Pathwyse stores costs as scaled int32; for `.vrp` `cost_scale=1000`
+round-trip gives ±0.001 wobble that occasionally trips the `1e-3`
+tolerance). The rcspp `.graph` set is excluded from the table:
+empirically the two solvers diverge on LP value there (bgspprc reports
+`cost=0` / no improving column on most rcspp instances while patched
+Pathwyse reports large-negative columns). The cause is preprocessing
+divergence on time-windowed instances, not ng-set construction — both
+use cost-based ng on `.graph`. `pathwyse.csv` does include rcspp rows
+(useful for runtime profiling); only the LP-parity table excludes them.
 
 One row per `(instance, ng)` from `comparison_pathwyse.csv`. Matches
 `build_comparison_pathwyse.py`: shift = 1 s, **rows where either side

@@ -63,6 +63,16 @@ if [[ ${#PATHS[@]} -eq 0 ]]; then
 fi
 
 # ── Build Pathwyse ──
+# Pinned upstream Pathwyse commit. The patches in benchmarks/patches/ are
+# line-anchored against this revision; bumping it requires regenerating the
+# patches' line numbers (or re-running `patch --merge` and committing the
+# resolved hunks).
+PATHWYSE_REV="d53c01b2c02743ad2def2c5a6f0f2bfebef1d1b1"
+PATCHES=(
+  "$SCRIPTDIR/patches/pathwyse-skip-terminals-in-buildng.patch"
+  "$SCRIPTDIR/patches/pathwyse-pure-ng.patch"
+)
+
 build_pathwyse() {
   if [[ -x "$PATHWYSE_BIN" && $SKIP_BUILD -eq 1 ]]; then
     echo "Pathwyse: reusing existing build at $PATHWYSE_BIN"
@@ -73,7 +83,21 @@ build_pathwyse() {
   if [[ -d "$PATHWYSE_DIR" ]]; then
     rm -rf "$PATHWYSE_DIR"
   fi
-  git clone --depth 1 https://github.com/pathwyse/pathwyse.git "$PATHWYSE_DIR"
+  # Full clone (no --depth 1) so we can checkout the pinned revision below.
+  git clone https://github.com/pathwyse/pathwyse.git "$PATHWYSE_DIR"
+
+  echo "Pathwyse: checking out pinned revision $PATHWYSE_REV..."
+  git -C "$PATHWYSE_DIR" checkout --detach "$PATHWYSE_REV"
+
+  echo "Pathwyse: applying parity patches..."
+  for p in "${PATCHES[@]}"; do
+    if [[ ! -f "$p" ]]; then
+      echo "Error: patch not found: $p" >&2
+      exit 1
+    fi
+    echo "  applying $(basename "$p")"
+    ( cd "$PATHWYSE_DIR" && patch -p1 ) <"$p"
+  done
 
   echo "Pathwyse: building..."
   mkdir -p "$PATHWYSE_DIR/build"
@@ -87,7 +111,7 @@ build_pathwyse() {
     find "$PATHWYSE_DIR" -name pathwyse -type f -executable 2>/dev/null
     exit 1
   fi
-  echo "Pathwyse: built successfully at $PATHWYSE_BIN"
+  echo "Pathwyse: built successfully at $PATHWYSE_BIN (patched against $PATHWYSE_REV)"
 }
 
 build_pathwyse
