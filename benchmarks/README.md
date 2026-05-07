@@ -284,29 +284,30 @@ paper comparison above).
 | rcspp |  8 | bidir_base       |   2.389 |    7.870 |  56/56 |
 | rcspp |  8 | bidir_vec        |   2.442 |    7.995 |  56/56 |
 | rcspp |  8 | para_bidir_base  |   8.798 |   44.624 |  37/56 |
-| rcspp |  8 | para_bidir       |   1.908 |    5.697 |  56/56 |
+| rcspp |  8 | para_bidir       |   1.884 |    5.640 |  56/56 |
 | rcspp | 16 | mono_base        |   1.578 |    4.979 |  56/56 |
 | rcspp | 16 | mono_vec         |   1.598 |    5.134 |  56/56 |
 | rcspp | 16 | bidir_base       |   2.824 |   12.800 |  55/56 |
 | rcspp | 16 | bidir_vec        |   2.855 |   12.952 |  55/56 |
-| rcspp | 16 | para_bidir_base  |   2.183 |    8.651 |  56/56 |
-| rcspp | 16 | para_bidir       |   2.221 |    8.908 |  56/56 |
+| rcspp | 16 | para_bidir_base  |   2.222 |    8.913 |  56/56 |
+| rcspp | 16 | para_bidir       |   2.200 |    8.783 |  56/56 |
 | rcspp | 24 | mono_base        |   1.940 |   11.005 |  54/56 |
 | rcspp | 24 | mono_vec         |   1.974 |   11.567 |  54/56 |
 | rcspp | 24 | bidir_base       |   3.156 |   17.821 |  51/56 |
 | rcspp | 24 | bidir_vec        |   3.222 |   18.443 |  51/56 |
-| rcspp | 24 | para_bidir_base  |   2.555 |   14.910 |  52/56 |
-| rcspp | 24 | para_bidir       |   2.617 |   15.533 |  52/56 |
+| rcspp | 24 | para_bidir_base  |   2.532 |   14.792 |  52/56 |
+| rcspp | 24 | para_bidir       |   2.588 |   15.433 |  52/56 |
 
-On rcspp, mono is fastest at ng=8 (sgm 1.30 s vs para_bidir 1.91 s)
+On rcspp, mono is fastest at ng=8 (sgm 1.29 s vs para_bidir 1.88 s)
 because the search tree is shallow and bidirectional fw/bw splitting
 overhead dominates; from ng=16 upward para_bidir catches up and stays
 within a sub-second sgm of the leader. SIMD (`_vec`) and scalar
 (`_base`) are within 5% of each other across all rows — these
 instances are dominated by graph traversal, not the dominance inner
-loop. The `para_bidir_base` ng=8 row is the lone outlier (37/56) and
-reflects a stale-binary issue from the partial sweep; will refresh
-when the full 6-mode sweep re-runs.
+loop. `para_bidir_base` ng=8 sits well outside that band (sgm 8.80 s,
+37/56) — a real cliff for the no-SIMD parallel-bidir mode on the
+shallowest setting; SIMD `para_bidir` (sgm 1.88 s, 56/56) does not
+hit it.
 
 Reproduce: `python3 benchmarks/compute_means.py modes` (full 54-row
 table including spprclib + roberti).
