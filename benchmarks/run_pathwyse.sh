@@ -2,8 +2,8 @@
 # run_pathwyse.sh — Build Pathwyse, convert instances, run Pathwyse, append rows
 # to benchmarks/pathwyse.csv. One row per (instance, ng) with cost + runtime.
 #
-# No comparison logic — use build_comparison_pathwyse.py to join pathwyse.csv
-# against bgspprc.csv into benchmarks/comparison_pathwyse.csv.
+# No comparison logic — run `compute_means.py pathwyse` to join pathwyse.csv
+# against bgspprc.csv in-memory and print the comparison table.
 #
 # Usage:
 #   ./benchmarks/run_pathwyse.sh [--ng K] [--timeout S] [--skip-build] [--append]

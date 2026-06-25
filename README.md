@@ -90,7 +90,7 @@ bgspprc is **1.3×–2.4× faster** than Pathwyse by sgm across the six
 (set, ng) cells (ratio = `(pathwyse_sgm + 1) / (bgspprc_sgm + 1)`,
 shift = 1 s, TL → 120 s on both sides). Both solvers reach the same
 optimal reduced cost on `.sppcc`/`.vrp` modulo cost-scale rounding
-(verified per-row in `comparison_pathwyse.csv`). Pathwyse needs
+(verified per-row via `compute_means.py pathwyse --rows`). Pathwyse needs
 patches against upstream `d53c01b` — see
 [`benchmarks/patches/`](benchmarks/patches/) (auto-applied by
 `run_pathwyse.sh`).
@@ -100,16 +100,16 @@ patches against upstream `d53c01b` — see
 
 | ng | solver   | sgm (s) | mean (s) | solved |
 |---:|----------|--------:|---------:|-------:|
-|  8 | bgspprc  |   1.908 |    5.697 |  56/56 |
+|  8 | bgspprc  |   1.884 |    5.640 |  56/56 |
 |  8 | paper    |   0.203 |    0.406 |  56/56 |
-| 16 | bgspprc  |   2.221 |    8.908 |  56/56 |
+| 16 | bgspprc  |   2.200 |    8.783 |  56/56 |
 | 16 | paper    |   0.526 |    3.010 |  56/56 |
-| 24 | bgspprc  |   2.617 |   15.533 |  52/56 |
+| 24 | bgspprc  |   2.588 |   15.433 |  52/56 |
 | 24 | paper    |   0.873 |    9.123 |  53/56 |
 
 bgspprc is **1.9×–2.4× slower** than the paper on rcspp at sgm — same
 formula `(bg_sgm + 1) / (paper_sgm + 1)`, both sides share the 120 s
-budget. Gap narrows with ng: 2.42× at ng=8 → 2.11× at ng=16 → 1.93× at
+budget. Gap narrows with ng: 2.40× at ng=8 → 2.10× at ng=16 → 1.92× at
 ng=24, suggesting bgspprc's overhead is fixed-per-instance rather than
 proportional to search-tree size.
 
