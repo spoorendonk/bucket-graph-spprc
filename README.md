@@ -73,17 +73,17 @@ Pathwyse, both in pure-ng mode.
 
 | set      | ng | solver   | sgm (s) | mean (s) | solved |
 |----------|---:|----------|--------:|---------:|-------:|
-| spprclib |  8 | bgspprc  |   0.893 |    6.953 |  44/45 |
+| spprclib |  8 | bgspprc  |   0.917 |    7.238 |  44/45 |
 | spprclib |  8 | pathwyse |   1.522 |   12.133 |  42/45 |
-| spprclib | 16 | bgspprc  |   2.000 |   15.674 |  40/45 |
+| spprclib | 16 | bgspprc  |   2.048 |   15.801 |  40/45 |
 | spprclib | 16 | pathwyse |   4.284 |   24.290 |  38/45 |
-| spprclib | 24 | bgspprc  |   5.683 |   26.354 |  38/45 |
+| spprclib | 24 | bgspprc  |   5.838 |   26.725 |  38/45 |
 | spprclib | 24 | pathwyse |  10.590 |   42.512 |  31/45 |
-| roberti  |  8 | bgspprc  |   0.540 |    0.882 |  31/31 |
+| roberti  |  8 | bgspprc  |   0.551 |    0.911 |  31/31 |
 | roberti  |  8 | pathwyse |   2.330 |    9.999 |  30/31 |
-| roberti  | 16 | bgspprc  |   3.090 |   14.863 |  28/31 |
+| roberti  | 16 | bgspprc  |   3.176 |   15.003 |  28/31 |
 | roberti  | 16 | pathwyse |   8.796 |   28.152 |  28/31 |
-| roberti  | 24 | bgspprc  |  14.360 |   43.695 |  23/31 |
+| roberti  | 24 | bgspprc  |  14.813 |   44.346 |  23/31 |
 | roberti  | 24 | pathwyse |  26.824 |   62.019 |  19/31 |
 
 bgspprc is **1.3×–2.4× faster** than Pathwyse by sgm across the six
