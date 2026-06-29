@@ -2506,8 +2506,8 @@ private:
     bool is_theta_compatible(const Label<Pack>* fw, const Label<Pack>* bw, int arc_id,
                              double theta) const {
         // Cheapest check first: pure cost bound (no resource/pack ops).
-        // Account for min_dom_cost_ as lower bound on pack concatenation_cost
-        // (can be negative for R1C with negative duals; 0 for ng-path).
+        // min_dom_cost_ is a (≥0) lower bound on the pack dominance penalty
+        // (0 for ng-path, and 0 for R1C — its dominance penalty is +β ≥ 0).
         double arc_cost = reduced_costs_ ? reduced_costs_[arc_id] : pv_.arc_base_cost[arc_id];
         double total_cost = fw->cost + bw->cost + arc_cost;
         if (total_cost + min_dom_cost_ >= theta) {

@@ -3,6 +3,7 @@
 #include "executor.h"
 #include "types.h"
 
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <cmath>
@@ -79,7 +80,7 @@ struct R1CResource {
         return {state & arc_keep_mask_[arc_id], 0.0};
     }
 
-    /// Toggle bits for cuts where vertex ∈ C. Overflow (1→0) applies cost -β.
+    /// Toggle bits for cuts where vertex ∈ C. Overflow (1→0) applies cost +β (penalty).
     std::pair<State, double> extend_to_vertex(Direction /*dir*/, State state, int vertex) const {
         if (n_active_ == 0) {
             return {state, 0.0};
@@ -96,34 +97,29 @@ struct R1CResource {
         return {state, cost};
     }
 
-    /// Extra cost L1 pays vs L2: penalty for cuts where s2 has credit but s1
-    /// doesn't.
+    /// Extra cost L1 must overcome to dominate L2 — a non-negative PENALTY.
+    /// Holding a cut bit is a disadvantage (you are one base-set visit from paying
+    /// the +β overflow penalty). For each cut where the dominator L1 holds a bit
+    /// the dominated L2 lacks (s1 & ~s2), L1 pays one extra +β over an odd
+    /// completion that L2 escapes, so L1 must be +β cheaper to dominate for every
+    /// completion: c(L1) + Σ_{s1 & ~s2} β ≤ c(L2).
     double domination_cost(Direction /*dir*/, int /*vertex*/, State s1, State s2) const {
         if (n_active_ == 0) {
             return 0.0;
         }
-        uint64_t disadvantage = s2 & ~s1;
+        uint64_t disadvantage = s1 & ~s2;
         if (disadvantage) {
             return compute_overflow_cost(disadvantage);
         }
         return 0.0;
     }
 
-    /// Lower bound on domination_cost: sum of all negative beta contributions.
-    /// domination_cost sums -beta[c] for cuts where s2 has credit but s1 doesn't,
-    /// so worst case is all cuts contributing their negative beta.
-    double min_domination_cost() const {
-        double total = 0.0;
-        for (int c = 0; c < n_active_; ++c) {
-            double contrib = -betas_[c];
-            if (contrib < 0.0) {
-                total += contrib;
-            }
-        }
-        return total;
-    }
+    /// Lower bound on domination_cost: 0. The dominance penalty is a sum of +β
+    /// (β ≥ 0), so it is never negative.
+    double min_domination_cost() const { return 0.0; }
 
-    /// Cost when joining fw/bw labels: if both have credit, overflow.
+    /// Cost when joining fw/bw labels: if both sides hold the bit, the join
+    /// completes that coefficient and is charged the +β overflow penalty.
     double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State s_fw, State s_bw) const {
         if (n_active_ == 0) {
             return 0.0;
@@ -168,16 +164,22 @@ private:
     void precompute_betas() {
         betas_.resize(n_active_);
         for (int c = 0; c < n_active_; ++c) {
-            betas_[c] = -cuts_[c].dual_value;
+            // β = -σ_ℓ ≥ 0 for a valid R1C dual (σ_ℓ ≤ 0). Clamp at 0 so a
+            // malformed / LP-noisy positive dual cannot make β negative — a
+            // negative β would turn the overflow penalty into a credit and break
+            // the min_domination_cost() == 0 lower bound (→ unsound over-pruning).
+            betas_[c] = std::max(0.0, -cuts_[c].dual_value);
         }
     }
 
+    /// Sum of +β over the set bits of `mask` — the reduced-cost penalty for the
+    /// coefficients those bits represent (β = -σ ≥ 0, so each overflow raises cost).
     double compute_overflow_cost(uint64_t mask) const {
         double cost = 0.0;
         while (mask) {
             int bit = std::countr_zero(mask);
             if (bit < n_active_) {
-                cost -= betas_[bit];
+                cost += betas_[bit];
             }
             mask &= mask - 1;
         }

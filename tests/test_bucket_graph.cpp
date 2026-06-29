@@ -734,8 +734,8 @@ TEST_CASE("R1C: extend overflow applies cost") {
     // Extend to v2 (in C) via arc 2 (in AM): 1 → keep(1) → toggle → overflow!
     auto [s_a2, ca2] = r1c.extend_along_arc(Direction::Forward, s1, 2);
     auto [s2, c2] = r1c.extend_to_vertex(Direction::Forward, s_a2, 2);
-    CHECK(s2 == 0ULL);                         // overflow resets to 0
-    CHECK(ca2 + c2 == doctest::Approx(-3.0));  // -β applied
+    CHECK(s2 == 0ULL);                        // overflow resets to 0
+    CHECK(ca2 + c2 == doctest::Approx(3.0));  // +β penalty applied
 }
 
 TEST_CASE("R1C: domination cost") {
@@ -749,13 +749,15 @@ TEST_CASE("R1C: domination cost") {
 
     r1c.set_cuts({{cut}}, 3, 2);
 
-    // s1 has credit (1), s2 doesn't (0): s1 is better, no penalty
+    // L1 holds a pending bit (1) that L2 lacks (0): L1 is disadvantaged — it will
+    // pay an extra +β over an odd completion that L2 escapes, so it must be +β
+    // cheaper to dominate.
     double dom = r1c.domination_cost(Direction::Forward, 1, 1ULL, 0ULL);
-    CHECK(dom == doctest::Approx(0.0));
+    CHECK(dom == doctest::Approx(4.0));  // +β penalty
 
-    // s2 has credit (1), s1 doesn't (0): s1 is at disadvantage → penalty
+    // L2 holds the pending bit, L1 does not: L1 faces no extra penalty.
     double dom2 = r1c.domination_cost(Direction::Forward, 1, 0ULL, 1ULL);
-    CHECK(dom2 == doctest::Approx(-4.0));  // -β
+    CHECK(dom2 == doctest::Approx(0.0));
 }
 
 TEST_CASE("R1C: concatenation cost") {
@@ -769,11 +771,11 @@ TEST_CASE("R1C: concatenation cost") {
 
     r1c.set_cuts({{cut}}, 3, 2);
 
-    // Both fw and bw have credit → cost -β
+    // Both fw and bw hold the bit → join completes the coefficient → +β penalty
     double c = r1c.concatenation_cost(Symmetry::Asymmetric, 1, 1ULL, 1ULL);
-    CHECK(c == doctest::Approx(-5.0));
+    CHECK(c == doctest::Approx(5.0));
 
-    // Only one has credit → no cost
+    // Only one side holds the bit → no completed coefficient → no cost
     double c2 = r1c.concatenation_cost(Symmetry::Asymmetric, 1, 1ULL, 0ULL);
     CHECK(c2 == doctest::Approx(0.0));
 }
@@ -817,10 +819,10 @@ TEST_CASE("R1C: extend_along_arc clears concatenation overlap") {
     uint64_t fw = 1ULL;  // fw has bit set
     uint64_t bw = 1ULL;  // bw has bit set
 
-    // Without extend_along_arc: s_fw & s_bw = 1 → -β = -5.0 (wrong if joining
+    // Without extend_along_arc: s_fw & s_bw = 1 → +β = 5.0 (wrong if joining
     // arc not in AM)
     double wrong = r1c.concatenation_cost(Symmetry::Asymmetric, 1, fw, bw);
-    CHECK(wrong == doctest::Approx(-5.0));
+    CHECK(wrong == doctest::Approx(5.0));
 
     // Arc 1 is NOT in AM → memory reset clears fw bit
     auto [ext, ce] = r1c.extend_along_arc(Direction::Forward, fw, 1);
@@ -863,18 +865,18 @@ TEST_CASE("R1C: extend_along_arc multiple cuts mixed memory") {
     CHECK((ext & 2ULL) == 0ULL);  // cut1 cleared
     CHECK((ext & 4ULL) == 0ULL);  // cut2 cleared
 
-    // Concatenation cost with extended state: only cut0 overlap → cost -= β₀ = -1.0
+    // Concatenation cost with extended state: only cut0 overlap → cost += β₀ = 1.0
     double c = r1c.concatenation_cost(Symmetry::Asymmetric, 1, ext, bw);
-    CHECK(c == doctest::Approx(-1.0));  // only cut0's -β₀
+    CHECK(c == doctest::Approx(1.0));  // only cut0's +β₀
 
-    // Without fix (all bits): would be -1 + -2 + -3 = -6.0
+    // Without fix (all bits): would be 1 + 2 + 3 = 6.0
     double c_all = r1c.concatenation_cost(Symmetry::Asymmetric, 1, fw, bw);
-    CHECK(c_all == doctest::Approx(-6.0));
+    CHECK(c_all == doctest::Approx(6.0));
 }
 
 TEST_CASE("R1C: bidir concatenation uses extended R1C state") {
     // End-to-end test: bidir solve with R1C should match mono solve.
-    // Without the fix, bidir would report lower cost due to overcounted R1C.
+    // Without the fix, bidir would mis-charge the overlapping R1C coefficient at the join.
     using R1CPack = ResourcePack<R1CResource>;
     LargerGraph g;
 
