@@ -20,7 +20,7 @@ struct R1Cut {
     std::vector<int> base_set;                     // C ⊆ V \ {source, sink}
     std::vector<double> multipliers;               // p_v for v ∈ C (typically 1/2 for 3-SRC)
     std::vector<std::pair<int, int>> memory_arcs;  // AM ⊆ A (arc-memory set)
-    double dual_value = 0.0;                       // σ_ℓ (dual variable, β = -σ_ℓ > 0)
+    double dual_value = 0.0;  // σ_ℓ (dual variable, β = -σ_ℓ ≥ 0; clamped at 0)
 };
 
 /// lm-R1C resource conforming to the Resource concept.
