@@ -68,7 +68,7 @@ tables, methodology, and reproducer one-liners in
 `mean (s)` = arithmetic mean; `solved` = #instances finished within the
 120 s timeout (TL substitutes as 120 s in both).
 
-**Pathwyse comparison (sppcc + vrp)** — bgspprc `para_bidir` vs patched
+**Pathwyse comparison (sppcc + vrp)** — bgspprc `para_bidir_vec` vs patched
 Pathwyse, both in pure-ng mode.
 
 | set      | ng | solver   | sgm (s) | mean (s) | solved |
@@ -95,7 +95,7 @@ patches against upstream `d53c01b` — see
 [`benchmarks/patches/`](benchmarks/patches/) (auto-applied by
 `run_pathwyse.sh`).
 
-**Paper comparison (rcspp)** — bgspprc `para_bidir` vs Petersen & Spoorendonk
+**Paper comparison (rcspp)** — bgspprc `para_bidir_vec` vs Petersen & Spoorendonk
 2025 (arXiv:2511.01397) `all_s` column.
 
 | ng | solver   | sgm (s) | mean (s) | solved |

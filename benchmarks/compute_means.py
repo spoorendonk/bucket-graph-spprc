@@ -5,10 +5,10 @@ Reads the source CSVs directly and joins them in-memory — there are no
 intermediate `comparison_*.csv` files. The joins reproduce the ones that
 `run_comparison.sh` and `build_comparison_pathwyse.py` used to materialise:
 
-  pathwyse   bgspprc.csv (mode=para_bidir, set∈{spprclib,roberti})
+  pathwyse   bgspprc.csv (mode=para_bidir_vec, set∈{spprclib,roberti})
              ⋈ pathwyse.csv on (instance, ng); sgm shift = 1 s. Also prints
              a bgspprc-vs-Pathwyse cost-agreement summary to stderr.
-  rcspp      bgspprc.csv (mode=para_bidir, set∈{ng8,ng16,ng24})
+  rcspp      bgspprc.csv (mode=para_bidir_vec, set∈{ng8,ng16,ng24})
              ⋈ pull_algo_runtimes.csv (`all_s`) on (instance, ng); shift = 1 s.
   modes      bgspprc.csv per (set, ng, mode) — the 6-mode/SIMD ablation,
              bgspprc-only.
@@ -45,7 +45,7 @@ MODE_ORDER = [
     "bidir_base",
     "bidir_vec",
     "para_bidir_base",
-    "para_bidir",
+    "para_bidir_vec",
 ]
 
 # Map bgspprc.csv `set` field to display name. rcspp is binned per-ng under
@@ -54,7 +54,7 @@ SET_DISPLAY = {"ng8": "rcspp", "ng16": "rcspp", "ng24": "rcspp"}
 
 # The bgspprc mode used for both head-to-head comparisons (consistently fastest
 # across ng=16/24; mono wins at ng=8 only — see the mode ablation table).
-BG_MODE = "para_bidir"
+BG_MODE = "para_bidir_vec"
 # Pathwyse comparison covers sppcc + vrp only. The rcspp `.graph` set has its
 # own comparison axis (vs Petersen & Spoorendonk 2025 — the rcspp table).
 INCLUDED_SETS = {"spprclib", "roberti"}
@@ -94,7 +94,7 @@ def join_rcspp(
     ng_groups: tuple[int, ...] = RCSPP_NG_GROUPS,
     timeout: float = TIMEOUT,
 ) -> list[dict]:
-    """bgspprc `para_bidir` (rcspp sets) ⋈ paper `all_s` on (instance, ng).
+    """bgspprc `para_bidir_vec` (rcspp sets) ⋈ paper `all_s` on (instance, ng).
 
     Pure join over existing data — no solver run. Cells that timed out on
     either side are `'TL'` and substitute as `timeout` seconds downstream.
@@ -117,7 +117,7 @@ def join_rcspp(
                 continue
             paper[(r["instance"], ng)] = "TL" if t > timeout else f"{t:.3f}"
 
-    # bgspprc para_bidir rows on rcspp sets — empty cost/time = TL.
+    # bgspprc para_bidir_vec rows on rcspp sets — empty cost/time = TL.
     bg: dict[tuple[str, int], str] = {}
     with open(bg_path) as f:
         for r in csv.DictReader(f):
@@ -239,7 +239,7 @@ def modes_table(csv_path: Path, shift: float = 1.0, tl: float = TIMEOUT) -> str:
 def pathwyse_table(
     bg_path: Path, pw_path: Path, shift: float = 1.0, tl: float = TIMEOUT
 ) -> str:
-    """bgspprc para_bidir vs patched Pathwyse on `.sppcc`/`.vrp`, in Plato
+    """bgspprc para_bidir_vec vs patched Pathwyse on `.sppcc`/`.vrp`, in Plato
     style: one row per (set, ng, solver). Timeouts substitute as `tl` seconds
     (never dropped). Cost equality is checked per row; the bg_leq/bg_gt/bg_zero
     tally is printed to stderr (inspect `--rows` for the per-row costs)."""
@@ -284,7 +284,7 @@ def pathwyse_table(
 def rcspp_table(
     bg_path: Path, paper_path: Path, shift: float = 1.0, tl: float = TIMEOUT
 ) -> str:
-    """bgspprc para_bidir vs Petersen & Spoorendonk 2025 paper runtimes per
+    """bgspprc para_bidir_vec vs Petersen & Spoorendonk 2025 paper runtimes per
     ng, Plato-style. `TL` cells substitute as `tl` seconds."""
     rows = join_rcspp(bg_path, paper_path)
 

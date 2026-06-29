@@ -9,7 +9,7 @@ set -euo pipefail
 
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
 
-MODES=(mono_base mono_vec bidir_base bidir_vec para_bidir_base para_bidir)
+MODES=(mono_base mono_vec bidir_base bidir_vec para_bidir_base para_bidir_vec)
 NGS=(8 16 24)
 
 TIMEOUT="${TIMEOUT:-120}"

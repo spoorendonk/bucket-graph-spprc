@@ -27,7 +27,7 @@ MODES = (
     "bidir_base",
     "bidir_vec",
     "para_bidir_base",
-    "para_bidir",
+    "para_bidir_vec",
 )
 
 

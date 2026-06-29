@@ -81,7 +81,7 @@ cmake --build build
 ./benchmarks/regen_all_modes.sh
 
 # Expanded form, for reference:
-for mode in mono_base mono_vec bidir_base bidir_vec para_bidir_base para_bidir; do
+for mode in mono_base mono_vec bidir_base bidir_vec para_bidir_base para_bidir_vec; do
   for ng in 8 16 24; do
     ./benchmarks/run_benchmarks.sh --mode $mode --ng $ng --timeout 120 benchmarks/instances/spprclib
     ./benchmarks/run_benchmarks.sh --mode $mode --ng $ng --timeout 120 benchmarks/instances/roberti
@@ -90,8 +90,8 @@ for mode in mono_base mono_vec bidir_base bidir_vec para_bidir_base para_bidir; 
 done
 ```
 
-Solver modes cross a bidir axis (`mono` / `bidir` / `para_bidir`) with a SIMD
-axis (`_base` = SIMD disabled build, `_vec` = SIMD enabled; `para_bidir` with no
+Solver modes cross a bidir axis (`mono` / `bidir` / `para_bidir_vec`) with a SIMD
+axis (`_base` = SIMD disabled build, `_vec` = SIMD enabled; `para_bidir_vec` with no
 suffix is the SIMD-on default):
 
 | `--mode`            | binary                  | bgspprc-solve flags                        |
@@ -101,7 +101,7 @@ suffix is the SIMD-on default):
 | `bidir_base`        | `bgspprc-solve-nosimd`  | `--no-parallel-bidir` (sequential fw/bw)   |
 | `bidir_vec`         | `bgspprc-solve`         | `--no-parallel-bidir`                      |
 | `para_bidir_base`   | `bgspprc-solve-nosimd`  | default (bidir + parallel + parallel_bidir)|
-| `para_bidir`        | `bgspprc-solve`         | default                                    |
+| `para_bidir_vec`        | `bgspprc-solve`         | default                                    |
 
 ### Verification
 
@@ -122,7 +122,7 @@ suffix is the SIMD-on default):
 
 ```bash
 python3 benchmarks/compute_means.py rcspp
-# Pure in-memory join over bgspprc.csv (mode=para_bidir, rcspp sets) and
+# Pure in-memory join over bgspprc.csv (mode=para_bidir_vec, rcspp sets) and
 # pull_algo_runtimes.csv (all_s column, all optimizations enabled). Does NOT
 # rerun the solver — refresh bgspprc.csv first via run_benchmarks.sh if needed.
 #
@@ -209,7 +209,7 @@ followed by a one-liner that reproduces it. Columns:
 
 ### Pathwyse comparison (sppcc + vrp)
 
-bgspprc `para_bidir` vs patched Pathwyse, both in pure-ng mode (Baldacci
+bgspprc `para_bidir_vec` vs patched Pathwyse, both in pure-ng mode (Baldacci
 2011 / Sadykov-Uchoa-Pessoa 2021 §4 — no 2-cycle elimination, no DSSR).
 bgspprc implements pure ng directly; Pathwyse needs the two patches in
 `benchmarks/patches/` (see "Pathwyse patches for parity comparison" above).
@@ -246,7 +246,7 @@ Reproduce: `python3 benchmarks/compute_means.py pathwyse`
 
 ### Paper comparison (rcspp)
 
-bgspprc `para_bidir` vs Petersen & Spoorendonk 2025 (arXiv:2511.01397)
+bgspprc `para_bidir_vec` vs Petersen & Spoorendonk 2025 (arXiv:2511.01397)
 `all_s` column. Shared 120 s timeout — `TL` rows substitute as 120 s.
 56 Solomon instances per ng. (Same shift convention as the Pathwyse
 table above.)
@@ -271,8 +271,8 @@ Reproduce: `python3 benchmarks/compute_means.py rcspp`
 ### bgspprc mode/SIMD ablation (rcspp)
 
 bgspprc-only across `(ng, mode)` on the rcspp `.graph` set: mono vs
-bidir vs para_bidir, with SIMD on (`_vec`/`para_bidir`) or off
-(`_base`). The default CLI build maps to `para_bidir` (used in the
+bidir vs para_bidir_vec, with SIMD on (`_vec`/`para_bidir_vec`) or off
+(`_base`). The default CLI build maps to `para_bidir_vec` (used in the
 paper comparison above).
 
 | set   | ng | mode             | sgm (s) | mean (s) | solved |
@@ -282,29 +282,29 @@ paper comparison above).
 | rcspp |  8 | bidir_base       |   2.389 |    7.870 |  56/56 |
 | rcspp |  8 | bidir_vec        |   2.442 |    7.995 |  56/56 |
 | rcspp |  8 | para_bidir_base  |   8.798 |   44.624 |  37/56 |
-| rcspp |  8 | para_bidir       |   1.884 |    5.640 |  56/56 |
+| rcspp |  8 | para_bidir_vec       |   1.884 |    5.640 |  56/56 |
 | rcspp | 16 | mono_base        |   1.578 |    4.979 |  56/56 |
 | rcspp | 16 | mono_vec         |   1.598 |    5.134 |  56/56 |
 | rcspp | 16 | bidir_base       |   2.824 |   12.800 |  55/56 |
 | rcspp | 16 | bidir_vec        |   2.855 |   12.952 |  55/56 |
 | rcspp | 16 | para_bidir_base  |   2.222 |    8.913 |  56/56 |
-| rcspp | 16 | para_bidir       |   2.200 |    8.783 |  56/56 |
+| rcspp | 16 | para_bidir_vec       |   2.200 |    8.783 |  56/56 |
 | rcspp | 24 | mono_base        |   1.940 |   11.005 |  54/56 |
 | rcspp | 24 | mono_vec         |   1.974 |   11.567 |  54/56 |
 | rcspp | 24 | bidir_base       |   3.156 |   17.821 |  51/56 |
 | rcspp | 24 | bidir_vec        |   3.222 |   18.443 |  51/56 |
 | rcspp | 24 | para_bidir_base  |   2.532 |   14.792 |  52/56 |
-| rcspp | 24 | para_bidir       |   2.588 |   15.433 |  52/56 |
+| rcspp | 24 | para_bidir_vec       |   2.588 |   15.433 |  52/56 |
 
-On rcspp, mono is fastest at ng=8 (sgm 1.29 s vs para_bidir 1.88 s)
+On rcspp, mono is fastest at ng=8 (sgm 1.29 s vs para_bidir_vec 1.88 s)
 because the search tree is shallow and bidirectional fw/bw splitting
-overhead dominates; from ng=16 upward para_bidir catches up and stays
+overhead dominates; from ng=16 upward para_bidir_vec catches up and stays
 within a sub-second sgm of the leader. SIMD (`_vec`) and scalar
 (`_base`) are within 5% of each other across all rows — these
 instances are dominated by graph traversal, not the dominance inner
 loop. `para_bidir_base` ng=8 sits well outside that band (sgm 8.80 s,
 37/56) — a real cliff for the no-SIMD parallel-bidir mode on the
-shallowest setting; SIMD `para_bidir` (sgm 1.88 s, 56/56) does not
+shallowest setting; SIMD `para_bidir_vec` (sgm 1.88 s, 56/56) does not
 hit it.
 
 Reproduce: `python3 benchmarks/compute_means.py modes` (full 54-row
@@ -320,7 +320,7 @@ table including spprclib + roberti).
 | `instance` | Instance name (filename without extension) |
 | `set` | Instance set (`spprclib`, `roberti`, `ng8`, `ng16`, `ng24`) |
 | `ng` | ng-neighborhood size used |
-| `mode` | Solver mode (`mono_base`, `mono_vec`, `bidir_base`, `bidir_vec`, `para_bidir_base`, `para_bidir`) |
+| `mode` | Solver mode (`mono_base`, `mono_vec`, `bidir_base`, `bidir_vec`, `para_bidir_base`, `para_bidir_vec`) |
 | `cost` | Optimal cost found (empty on timeout/error) |
 | `paths` | Number of optimal paths found |
 | `time_s` | Wall-clock time in seconds |
@@ -351,11 +351,11 @@ there is no committed comparison file. To inspect the per-row data (the former
 ```bash
 python3 benchmarks/compute_means.py rcspp --rows
 # instance,ng,bgspprc_s,paper_all_s,ratio
-#   bgspprc para_bidir (rcspp sets) ⋈ pull_algo_runtimes.csv all_s; TL = >120s.
+#   bgspprc para_bidir_vec (rcspp sets) ⋈ pull_algo_runtimes.csv all_s; TL = >120s.
 
 python3 benchmarks/compute_means.py pathwyse --rows
 # instance,ng,bgspprc_s,pathwyse_s,bgspprc_cost,pathwyse_cost,bg_leq,ratio
-#   bgspprc para_bidir (spprclib+roberti) ⋈ pathwyse.csv. The bg_leq column tags
+#   bgspprc para_bidir_vec (spprclib+roberti) ⋈ pathwyse.csv. The bg_leq column tags
 #   cost agreement within tolerance max(1e-3, 100/cost_scale): bg_leq (bg ≤ pw),
 #   bg_gt (bg > pw), bg_zero (bgspprc cost ≈ 0, no improving path).
 ```

@@ -13,8 +13,8 @@
 #                  Default: benchmarks/instances/spprclib and
 #                  benchmarks/instances/roberti.
 #   --ng K         Pass --ng K to solver (ng-neighborhood size).
-#   --mode M       Solver mode (default: para_bidir). Two orthogonal axes:
-#                    bidir axis: mono | bidir | para_bidir
+#   --mode M       Solver mode (default: para_bidir_vec). Two orthogonal axes:
+#                    bidir axis: mono | bidir | para_bidir_vec
 #                    SIMD axis:  _base (SIMD off) | _vec (SIMD on)
 #                  Data-parallelism is always on.
 #
@@ -23,7 +23,7 @@
 #                    bidir_base       → bgspprc-solve-nosimd --no-parallel-bidir
 #                    bidir_vec        → bgspprc-solve        --no-parallel-bidir
 #                    para_bidir_base  → bgspprc-solve-nosimd (defaults)
-#                    para_bidir       → bgspprc-solve        (defaults)
+#                    para_bidir_vec       → bgspprc-solve        (defaults)
 #   --max-paths N  Pass --max-paths N to solver.
 #   --timeout S    Per-instance timeout in seconds (default: 120).
 #
@@ -66,7 +66,7 @@ CSV="${SCRIPTDIR}/bgspprc.csv"
 NG_FLAG=()
 MAX_PATHS_FLAG=()
 TIMEOUT=120
-MODE="para_bidir"
+MODE="para_bidir_vec"
 PATHS=()
 
 while [[ $# -gt 0 ]]; do
@@ -90,10 +90,10 @@ case "$MODE" in
   bidir_base)      SOLVE_BIN="$SOLVE_NOSIMD"; MODE_FLAGS=(--no-parallel-bidir) ;;
   bidir_vec)       SOLVE_BIN="$SOLVE";        MODE_FLAGS=(--no-parallel-bidir) ;;
   para_bidir_base) SOLVE_BIN="$SOLVE_NOSIMD"; MODE_FLAGS=() ;;
-  para_bidir)      SOLVE_BIN="$SOLVE";        MODE_FLAGS=() ;;
+  para_bidir_vec)      SOLVE_BIN="$SOLVE";        MODE_FLAGS=() ;;
   *)
     echo "Invalid --mode: $MODE" >&2
-    echo "Expected: mono_base | mono_vec | bidir_base | bidir_vec | para_bidir_base | para_bidir" >&2
+    echo "Expected: mono_base | mono_vec | bidir_base | bidir_vec | para_bidir_base | para_bidir_vec" >&2
     exit 1
     ;;
 esac

@@ -19,7 +19,7 @@
 #   --ng K         Filter CSV to rows with this ng value.
 #   --mode M       Filter CSV to rows with this solver mode
 #                  (mono_base | mono_vec | bidir_base | bidir_vec |
-#                   para_bidir_base | para_bidir).
+#                   para_bidir_base | para_bidir_vec).
 #   --csv FILE     Results CSV (default: benchmarks/bgspprc.csv).
 #
 # Verdict:
@@ -53,9 +53,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -n "$MODE_FILTER" && ! "$MODE_FILTER" =~ ^(mono_base|mono_vec|bidir_base|bidir_vec|para_bidir_base|para_bidir)$ ]]; then
+if [[ -n "$MODE_FILTER" && ! "$MODE_FILTER" =~ ^(mono_base|mono_vec|bidir_base|bidir_vec|para_bidir_base|para_bidir_vec)$ ]]; then
   echo "Invalid --mode: $MODE_FILTER" >&2
-  echo "Expected: mono_base | mono_vec | bidir_base | bidir_vec | para_bidir_base | para_bidir" >&2
+  echo "Expected: mono_base | mono_vec | bidir_base | bidir_vec | para_bidir_base | para_bidir_vec" >&2
   exit 1
 fi
 

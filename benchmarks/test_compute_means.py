@@ -44,13 +44,13 @@ class TestClassify:
 class TestJoinRcspp:
     def test_join(self, tmp_path):
         bg = _write(tmp_path, "bgspprc.csv", BG_HEADER, [
-            "A,ng8,8,para_bidir,5,1,0.100,t",
+            "A,ng8,8,para_bidir_vec,5,1,0.100,t",
             "A,ng8,8,mono_base,5,1,0.050,t",     # wrong mode → excluded
-            "B,ng8,8,para_bidir,,,,t",            # empty cost/time → TL
-            "C,spprclib,8,para_bidir,5,1,0.200,t",  # non-ng set → excluded
-            "D,ng16,16,para_bidir,5,1,2.000,t",
-            "E,ng8,8,para_bidir,5,1,0.300,t",     # not in paper → excluded
-            "H,ng8,8,para_bidir,5,1,0.400,t",
+            "B,ng8,8,para_bidir_vec,,,,t",            # empty cost/time → TL
+            "C,spprclib,8,para_bidir_vec,5,1,0.200,t",  # non-ng set → excluded
+            "D,ng16,16,para_bidir_vec,5,1,2.000,t",
+            "E,ng8,8,para_bidir_vec,5,1,0.300,t",     # not in paper → excluded
+            "H,ng8,8,para_bidir_vec,5,1,0.400,t",
         ])
         paper = _write(tmp_path, "pull_algo_runtimes.csv", PAPER_HEADER, [
             "A,8,0,0,0,0,0.050",
@@ -74,8 +74,8 @@ class TestJoinRcspp:
 
     def test_ng_filter(self, tmp_path):
         bg = _write(tmp_path, "bgspprc.csv", BG_HEADER, [
-            "A,ng8,8,para_bidir,5,1,0.1,t",
-            "A,ng16,16,para_bidir,5,1,0.2,t",
+            "A,ng8,8,para_bidir_vec,5,1,0.1,t",
+            "A,ng16,16,para_bidir_vec,5,1,0.2,t",
         ])
         paper = _write(tmp_path, "pull_algo_runtimes.csv", PAPER_HEADER, [
             "A,8,0,0,0,0,0.05",
@@ -88,14 +88,14 @@ class TestJoinRcspp:
 class TestJoinPathwyse:
     def test_join(self, tmp_path):
         bg = _write(tmp_path, "bgspprc.csv", BG_HEADER, [
-            "P,spprclib,8,para_bidir,-10,1,0.500,t",
+            "P,spprclib,8,para_bidir_vec,-10,1,0.500,t",
             "P,spprclib,8,mono_base,-10,1,0.200,t",  # wrong mode → excluded
-            "Q,roberti,8,para_bidir,-20,1,1.000,t",
-            "R,ng8,8,para_bidir,-1,1,0.100,t",       # rcspp set → excluded
-            "S,spprclib,8,para_bidir,,,,t",          # empty cost/time
-            "T,spprclib,16,para_bidir,-5,1,2.000,t",  # not in pw → excluded
-            "U,spprclib,8,para_bidir,-5,1,0.300,t",
-            "V,spprclib,8,para_bidir,0,1,0.200,t",
+            "Q,roberti,8,para_bidir_vec,-20,1,1.000,t",
+            "R,ng8,8,para_bidir_vec,-1,1,0.100,t",       # rcspp set → excluded
+            "S,spprclib,8,para_bidir_vec,,,,t",          # empty cost/time
+            "T,spprclib,16,para_bidir_vec,-5,1,2.000,t",  # not in pw → excluded
+            "U,spprclib,8,para_bidir_vec,-5,1,0.300,t",
+            "V,spprclib,8,para_bidir_vec,0,1,0.200,t",
         ])
         pw = _write(tmp_path, "pathwyse.csv", PW_HEADER, [
             "P,spprclib,8,-10,1.000,1000000,t",
@@ -119,8 +119,8 @@ class TestJoinPathwyse:
 
     def test_set_attached_to_row(self, tmp_path):
         bg = _write(tmp_path, "bgspprc.csv", BG_HEADER, [
-            "P,spprclib,8,para_bidir,-10,1,0.5,t",
-            "Q,roberti,8,para_bidir,-20,1,1.0,t",
+            "P,spprclib,8,para_bidir_vec,-10,1,0.5,t",
+            "Q,roberti,8,para_bidir_vec,-20,1,1.0,t",
         ])
         pw = _write(tmp_path, "pathwyse.csv", PW_HEADER, [
             "P,spprclib,8,-10,1.0,1000000,t",
