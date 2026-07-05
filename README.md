@@ -3,6 +3,7 @@
 [![CI](https://github.com/spoorendonk/bucket-graph-spprc/actions/workflows/ci.yml/badge.svg)](https://github.com/spoorendonk/bucket-graph-spprc/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)
+[![arXiv](https://img.shields.io/badge/arXiv-2606.30847-b31b1b.svg)](https://arxiv.org/abs/2606.30847)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20819208.svg)](https://doi.org/10.5281/zenodo.20819208)
 
 Header-only C++23 template library implementing the bucket graph labeling algorithm for the Shortest Path Problem with Resource Constraints (SPPRC) and vehicle routing variants. Based on [Sadykov, Uchoa & Pessoa (2021)](https://doi.org/10.1287/trsc.2020.0985) with extensions from [Sadykov et al. (2026)](https://inria.hal.science/hal-05486295v2).
@@ -236,14 +237,25 @@ ctest --test-dir build
 
 ## Citation
 
-If you use this software, please cite the archived release via its Zenodo DOI.
-Machine-readable metadata lives in [`CITATION.cff`](CITATION.cff), from which
-GitHub renders a "Cite this repository" button.
+If you use this software, please cite the paper:
 
-> Spoorendonk, S. (2026). *bucket-graph-spprc* (v0.1.0). Zenodo. <https://doi.org/10.5281/zenodo.20819208>
+> Spoorendonk, S. (2026). *bucket-graph-spprc: an extensible C++ library for the shortest path problem with resource constraints*. arXiv:2606.30847. <https://arxiv.org/abs/2606.30847>
 
-The concept DOI [`10.5281/zenodo.20819208`](https://doi.org/10.5281/zenodo.20819208)
-always resolves to the latest release; the v0.1.0 version DOI is
+```bibtex
+@article{Spoorendonk2026,
+  title   = {bucket-graph-spprc: an extensible C++ library for the shortest
+             path problem with resource constraints},
+  author  = {Spoorendonk, Simon},
+  journal = {arXiv preprint arXiv:2606.30847},
+  year    = {2026}
+}
+```
+
+To cite a specific archived release instead, use its Zenodo DOI. Machine-readable
+metadata lives in [`CITATION.cff`](CITATION.cff), from which GitHub renders a
+"Cite this repository" button. The concept DOI
+[`10.5281/zenodo.20819208`](https://doi.org/10.5281/zenodo.20819208) always
+resolves to the latest release; the v0.1.0 version DOI is
 [`10.5281/zenodo.20819209`](https://doi.org/10.5281/zenodo.20819209).
 
 ## References
@@ -259,6 +271,8 @@ always resolves to the latest release; the v0.1.0 version DOI is
 5. **Salani, Basso, Giuffrida (2024)** — *PathWyse: a flexible, open-source library for the resource constrained shortest path problem*. Optimization Methods and Software, 1–23. DOI: [10.1080/10556788.2023.2296978](https://doi.org/10.1080/10556788.2023.2296978)
 
 6. **Seman, Munari, Bulhões, Camponogara (2024)** — *BALDES: A Branch-Cut-and-Price Bucket Graph Labeling Algorithm for Vehicle Routing*. GitHub: <https://github.com/lseman/baldes>
+
+7. **Spoorendonk (2026)** — *bucket-graph-spprc: an extensible C++ library for the shortest path problem with resource constraints*. arXiv:2606.30847. <https://arxiv.org/abs/2606.30847>
 
 ## Related Projects
 

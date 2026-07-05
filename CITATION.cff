@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 title: "bucket-graph-spprc"
 type: software
-message: "If you use this software, please cite it as below."
+message: "If you use this software, please cite the paper referenced in preferred-citation."
 authors:
   - family-names: Spoorendonk
     given-names: Simon
@@ -13,6 +13,17 @@ url: "https://github.com/spoorendonk/bucket-graph-spprc"
 date-released: "2026-06-23"
 license: MIT
 doi: 10.5281/zenodo.20819208
+preferred-citation:
+  type: article
+  title: "bucket-graph-spprc: an extensible C++ library for the shortest path problem with resource constraints"
+  authors:
+    - family-names: Spoorendonk
+      given-names: Simon
+      orcid: "https://orcid.org/0009-0007-4304-6956"
+  year: 2026
+  journal: "arXiv preprint arXiv:2606.30847"
+  url: "https://arxiv.org/abs/2606.30847"
+  doi: 10.48550/arXiv.2606.30847
 references:
   - type: article
     title: "A Bucket Graph-Based Labeling Algorithm with Application to Vehicle Routing"
