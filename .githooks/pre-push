@@ -1,0 +1,220 @@
+#!/bin/bash
+# Git pre-push hook.
+# Final gate before sharing code — catches what pre-commit doesn't.
+#
+# Flow:
+#   1. Deletion-only push -> nothing to gate, exit early
+#   2. Clean build + test -> block on failure
+#   3. Remaining issues (complexity, type errors, warnings) -> warn and continue
+
+set -e
+
+HOOK_DIR=$(dirname "$0")
+# shellcheck source=lib.sh source-path=SCRIPTDIR
+. "$HOOK_DIR/lib.sh"
+
+# ============================================================
+# Step 0: Skip deletion-only pushes
+# ============================================================
+#
+# Git feeds one line per ref on stdin:
+#   <local ref> <local sha> <remote ref> <remote sha>
+# A deletion has an all-zero local sha. Gating those means a clean rebuild and
+# a full suite run against a HEAD that has nothing to do with the ref being
+# removed. Read stdin only when it is not a terminal, so running this hook by
+# hand to test it does not block waiting for EOF.
+PUSH_REFS=""
+[ -t 0 ] || PUSH_REFS=$(cat)
+if [ -n "$PUSH_REFS" ] && ! echo "$PUSH_REFS" | grep -qvE '^[^ ]+ 0+ '; then
+	echo "pre-push: deletion only — nothing to gate."
+	exit 0
+fi
+
+# Get changed files vs main
+MAIN_BRANCH="main"
+git rev-parse --verify "origin/$MAIN_BRANCH" &>/dev/null || MAIN_BRANCH="master"
+git fetch origin "$MAIN_BRANCH" --quiet 2>/dev/null || true
+CHANGED_FILES=$(git diff --name-only "origin/$MAIN_BRANCH"...HEAD 2>/dev/null ||
+	git diff --name-only HEAD~1 2>/dev/null || true)
+
+[ -z "$CHANGED_FILES" ] && exit 0
+
+CPP_TUS=$(echo "$CHANGED_FILES" | grep -E '\.(cpp|cc|cxx)$' || true)
+PY_FILES=$(echo "$CHANGED_FILES" | grep -E '\.py$' || true)
+SH_FILES=$(echo "$CHANGED_FILES" | grep -E '\.sh$' || true)
+
+# Docs-only pushes skip build+test. Note this deliberately does NOT filter
+# deletions out of CHANGED_FILES: a delete-only push is still a code change
+# and must be gated. Steps that cannot cope with a missing path filter
+# themselves, at their own call site.
+CODE_FILES=$(echo "$CHANGED_FILES" |
+	grep -vE '^(\.githooks/|LICENSE|CHANGELOG)' |
+	grep -vE '\.(md|txt|rst)$' |
+	grep -vE '^\.(gitignore|gitattributes)$' || true)
+
+# ============================================================
+# Step 1: Clean build + test (hard block)
+# ============================================================
+
+# Pull a fenced block out of the "## Build & Test" section of CLAUDE.md, so the
+# gate runs exactly the commands the docs tell a human to run.
+extract_block() {
+	local tag="$1"
+	if [ -f "CLAUDE.md" ]; then
+		sed -n -e '/^## Build & Test/,/^## /{' \
+			-e "/^\`\`\`${tag}$/,/^\`\`\`$/{ /^\`\`\`/d; p; }" \
+			-e '}' CLAUDE.md
+	fi
+}
+
+if [ -z "$CODE_FILES" ]; then
+	echo ""
+	echo "=== Skipping build+test (docs-only) ==="
+else
+	CLEAN_CMD=$(extract_block clean)
+	BUILD_CMD=$(extract_block build)
+	TEST_CMD=$(extract_block test)
+
+	# Both fences are required. Running whichever one resolved and silently
+	# skipping the other turns a renamed fence into "All checks passed" on a
+	# push that never built or never tested. There is deliberately no
+	# auto-detect fallback: guessing a build gates a different build than the
+	# documented one, which is the same failure wearing a hat.
+	MISSING=""
+	[ -z "$BUILD_CMD" ] && MISSING="${MISSING} \`\`\`build"
+	[ -z "$TEST_CMD" ] && MISSING="${MISSING} \`\`\`test"
+	if [ -n "$MISSING" ]; then
+		echo ""
+		echo "Push blocked: could not read the gate commands from CLAUDE.md."
+		echo "  Missing fenced block(s):${MISSING}"
+		echo ""
+		echo "  The '## Build & Test' section must contain \`\`\`build and \`\`\`test"
+		echo "  fenced blocks, and must be followed by another '## ' heading"
+		echo "  (a '# ' heading does not terminate the section)."
+		exit 1
+	fi
+
+	BUILD_FAILED=0
+	if [ -n "$CLEAN_CMD" ]; then
+		echo ""
+		echo "=== Clean ==="
+		set +e
+		eval "$CLEAN_CMD"
+		rc=$?
+		set -e
+		[ "$rc" -ne 0 ] && BUILD_FAILED=1
+	fi
+	if [ "$BUILD_FAILED" -eq 0 ]; then
+		echo ""
+		echo "=== Build ==="
+		set +e
+		eval "$BUILD_CMD"
+		rc=$?
+		set -e
+		[ "$rc" -ne 0 ] && BUILD_FAILED=1
+	fi
+	if [ "$BUILD_FAILED" -eq 0 ]; then
+		echo ""
+		echo "=== Test ==="
+		set +e
+		eval "$TEST_CMD"
+		rc=$?
+		set -e
+		[ "$rc" -ne 0 ] && BUILD_FAILED=1
+	fi
+
+	if [ "$BUILD_FAILED" -ne 0 ]; then
+		echo ""
+		echo "Push blocked: build or tests failed."
+		exit 1
+	fi
+fi
+
+# ============================================================
+# Step 2: Remaining issues (warn and continue)
+# ============================================================
+
+ISSUES=""
+
+if [ -n "$CPP_TUS" ]; then
+	if CLANG_TIDY=$(resolve_clang_tool clang-tidy "clang-tidy warnings"); then
+		COMPILE_DB=""
+		[ -f "build/compile_commands.json" ] && COMPILE_DB="build"
+		[ -f "compile_commands.json" ] && COMPILE_DB="."
+
+		if [ -n "$COMPILE_DB" ]; then
+			echo ""
+			echo "=== Running clang-tidy ==="
+			for f in $CPP_TUS; do
+				[ -f "$f" ] || continue
+				RESULT=$("$CLANG_TIDY" -p "$COMPILE_DB" --quiet "$f" 2>&1 || true)
+				if echo "$RESULT" | grep -qE '(warning|error):'; then
+					ISSUES="${ISSUES}${RESULT}"$'\n'
+				fi
+			done
+		else
+			echo "NOTE: no compile_commands.json — skipping clang-tidy."
+		fi
+	fi
+fi
+
+if [ -n "$PY_FILES" ]; then
+	if RUFF=$(require_tool ruff "ruff complexity check"); then
+		for f in $PY_FILES; do
+			[ -f "$f" ] || continue
+			RESULT=$("$RUFF" check --select C901 --no-fix "$f" 2>&1 || true)
+			if [ -n "$RESULT" ] && ! echo "$RESULT" | grep -q "^All checks passed"; then
+				ISSUES="${ISSUES}${RESULT}"$'\n'
+			fi
+		done
+	fi
+fi
+
+if [ -n "$SH_FILES" ]; then
+	if SHELLCHECK=$(require_tool shellcheck "shellcheck"); then
+		for f in $SH_FILES; do
+			[ -f "$f" ] || continue
+			RESULT=$("$SHELLCHECK" "$f" 2>&1 || true)
+			if [ -n "$RESULT" ]; then
+				ISSUES="${ISSUES}${RESULT}"$'\n'
+			fi
+		done
+	fi
+fi
+
+if [ -n "$PY_FILES" ]; then
+	# mypy stops at the first unreadable path ("errors prevented further
+	# checking"), so a single deleted .py would both fake a failure and mask
+	# real type errors in every surviving file. Filter to paths that exist.
+	MYPY_FILES=""
+	for f in $PY_FILES; do
+		[ -f "$f" ] && MYPY_FILES="${MYPY_FILES} $f"
+	done
+	if [ -n "$MYPY_FILES" ] && MYPY=$(require_tool mypy "mypy type checking"); then
+		echo ""
+		echo "=== Running mypy ==="
+		# shellcheck disable=SC2086
+		RESULT=$("$MYPY" --strict $MYPY_FILES 2>&1 || true)
+		if echo "$RESULT" | grep -qE 'error:'; then
+			ISSUES="${ISSUES}${RESULT}"$'\n'
+		else
+			echo "mypy: clean"
+		fi
+	fi
+fi
+
+if [ -n "$ISSUES" ]; then
+	echo ""
+	echo "==========================================="
+	echo "  Issues found:"
+	echo "==========================================="
+	echo "$ISSUES"
+	echo "==========================================="
+	echo ""
+	echo "Warning: pushing with known issues."
+else
+	echo ""
+	echo "All checks passed."
+fi
+
+exit 0

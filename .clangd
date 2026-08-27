@@ -1,1 +1,4 @@
-.devkit/config/.clangd
+CompileFlags:
+  CompilationDatabase: build/
+Diagnostics:
+  UnusedIncludes: Strict

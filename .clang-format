@@ -1,1 +1,27 @@
-.devkit/config/.clang-format
+---
+Language: Cpp
+BasedOnStyle: Google
+Standard: Latest
+ColumnLimit: 100
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+AccessModifierOffset: -4
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+BreakBeforeBraces: Attach
+NamespaceIndentation: None
+PointerAlignment: Left
+SortIncludes: CaseInsensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  # Project headers
+  - Regex: '".*"'
+    Priority: 1
+  # Third-party headers
+  - Regex: '<[a-z].*>'
+    Priority: 2
+  # Standard library
+  - Regex: '<.*>'
+    Priority: 3

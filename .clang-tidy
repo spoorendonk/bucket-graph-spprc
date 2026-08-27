@@ -1,1 +1,69 @@
-.devkit/config/.clang-tidy
+---
+Checks: >
+  -*,
+  bugprone-*,
+  modernize-*,
+  performance-*,
+  readability-*,
+  -modernize-use-trailing-return-type,
+  -readability-magic-numbers
+
+CheckOptions:
+  - key: readability-function-cognitive-complexity.Threshold
+    value: 25
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  # Short capitals (optionally indexed) and capital_new pairs are the reference
+  # papers' notation: L/L0/L1 for labels, P/D for pickup and delivery loads,
+  # N/W/A for set sizes and SIMD widths. Renaming these to snake_case would
+  # obscure the mapping back to the papers, which is the thing that makes this
+  # code checkable against them.
+  - key: readability-identifier-naming.VariableIgnoredRegexp
+    value: '^([A-Z]{1,2}[0-9]*|[A-Z]_new)$'
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: _
+  # Constants are deliberately not case-checked. The codebase carries two
+  # conventions on purpose — UPPER_CASE for the numeric limits in types.h
+  # (INF, EPS, NEG_INF; public API, ~225 call sites) and k-prefixed CamelCase
+  # for internal tuning knobs. Enforcing either one would mean renaming the
+  # other, so constants are left to review rather than to the linter.
+  #
+  # This has to be spelled out as aNy_CasE rather than left unset: an unset
+  # constant scope falls through to VariableCase, which then flags every one
+  # of them. ConstantMemberCase stays out of the list entirely — it outranks
+  # PrivateMemberSuffix and would fight the trailing-underscore rule.
+  - key: readability-identifier-naming.ConstantCase
+    value: aNy_CasE
+  - key: readability-identifier-naming.ConstantParameterCase
+    value: aNy_CasE
+  - key: readability-identifier-naming.LocalConstantCase
+    value: aNy_CasE
+  - key: readability-identifier-naming.StaticConstantCase
+    value: aNy_CasE
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: aNy_CasE
+  - key: readability-identifier-naming.ClassConstantCase
+    value: aNy_CasE
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: aNy_CasE
+  # aNy_CasE accepts any case but still rejects a trailing underscore, and
+  # ConstexprVariable has no suffix option that composes with
+  # PrivateMemberSuffix. Private static constexpr members follow the same
+  # trailing-underscore convention as every other private member, so spell
+  # that shape out here.
+  - key: readability-identifier-naming.ConstexprVariableIgnoredRegexp
+    value: '^[a-z][a-z0-9_]*_$'
+
+WarningsAsErrors: ''
+# Project headers only. '.*' also matches FetchContent's vendored sources
+# under build/_deps, where `clang-tidy --fix` would rewrite third-party code.
+HeaderFilterRegex: '(include/bgspprc|cli)/'
+FormatStyle: file

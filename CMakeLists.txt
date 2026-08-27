@@ -1,11 +1,65 @@
 cmake_minimum_required(VERSION 3.25)
 project(bgspprc VERSION 0.1.0 LANGUAGES CXX)
 
+# Fail early and legibly on a compiler that cannot do the C++23 this library
+# needs. Without this the first symptom is a wall of template errors from a
+# header, which reads as a code bug rather than a toolchain one.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 14)
+    message(FATAL_ERROR
+        "GCC ${CMAKE_CXX_COMPILER_VERSION} is too old; bgspprc needs GCC >= 14. "
+        "Select a newer compiler, e.g. cmake -B build -DCMAKE_CXX_COMPILER=g++-14")
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 18)
+    message(FATAL_ERROR
+        "Clang ${CMAKE_CXX_COMPILER_VERSION} is too old; bgspprc needs Clang >= 18. "
+        "Select a newer compiler, e.g. cmake -B build -DCMAKE_CXX_COMPILER=clang++-18")
+endif()
+
 # Emit compile_commands.json for clang-tidy and IDEs, but only when we
 # are the top-level project — otherwise a downstream consumer embedding
 # us via add_subdirectory could have its own compile db clobbered.
 if(PROJECT_IS_TOP_LEVEL)
     set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+endif()
+
+# Point git at the tracked hooks in .githooks/. core.hooksPath is per-checkout
+# local config and cannot be committed, so it has to be set at configure time —
+# otherwise a fresh clone silently has no gates at all.
+#
+# Guarded on being the top-level project: without that, a consumer embedding us
+# via add_subdirectory/FetchContent would get core.hooksPath written into *its*
+# repository, pointing at our hooks.
+option(BGSPPRC_INSTALL_GIT_HOOKS "Point core.hooksPath at .githooks/" ON)
+
+if(BGSPPRC_INSTALL_GIT_HOOKS
+   AND PROJECT_IS_TOP_LEVEL
+   # True for the .git *file* a linked worktree has, as well as a real .git dir.
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+    # --local, not --get: a plain `git config --get` also reads global and
+    # system scope, so a contributor with a global core.hooksPath would take
+    # the "already set" branch and end up with no project hooks at all.
+    execute_process(
+        COMMAND git config --local --get core.hooksPath
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE BGSPPRC_HOOKS_PATH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+
+    if(NOT BGSPPRC_HOOKS_PATH STREQUAL ".githooks")
+        execute_process(
+            COMMAND git config --local core.hooksPath .githooks
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            RESULT_VARIABLE BGSPPRC_HOOKS_RESULT
+            ERROR_QUIET)
+        # Only claim success when git actually succeeded — a read-only .git
+        # would otherwise give a green configure with no hooks installed.
+        if(BGSPPRC_HOOKS_RESULT EQUAL 0)
+            message(STATUS "Git hooks enabled (core.hooksPath=.githooks)")
+        else()
+            message(WARNING
+                "Could not set core.hooksPath; git hooks are NOT active. "
+                "Run: git config --local core.hooksPath .githooks")
+        endif()
+    endif()
 endif()
 
 # Header-only INTERFACE library

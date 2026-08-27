@@ -17,4 +17,6 @@ tests/doctest.h
 __pycache__/
 .cache/
 .venv/
-.claude/*.lock
+# Agent tooling: local-only, deliberately not part of the published artifact.
+# Note this means /review and the statusline are absent from a fresh clone.
+.claude/

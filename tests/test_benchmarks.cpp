@@ -42,8 +42,8 @@ static std::map<std::string, double> load_optimal_csv(const std::string& path) {
 
 // ── SPPCC (spprclib) benchmarks ──
 
-static const char* SPPRCLIB_DIR = DATA_DIR "/spprclib";
-static const char* SPPRCLIB_OPTIMAL = DATA_DIR "/spprclib/optimal.csv";
+static constexpr const char* SPPRCLIB_DIR = DATA_DIR "/spprclib";
+static constexpr const char* SPPRCLIB_OPTIMAL = DATA_DIR "/spprclib/optimal.csv";
 
 TEST_CASE("spprclib instances") {
     if (!fs::exists(SPPRCLIB_DIR)) {
@@ -111,7 +111,7 @@ TEST_CASE("spprclib instances") {
 
 // ── RCSPP (rcspp_dataset) — only R1xx and RC1xx (tight time windows) ──
 
-static const char* RCSPP_DIR = DATA_DIR "/rcspp/ng8";
+static constexpr const char* RCSPP_DIR = DATA_DIR "/rcspp/ng8";
 
 TEST_CASE("rcspp_dataset R1 instances") {
     if (!fs::exists(RCSPP_DIR)) {

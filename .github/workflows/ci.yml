@@ -10,8 +10,6 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Configure
         run: cmake -B build -DCMAKE_CXX_COMPILER=g++-14

@@ -1,3 +1,0 @@
-[submodule ".devkit"]
-	path = .devkit
-	url = https://github.com/spoorendonk/devkit.git

@@ -1,0 +1,127 @@
+#!/bin/bash
+# Git pre-commit hook.
+#
+# Flow:
+#   1. Auto-format + auto-fix lint (staged files only)
+#   2. Tests -> hard block (no bypass)
+#
+# Every tool step either runs or says out loud that it did not. A gate that
+# skips in silence reports a pass it never made.
+
+set -e
+
+HOOK_DIR=$(dirname "$0")
+# shellcheck source=lib.sh source-path=SCRIPTDIR
+. "$HOOK_DIR/lib.sh"
+
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
+
+[ -z "$STAGED_FILES" ] && exit 0
+
+CPP_FILES=$(echo "$STAGED_FILES" | grep -E '\.(cpp|cc|cxx|h|hpp|hxx)$' || true)
+# Only translation units have compile-database entries. Headers are covered
+# transitively through them, scoped by HeaderFilterRegex in .clang-tidy.
+CPP_TUS=$(echo "$STAGED_FILES" | grep -E '\.(cpp|cc|cxx)$' || true)
+PY_FILES=$(echo "$STAGED_FILES" | grep -E '\.py$' || true)
+SH_FILES=$(echo "$STAGED_FILES" | grep -E '\.sh$' || true)
+
+# ============================================================
+# Step 1: Auto-format and auto-fix
+# ============================================================
+
+if [ -n "$CPP_FILES" ]; then
+	if CLANG_FORMAT=$(resolve_clang_tool clang-format "C++ formatting"); then
+		# shellcheck disable=SC2086  # word splitting is the intent
+		"$CLANG_FORMAT" -i $CPP_FILES
+	fi
+fi
+
+if [ -n "$SH_FILES" ]; then
+	if SHFMT=$(require_tool shfmt "shell formatting"); then
+		# shellcheck disable=SC2086
+		"$SHFMT" -w $SH_FILES
+	fi
+fi
+
+if [ -n "$PY_FILES" ]; then
+	if RUFF=$(require_tool ruff "Python format and lint"); then
+		# shellcheck disable=SC2086
+		"$RUFF" format --quiet $PY_FILES
+		# shellcheck disable=SC2086
+		"$RUFF" check --fix --quiet $PY_FILES || true
+	fi
+fi
+
+# C++ auto-fixable lint (safe clang-tidy fixes only)
+if [ -n "$CPP_TUS" ]; then
+	if CLANG_TIDY=$(resolve_clang_tool clang-tidy "C++ auto-fixable lint"); then
+		COMPILE_DB=""
+		[ -f "build/compile_commands.json" ] && COMPILE_DB="build"
+		[ -f "compile_commands.json" ] && COMPILE_DB="."
+
+		if [ -n "$COMPILE_DB" ]; then
+			for f in $CPP_TUS; do
+				[ -f "$f" ] || continue
+				"$CLANG_TIDY" -p "$COMPILE_DB" \
+					--checks="-*,modernize-use-nullptr,modernize-use-override,modernize-use-using,readability-braces-around-statements" \
+					--fix --quiet "$f" 2>/dev/null || true
+			done
+		else
+			echo "NOTE: no compile_commands.json — skipping C++ auto-fixable lint."
+			echo "      Configure the build first; see 'Build & Test' in CLAUDE.md."
+		fi
+	fi
+fi
+
+# Re-stage files the formatters rewrote.
+mapfile -t STAGED_ARR <<<"$STAGED_FILES"
+while read -r f; do
+	[ -n "$f" ] || continue
+	git add "$f"
+done < <(git diff --name-only -- "${STAGED_ARR[@]}" 2>/dev/null)
+
+# ============================================================
+# Step 2: Tests (hard block)
+# ============================================================
+
+echo "=== Pre-commit: running tests ==="
+
+TESTS_FAILED=0
+
+if [ -n "$CPP_FILES" ]; then
+	if [ ! -d "build" ]; then
+		echo "NOTE: no build/ directory — C++ tests did NOT run."
+		echo "      Configure and build first; see 'Build & Test' in CLAUDE.md."
+	elif ! command -v ctest &>/dev/null; then
+		echo "NOTE: ctest not found — C++ tests did NOT run."
+	else
+		echo "Running C++ tests..."
+		if ! ctest --test-dir build --output-on-failure --progress \
+			-j"$(nproc 2>/dev/null || echo 4)"; then
+			echo "FAILED: C++ tests failed."
+			TESTS_FAILED=1
+		fi
+	fi
+fi
+
+if [ -n "$PY_FILES" ]; then
+	if PYTEST=$(require_tool pytest "Python tests"); then
+		echo "Running Python tests..."
+		rc=0
+		"$PYTEST" --tb=short -q || rc=$?
+		# rc=0: passed, rc=5: nothing collected (all skipped) — both fine.
+		if [ "$rc" -ne 0 ] && [ "$rc" -ne 5 ]; then
+			echo "FAILED: Python tests failed."
+			TESTS_FAILED=1
+		fi
+	fi
+fi
+
+if [ "$TESTS_FAILED" -ne 0 ]; then
+	echo ""
+	echo "Commit blocked: tests failed. Fix tests before committing."
+	exit 1
+fi
+
+echo "Tests passed."
+exit 0

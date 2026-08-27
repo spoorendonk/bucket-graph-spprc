@@ -2,29 +2,34 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-@.devkit/standards/cpp.md
-
-## Project Overrides
-
-The devkit `cpp.md` is a generic template. This project diverges in:
-- **Test framework**: doctest (not GoogleTest). Fetched via FetchContent.
-- **Test naming**: `test_<module>.cpp` (not `<module>_test.cpp`).
-- **C++ standard**: C++23 (`cxx_std_23`).
-
 # Project: bucket-graph-spprc
 
 Header-only C++23 template library implementing the bucket graph labeling algorithm for SPPRC (Shortest Path Problem with Resource Constraints) and vehicle routing variants. Based on Sadykov/Uchoa/Pessoa 2021, with extensions from Meta-Solver 2026.
 
 ## Build & Test
 
+Needs a C++23 compiler: GCC >= 14 or Clang >= 18. CMake fails with a clear message on anything older. Set `CXX` or pass `-DCMAKE_CXX_COMPILER=` if the default is too old.
+
+```clean
+rm -rf build
+```
+
+```build
+cmake -B build && cmake --build build -j"$(nproc)"
+```
+
+```test
+ctest --test-dir build --output-on-failure -j"$(nproc)"
+```
+
+The three fenced blocks above are not just documentation — `.githooks/pre-push`
+extracts and runs them verbatim. Renaming a fence, or moving this section so it
+is no longer followed by a `## ` heading, blocks the push with an explicit
+error. Keep them runnable.
+
+Other useful commands:
+
 ```bash
-# Build
-cmake -B build -DCMAKE_CXX_COMPILER=g++-14
-cmake --build build
-
-# Run all tests (~195 unit tests)
-ctest --test-dir build
-
 # Run a specific test by name (doctest)
 ./build/test_runner --test-case="Bucket construction"
 
@@ -84,6 +89,118 @@ Built-in resources:
 | `test_stress.cpp` | Larger instances, 2D buckets, bidir, ng-paths, elimination, fixing, enumeration |
 | `test_benchmarks.cpp` | Solver vs benchmark instances, checks optimal values |
 | `test_instance_io.cpp` | Parser tests for `.sppcc` file format |
+
+## C++
+
+- Target C++23. Use modern features (`std::expected`, concepts, ranges, `constexpr`).
+- Style: Google-based, enforced by `.clang-format` and `.clang-tidy`.
+- Use `#pragma once` for include guards.
+- Minimize includes in headers. Forward-declare where possible.
+
+Naming, as enforced by `.clang-tidy`:
+
+- `lower_case` functions, `CamelCase` classes and structs, `lower_case` namespaces.
+- `lower_case` variables, with a trailing `_` on private members.
+- Short capitals are allowed where they mirror the reference papers — `L`/`L0` for labels, `P`/`D` for pickup and delivery loads, `N`/`W`/`A` for set sizes and SIMD widths. Prefer the paper's symbol over a paraphrase; the point is that the code can be checked against the paper.
+- Constants are deliberately not case-checked. `types.h` uses `UPPER_CASE` for the numeric limits (`INF`, `EPS`, `NEG_INF`) and internal tuning knobs use k-prefixed `CamelCase`. Follow whichever the surrounding file already uses.
+
+## CMake
+
+- `set(CMAKE_EXPORT_COMPILE_COMMANDS ON)` for clang-tidy — top-level only, so a consumer embedding us doesn't get its compile db clobbered.
+- Use FetchContent for dependencies (doctest is fetched this way).
+- The root `CMakeLists.txt` covers the library, CLI and tests; `examples/` has its own. Sources under `cli/` and `tests/` are listed from the root file.
+
+## Testing (doctest)
+
+- Test files: `test_<module>.cpp` in `tests/`.
+- Name test cases descriptively: `TEST_CASE("solver returns optimal for feasible input")`.
+- Every test target is built twice — once normally and once with `BGSPPRC_DISABLE_SIMD` — so a SIMD path that diverges from its scalar fallback fails the suite. Keep both registered when adding a target.
+
+## Python
+
+The Python here is benchmark tooling under `benchmarks/`, not a packaged
+project — there is no `pyproject.toml` and no venv by default.
+
+- Full type annotations on all functions; the pre-push hook runs `mypy --strict`.
+- Built-in generics (`list[int]`, `dict[str, Any]`) and `|` unions.
+- `ruff` for format and lint; `test_<module>.py` for tests, run with pytest.
+- `ruff`, `mypy` and `pytest` are optional here. When one is missing the hooks say so out loud and continue — they never skip in silence. Install them (or drop them in `.venv/bin/`, which the hooks prefer over `PATH`) to get the full gate.
+
+## Tooling and Gates
+
+Git hooks live in `.githooks/` and are tracked. CMake points `core.hooksPath`
+at them at configure time, since that setting is per-checkout and cannot be
+committed — so **a fresh clone has no gates until you configure the build
+once**. `-DBGSPPRC_INSTALL_GIT_HOOKS=OFF` opts out.
+
+- **pre-commit** — formats staged files (clang-format, shfmt, ruff), applies the safe clang-tidy fixes, re-stages, then runs the suite. Blocks on test failure.
+- **commit-msg** — Conventional Commits, subject ≤72 chars. `fixup!`/`squash!` pass through so `git rebase --autosquash` works.
+- **pre-push** — clean build + full suite from the fences above, then clang-tidy, shellcheck, ruff complexity and mypy as warnings. Deletion-only pushes and docs-only pushes skip the build.
+
+clang-format and clang-tidy must be **version 18 or newer**; the hooks check and
+skip loudly below that, rather than reformatting the tree against everyone else.
+18 and 21 were verified to format this tree byte-identically.
+
+There are deliberately **no Claude Code hooks**. The rules they used to enforce
+are now conventions, stated here:
+
+- **Branch from main, never from another feature branch.** `git checkout main && git pull` first.
+- Prefer the built-in `Grep` tool over shelling out to `grep`/`rg`.
+
+Editing a hook to get around a failure is not a fix — the hooks are in-repo now,
+so change one deliberately, in its own commit, or fix the root cause. Do not use
+`--no-verify` unless explicitly asked.
+
+## Working Agreements
+
+**Communication.** Be terse. No preamble, no filler.
+
+**Code navigation.** Prefer narrow queries over full-file reads: LSP for symbol
+questions (`goToDefinition`, `hover`, `documentSymbol`), then `Grep` with a small
+`head_limit` to locate lines, then `Read` with `offset`/`limit` for a slice.
+Full-file `Read` is fine for files under ~200 lines or when structure matters.
+`.clangd` points at `build/compile_commands.json`, so LSP needs a configured build.
+
+**Workflow.** plan (non-trivial) → implement → test → review → push to main.
+Trunk-based, linear history: commit directly to main and push when the gates
+pass. Feature branches are optional for larger changes; keep them short-lived
+and rebase or squash — no merge commits on main. After a push, close any gh
+issue the work resolved (`gh issue close <num> -c "..."`) and delete the branch.
+
+**Commit messages.** Conventional Commits, enforced by the hook. `type: description`
+or `type(scope): description`; types `feat`, `fix`, `refactor`, `test`, `docs`,
+`style`, `perf`, `chore`, `build`, `ci`. Focus on **why**, not what.
+
+**Issue tracking.** GitHub Issues via the `gh` CLI; default to HTTPS remotes.
+Read with `gh issue view <num> --json title,body,labels,state,comments`. Issues
+get picked up cold in fresh sessions, so write them self-contained: problem,
+motivation, acceptance criteria, repro. No local paths or machine-specific
+locations, and prefer stable external links. Don't open an issue just to defer
+something small — fix it inline or leave it.
+
+**Plan adherence.** Follow the agreed plan. If you think it should change, stop
+and discuss rather than silently diverging — same outside a written plan: if the
+current approach isn't working, say so. Implement everything specified; no TODO
+placeholders or stub implementations unless asked.
+
+**Reference correctness.** When implementing from papers or reference code, match
+the algorithm exactly. No early exits, iteration limits, size caps or
+"optimization" shortcuts that change behavior, and no simplifying away edge
+cases. Introduce heuristic approximations only when asked. When in doubt, be
+faithful to the reference and let tests verify.
+
+**Complexity.** When a complexity warning fires, don't extract methods
+mechanically. Ask what the independent responsibilities are and split along those
+boundaries. If the function is genuinely complex because the domain is, say so in
+a comment.
+
+**Performance matters.** Most of this code is solver hot paths — profile before
+micro-optimizing, but don't trade real throughput for tidiness. Look hard at
+allocations, copies, and asymptotics in labeling and dominance loops.
+
+**Keep this file honest.** When Claude gets something wrong, fix CLAUDE.md in the
+same commit. Don't invent APIs — verify a function or flag exists before using
+it. Don't suppress a type error or a clang-tidy finding; fix the cause.
 
 ## Reference Papers
 
