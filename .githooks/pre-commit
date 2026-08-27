@@ -87,6 +87,7 @@ done < <(git diff --name-only -- "${STAGED_ARR[@]}" 2>/dev/null)
 echo "=== Pre-commit: running tests ==="
 
 TESTS_FAILED=0
+TESTS_RAN=0
 
 if [ -n "$CPP_FILES" ]; then
 	if [ ! -d "build" ]; then
@@ -96,6 +97,7 @@ if [ -n "$CPP_FILES" ]; then
 		echo "NOTE: ctest not found — C++ tests did NOT run."
 	else
 		echo "Running C++ tests..."
+		TESTS_RAN=1
 		if ! ctest --test-dir build --output-on-failure --progress \
 			-j"$(nproc 2>/dev/null || echo 4)"; then
 			echo "FAILED: C++ tests failed."
@@ -107,6 +109,7 @@ fi
 if [ -n "$PY_FILES" ]; then
 	if PYTEST=$(require_tool pytest "Python tests"); then
 		echo "Running Python tests..."
+		TESTS_RAN=1
 		rc=0
 		"$PYTEST" --tb=short -q || rc=$?
 		# rc=0: passed, rc=5: nothing collected (all skipped) — both fine.
@@ -123,5 +126,11 @@ if [ "$TESTS_FAILED" -ne 0 ]; then
 	exit 1
 fi
 
-echo "Tests passed."
+# Never report a pass for a suite that did not run — that is the exact
+# failure mode this hook exists to prevent.
+if [ "$TESTS_RAN" -eq 1 ]; then
+	echo "Tests passed."
+else
+	echo "No tests were run (see the notes above)."
+fi
 exit 0
