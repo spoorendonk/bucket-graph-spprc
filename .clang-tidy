@@ -1,4 +1,31 @@
 ---
+# NOTE: `Checks:` below is a YAML folded scalar. A '#' inside it is NOT a
+# comment — it gets folded into the check string and silently corrupts the
+# list. Keep all commentary out here, above the key.
+#
+# The disabled checks after the first two fight conventions this codebase
+# holds on purpose. Every one of them fired on untouched code, which is how a
+# gate teaches people to ignore it:
+#
+#   readability-identifier-length      Short names are the reference papers'
+#                                      notation and ordinary loop indices
+#                                      (i, j, q, b, L). Alone it was 321 of
+#                                      513 warnings on one TU.
+#   modernize-avoid-c-arrays           Fixed-size C arrays are deliberate in
+#                                      the SIMD and bucket-grid paths.
+#   readability-implicit-bool-conversion
+#   readability-math-missing-parentheses
+#                                      Numeric solver code converts between
+#                                      int-like and bool-like freely, and
+#                                      parenthesising every mixed expression
+#                                      hurts the match against the papers'
+#                                      formulae more than it helps.
+#   readability-uppercase-literal-suffix
+#                                      Spelling preference, no bug class.
+#   bugprone-easily-swappable-parameters
+#                                      Low signal on numeric interfaces, where
+#                                      adjacent same-typed parameters are the
+#                                      normal shape.
 Checks: >
   -*,
   bugprone-*,
@@ -6,7 +33,13 @@ Checks: >
   performance-*,
   readability-*,
   -modernize-use-trailing-return-type,
-  -readability-magic-numbers
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -modernize-avoid-c-arrays,
+  -readability-implicit-bool-conversion,
+  -readability-math-missing-parentheses,
+  -readability-uppercase-literal-suffix,
+  -bugprone-easily-swappable-parameters
 
 CheckOptions:
   - key: readability-function-cognitive-complexity.Threshold
