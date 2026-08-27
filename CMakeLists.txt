@@ -1,4 +1,38 @@
 cmake_minimum_required(VERSION 3.25)
+
+# If the default g++ is too old for the C++23 this library needs, pick a newer
+# one that is already installed. Stock Ubuntu 24.04 defaults to GCC 13 but
+# packages 14, so without this the documented build command — which pre-push
+# runs verbatim — fails there while working on newer distros. An explicit
+# choice (CXX in the environment, or -DCMAKE_CXX_COMPILER) always wins.
+#
+# Must run before project(), which is what reads CMAKE_CXX_COMPILER.
+if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX})
+    find_program(BGSPPRC_DEFAULT_GXX g++)
+    if(BGSPPRC_DEFAULT_GXX)
+        execute_process(
+            COMMAND ${BGSPPRC_DEFAULT_GXX} -dumpversion
+            OUTPUT_VARIABLE BGSPPRC_DEFAULT_GXX_VERSION
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        if(BGSPPRC_DEFAULT_GXX_VERSION VERSION_LESS 14)
+            # Newest first. Use a per-candidate cache variable: find_program
+            # caches its result, so reusing one name across the loop would let
+            # an earlier miss or hit shadow the later candidates.
+            foreach(candidate g++-15 g++-14)
+                find_program(BGSPPRC_GXX_${candidate} ${candidate})
+                if(BGSPPRC_GXX_${candidate})
+                    set(CMAKE_CXX_COMPILER ${BGSPPRC_GXX_${candidate}})
+                    message(STATUS
+                        "Default g++ is ${BGSPPRC_DEFAULT_GXX_VERSION}; "
+                        "using ${BGSPPRC_GXX_${candidate}} instead")
+                    break()
+                endif()
+            endforeach()
+        endif()
+    endif()
+endif()
+
 project(bgspprc VERSION 0.1.0 LANGUAGES CXX)
 
 # Fail early and legibly on a compiler that cannot do the C++23 this library

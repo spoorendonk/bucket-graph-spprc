@@ -8,7 +8,12 @@ Header-only C++23 template library implementing the bucket graph labeling algori
 
 ## Build & Test
 
-Needs a C++23 compiler: GCC >= 14 or Clang >= 18. CMake fails with a clear message on anything older. Set `CXX` or pass `-DCMAKE_CXX_COMPILER=` if the default is too old.
+Needs a C++23 compiler: GCC >= 14 or Clang >= 18. If the default `g++` is older
+than that, CMake picks up an installed `g++-15`/`g++-14` automatically — stock
+Ubuntu 24.04 defaults to GCC 13 but packages 14, and the commands below are run
+verbatim by `pre-push`, so they have to work there unattended. Setting `CXX` or
+passing `-DCMAKE_CXX_COMPILER=` always overrides. Anything still too old fails
+with an explicit message rather than a wall of template errors.
 
 ```clean
 rm -rf build
