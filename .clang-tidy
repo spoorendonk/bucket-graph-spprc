@@ -26,6 +26,10 @@
 #                                      Low signal on numeric interfaces, where
 #                                      adjacent same-typed parameters are the
 #                                      normal shape.
+#   modernize-use-std-print            Segfaults clang-tidy 21.1.8 on
+#                                      cli/main.cpp's fprintf calls. A
+#                                      crash analyses nothing, so this
+#                                      stays off until upstream fixes it.
 Checks: >
   -*,
   bugprone-*,
@@ -39,7 +43,8 @@ Checks: >
   -readability-implicit-bool-conversion,
   -readability-math-missing-parentheses,
   -readability-uppercase-literal-suffix,
-  -bugprone-easily-swappable-parameters
+  -bugprone-easily-swappable-parameters,
+  -modernize-use-std-print
 
 CheckOptions:
   - key: readability-function-cognitive-complexity.Threshold

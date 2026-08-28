@@ -30,26 +30,46 @@ if [ -n "$PUSH_REFS" ] && ! echo "$PUSH_REFS" | grep -qvE '^[^ ]+ 0+ '; then
 	exit 0
 fi
 
-# Get changed files vs main
+# Work out what this push actually changes, relative to the upstream trunk.
+# Fetch BEFORE probing for the branch: on a fresh clone origin/main may not
+# exist as a ref yet, and probing first silently fell through to "master",
+# then to a HEAD~1 diff that covers only the last commit.
 MAIN_BRANCH="main"
-git rev-parse --verify "origin/$MAIN_BRANCH" &>/dev/null || MAIN_BRANCH="master"
-git fetch origin "$MAIN_BRANCH" --quiet 2>/dev/null || true
-CHANGED_FILES=$(git diff --name-only "origin/$MAIN_BRANCH"...HEAD 2>/dev/null ||
-	git diff --name-only HEAD~1 2>/dev/null || true)
+git fetch origin "$MAIN_BRANCH" --quiet 2>/dev/null ||
+	{
+		MAIN_BRANCH="master"
+		git fetch origin master --quiet 2>/dev/null || true
+	}
+git rev-parse --verify "origin/$MAIN_BRANCH" &>/dev/null || MAIN_BRANCH=""
 
-[ -z "$CHANGED_FILES" ] && exit 0
+if [ -n "$MAIN_BRANCH" ]; then
+	CHANGED_FILES=$(git diff --name-only "origin/$MAIN_BRANCH"...HEAD 2>/dev/null || true)
+	[ -z "$CHANGED_FILES" ] && exit 0
+else
+	# No upstream to compare against. Gate everything rather than guessing a
+	# base: skipping here would no-op the whole hook on a fresh clone.
+	echo "pre-push: no origin/$MAIN_BRANCH to diff against — gating the full tree."
+	CHANGED_FILES=$(git ls-files)
+fi
 
 CPP_TUS=$(echo "$CHANGED_FILES" | grep -E '\.(cpp|cc|cxx)$' || true)
 PY_FILES=$(echo "$CHANGED_FILES" | grep -E '\.py$' || true)
-SH_FILES=$(echo "$CHANGED_FILES" | grep -E '\.sh$' || true)
+# The git hooks themselves are extensionless, so a bare '\.sh$' left the
+# riskiest shell in the repo outside the shell gate it runs.
+SH_FILES=$(echo "$CHANGED_FILES" | grep -E '(\.sh$|^\.githooks/)' || true)
 
 # Docs-only pushes skip build+test. Note this deliberately does NOT filter
 # deletions out of CHANGED_FILES: a delete-only push is still a code change
 # and must be gated. Steps that cannot cope with a missing path filter
 # themselves, at their own call site.
+#
+# '.txt' is deliberately NOT treated as documentation: CMakeLists.txt ends in
+# .txt, so doing so classified a build-system-only change as docs and skipped
+# the build entirely. Everything unrecognised counts as code — the safe
+# direction for a gate is to run when unsure.
 CODE_FILES=$(echo "$CHANGED_FILES" |
 	grep -vE '^(\.githooks/|LICENSE|CHANGELOG)' |
-	grep -vE '\.(md|txt|rst)$' |
+	grep -vE '\.(md|rst)$' |
 	grep -vE '^\.(gitignore|gitattributes)$' || true)
 
 # ============================================================
@@ -147,8 +167,18 @@ if [ -n "$CPP_TUS" ]; then
 			echo "=== Running clang-tidy ==="
 			for f in $CPP_TUS; do
 				[ -f "$f" ] || continue
-				RESULT=$("$CLANG_TIDY" -p "$COMPILE_DB" --quiet "$f" 2>&1 || true)
-				if echo "$RESULT" | grep -qE '(warning|error):'; then
+				set +e
+				RESULT=$("$CLANG_TIDY" -p "$COMPILE_DB" --quiet "$f" 2>&1)
+				rc=$?
+				set -e
+				# Check the exit status, not just the text. A crashed
+				# clang-tidy prints a stack dump containing neither
+				# "warning:" nor "error:", so grepping alone scores the
+				# translation unit clean and analyses nothing.
+				if [ "$rc" -ne 0 ]; then
+					ISSUES="${ISSUES}clang-tidy exited $rc on $f (analysis did NOT complete):"$'\n'
+					ISSUES="${ISSUES}${RESULT}"$'\n'
+				elif echo "$RESULT" | grep -qE '(warning|error):'; then
 					ISSUES="${ISSUES}${RESULT}"$'\n'
 				fi
 			done

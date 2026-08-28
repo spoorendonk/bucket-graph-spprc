@@ -18,7 +18,9 @@ if echo "$MSG" | grep -qE '^(fixup|squash|amend)! '; then
 fi
 
 TYPES="feat|fix|refactor|test|docs|style|perf|chore|build|ci"
-if ! echo "$MSG" | grep -qE "^($TYPES)(\(.+\))?: .+"; then
+# The optional "!" marks a breaking change (feat!: / chore(deps)!:) and is
+# part of the Conventional Commits spec.
+if ! echo "$MSG" | grep -qE "^($TYPES)(\(.+\))?!?: .+"; then
 	echo "ERROR: Commit message does not follow Conventional Commits format."
 	echo ""
 	echo "  Expected: type: description"

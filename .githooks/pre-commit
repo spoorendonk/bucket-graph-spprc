@@ -18,12 +18,39 @@ STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || tr
 
 [ -z "$STAGED_FILES" ] && exit 0
 
-CPP_FILES=$(echo "$STAGED_FILES" | grep -E '\.(cpp|cc|cxx|h|hpp|hxx)$' || true)
+# Files with BOTH staged and unstaged changes are partially staged (git add -p,
+# or an edit made after staging). Formatting one and re-adding it would sweep
+# the unstaged half into the commit — silently committing debug edits or
+# half-finished work the author deliberately held back. Leave them alone and
+# say so; correctness of the commit beats formatting convenience.
+# Intersection of "has staged changes" and "has unstaged changes". Uses
+# grep -Fx rather than comm, which requires both inputs to be sorted in the
+# same collation and warns noisily when they are not.
+PARTIAL_FILES=$(git diff --name-only 2>/dev/null |
+	grep -Fxf <(git diff --cached --name-only --diff-filter=ACM 2>/dev/null) || true)
+
+if [ -n "$PARTIAL_FILES" ]; then
+	echo "NOTE: partially staged, so NOT auto-formatted (unstaged changes kept):"
+	# shellcheck disable=SC2086  # one path per line is the intent
+	printf '        %s\n' $PARTIAL_FILES
+fi
+
+# Everything the formatters may touch: staged, minus the partially staged.
+if [ -n "$PARTIAL_FILES" ]; then
+	FORMATTABLE=$(echo "$STAGED_FILES" |
+		grep -Fxv -f <(printf '%s\n' "$PARTIAL_FILES") || true)
+else
+	FORMATTABLE="$STAGED_FILES"
+fi
+
+CPP_FILES=$(echo "$FORMATTABLE" | grep -E '\.(cpp|cc|cxx|h|hpp|hxx)$' || true)
 # Only translation units have compile-database entries. Headers are covered
 # transitively through them, scoped by HeaderFilterRegex in .clang-tidy.
-CPP_TUS=$(echo "$STAGED_FILES" | grep -E '\.(cpp|cc|cxx)$' || true)
-PY_FILES=$(echo "$STAGED_FILES" | grep -E '\.py$' || true)
-SH_FILES=$(echo "$STAGED_FILES" | grep -E '\.sh$' || true)
+CPP_TUS=$(echo "$FORMATTABLE" | grep -E '\.(cpp|cc|cxx)$' || true)
+PY_FILES=$(echo "$FORMATTABLE" | grep -E '\.py$' || true)
+# The git hooks themselves are extensionless, so a bare '\.sh$' left the
+# riskiest shell in the repo outside the shell gate it runs.
+SH_FILES=$(echo "$FORMATTABLE" | grep -E '(\.sh$|^\.githooks/)' || true)
 
 # ============================================================
 # Step 1: Auto-format and auto-fix
@@ -73,12 +100,15 @@ if [ -n "$CPP_TUS" ]; then
 	fi
 fi
 
-# Re-stage files the formatters rewrote.
-mapfile -t STAGED_ARR <<<"$STAGED_FILES"
-while read -r f; do
-	[ -n "$f" ] || continue
-	git add "$f"
-done < <(git diff --name-only -- "${STAGED_ARR[@]}" 2>/dev/null)
+# Re-stage files the formatters rewrote. Scoped to FORMATTABLE so a partially
+# staged file is never fully added behind the author's back.
+if [ -n "$FORMATTABLE" ]; then
+	mapfile -t FORMATTABLE_ARR <<<"$FORMATTABLE"
+	while read -r f; do
+		[ -n "$f" ] || continue
+		git add "$f"
+	done < <(git diff --name-only -- "${FORMATTABLE_ARR[@]}" 2>/dev/null)
+fi
 
 # ============================================================
 # Step 2: Tests (hard block)
@@ -96,12 +126,21 @@ if [ -n "$CPP_FILES" ]; then
 	elif ! command -v ctest &>/dev/null; then
 		echo "NOTE: ctest not found — C++ tests did NOT run."
 	else
-		echo "Running C++ tests..."
-		TESTS_RAN=1
-		if ! ctest --test-dir build --output-on-failure --progress \
-			-j"$(nproc 2>/dev/null || echo 4)"; then
-			echo "FAILED: C++ tests failed."
+		# Build first. ctest only runs the binaries already in build/ — it
+		# compiles nothing — so without this a staged change that does not
+		# even compile still got "Tests passed." from stale executables.
+		echo "Building..."
+		if ! cmake --build build -j"$(nproc 2>/dev/null || echo 4)"; then
+			echo "FAILED: build failed."
 			TESTS_FAILED=1
+		else
+			echo "Running C++ tests..."
+			TESTS_RAN=1
+			if ! ctest --test-dir build --output-on-failure --progress \
+				-j"$(nproc 2>/dev/null || echo 4)"; then
+				echo "FAILED: C++ tests failed."
+				TESTS_FAILED=1
+			fi
 		fi
 	fi
 fi
@@ -130,6 +169,8 @@ fi
 # failure mode this hook exists to prevent.
 if [ "$TESTS_RAN" -eq 1 ]; then
 	echo "Tests passed."
+elif [ -z "$CPP_FILES" ] && [ -z "$PY_FILES" ]; then
+	echo "No tests needed (no code files staged)."
 else
 	echo "No tests were run (see the notes above)."
 fi
