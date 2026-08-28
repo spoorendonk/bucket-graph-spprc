@@ -156,22 +156,7 @@ fi
 
 ISSUES=""
 
-# TEMPORARY: the clang-tidy warning step is off while its check set is tuned.
-# It currently reports ~130-170 findings per translation unit on code nobody
-# touched (mostly modernize-use-nodiscard and cognitive-complexity), and since
-# ISSUES does not deduplicate and every TU pulls in the same library headers,
-# a push touching four files printed the same header warnings four times.
-# "All checks passed" was unreachable on any C++ push, which trains people to
-# ignore the gate entirely.
-#
-# Re-enable by setting this to 1 once the check set is tuned. Tracked in
-# https://github.com/spoorendonk/bucket-graph-spprc/issues/95
-#
-# Note this only affects the advisory warning step. The clang-tidy --fix subset
-# in pre-commit is unaffected, and the build+test gate above still blocks.
-CLANG_TIDY_WARNINGS_ENABLED=0
-
-if [ -n "$CPP_TUS" ] && [ "$CLANG_TIDY_WARNINGS_ENABLED" -eq 1 ]; then
+if [ -n "$CPP_TUS" ]; then
 	if CLANG_TIDY=$(resolve_clang_tool clang-tidy "clang-tidy warnings"); then
 		COMPILE_DB=""
 		[ -f "build/compile_commands.json" ] && COMPILE_DB="build"
@@ -180,6 +165,11 @@ if [ -n "$CPP_TUS" ] && [ "$CLANG_TIDY_WARNINGS_ENABLED" -eq 1 ]; then
 		if [ -n "$COMPILE_DB" ]; then
 			echo ""
 			echo "=== Running clang-tidy ==="
+			# Collected across TUs and deduplicated below rather than appended
+			# to ISSUES per TU. Every translation unit pulls in the same library
+			# headers, so a push touching four test files reported each header
+			# finding four times.
+			TIDY_DIAGS=""
 			for f in $CPP_TUS; do
 				[ -f "$f" ] || continue
 				set +e
@@ -189,22 +179,30 @@ if [ -n "$CPP_TUS" ] && [ "$CLANG_TIDY_WARNINGS_ENABLED" -eq 1 ]; then
 				# Check the exit status, not just the text. A crashed
 				# clang-tidy prints a stack dump containing neither
 				# "warning:" nor "error:", so grepping alone scores the
-				# translation unit clean and analyses nothing.
+				# translation unit clean and analyses nothing. Crash output
+				# is reported whole and unfiltered — a stack dump is only
+				# useful intact.
 				if [ "$rc" -ne 0 ]; then
 					ISSUES="${ISSUES}clang-tidy exited $rc on $f (analysis did NOT complete):"$'\n'
 					ISSUES="${ISSUES}${RESULT}"$'\n'
-				elif echo "$RESULT" | grep -qE '(warning|error):'; then
-					ISSUES="${ISSUES}${RESULT}"$'\n'
+				else
+					TIDY_DIAGS="${TIDY_DIAGS}${RESULT}"$'\n'
 				fi
 			done
+			# Keep only the "file:line:col: severity: message [check]" lines and
+			# drop repeats, first occurrence wins. The source snippet and caret
+			# that clang-tidy prints under each finding are what made the
+			# duplication unreadable, and the location is enough to jump to.
+			TIDY_DIAGS=$(echo "$TIDY_DIAGS" | grep -E '(warning|error):' | awk '!seen[$0]++' || true)
+			if [ -n "$TIDY_DIAGS" ]; then
+				ISSUES="${ISSUES}${TIDY_DIAGS}"$'\n'
+			else
+				echo "clang-tidy: clean"
+			fi
 		else
 			echo "NOTE: no compile_commands.json — skipping clang-tidy."
 		fi
 	fi
-elif [ -n "$CPP_TUS" ]; then
-	echo ""
-	echo "NOTE: clang-tidy warnings are temporarily disabled pending a tuning"
-	echo "      pass on its check set. Build and tests above still gate."
 fi
 
 if [ -n "$PY_FILES" ]; then
