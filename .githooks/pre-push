@@ -156,7 +156,22 @@ fi
 
 ISSUES=""
 
-if [ -n "$CPP_TUS" ]; then
+# TEMPORARY: the clang-tidy warning step is off while its check set is tuned.
+# It currently reports ~130-170 findings per translation unit on code nobody
+# touched (mostly modernize-use-nodiscard and cognitive-complexity), and since
+# ISSUES does not deduplicate and every TU pulls in the same library headers,
+# a push touching four files printed the same header warnings four times.
+# "All checks passed" was unreachable on any C++ push, which trains people to
+# ignore the gate entirely.
+#
+# Re-enable by setting this to 1 once the check set is tuned. Tracked in
+# https://github.com/spoorendonk/bucket-graph-spprc/issues/95
+#
+# Note this only affects the advisory warning step. The clang-tidy --fix subset
+# in pre-commit is unaffected, and the build+test gate above still blocks.
+CLANG_TIDY_WARNINGS_ENABLED=0
+
+if [ -n "$CPP_TUS" ] && [ "$CLANG_TIDY_WARNINGS_ENABLED" -eq 1 ]; then
 	if CLANG_TIDY=$(resolve_clang_tool clang-tidy "clang-tidy warnings"); then
 		COMPILE_DB=""
 		[ -f "build/compile_commands.json" ] && COMPILE_DB="build"
@@ -186,6 +201,10 @@ if [ -n "$CPP_TUS" ]; then
 			echo "NOTE: no compile_commands.json — skipping clang-tidy."
 		fi
 	fi
+elif [ -n "$CPP_TUS" ]; then
+	echo ""
+	echo "NOTE: clang-tidy warnings are temporarily disabled pending a tuning"
+	echo "      pass on its check set. Build and tests above still gate."
 fi
 
 if [ -n "$PY_FILES" ]; then
@@ -204,7 +223,9 @@ if [ -n "$SH_FILES" ]; then
 	if SHELLCHECK=$(require_tool shellcheck "shellcheck"); then
 		for f in $SH_FILES; do
 			[ -f "$f" ] || continue
-			RESULT=$("$SHELLCHECK" "$f" 2>&1 || true)
+			# -x so sourced files are followed; without it every hook that
+			# sources lib.sh reports SC1091 against itself.
+			RESULT=$("$SHELLCHECK" -x "$f" 2>&1 || true)
 			if [ -n "$RESULT" ]; then
 				ISSUES="${ISSUES}${RESULT}"$'\n'
 			fi

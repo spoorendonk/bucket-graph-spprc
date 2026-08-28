@@ -140,7 +140,14 @@ once**. `-DBGSPPRC_INSTALL_GIT_HOOKS=OFF` opts out.
 
 - **pre-commit** — formats staged files (clang-format, shfmt, ruff), applies the safe clang-tidy fixes, re-stages, then runs the suite. Blocks on test failure.
 - **commit-msg** — Conventional Commits, subject ≤72 chars. `fixup!`/`squash!` pass through so `git rebase --autosquash` works.
-- **pre-push** — clean build + full suite from the fences above, then clang-tidy, shellcheck, ruff complexity and mypy as warnings. Deletion-only pushes and docs-only pushes skip the build.
+- **pre-push** — clean build + full suite from the fences above, then shellcheck, ruff complexity and mypy as warnings. Deletion-only pushes and docs-only pushes skip the build.
+
+The clang-tidy warning step in `pre-push` is **temporarily disabled**
+(`CLANG_TIDY_WARNINGS_ENABLED=0`): it reports 130-170 findings per translation
+unit on untouched code, so `All checks passed.` was unreachable on any C++
+push. Tracked in [#95](https://github.com/spoorendonk/bucket-graph-spprc/issues/95).
+The `clang-tidy --fix` subset in `pre-commit` is unaffected, and build+test
+still blocks.
 
 clang-format and clang-tidy must be **version 18 or newer**; the hooks check and
 skip loudly below that, rather than reformatting the tree against everyone else.
