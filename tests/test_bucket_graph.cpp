@@ -184,7 +184,8 @@ TEST_CASE("Arc elimination with tight theta removes arcs") {
     // Eliminate with tight theta: should remove some arcs
     bg.eliminate_arcs(5.0);
 
-    int arcs_after = 0, jumps = 0;
+    int arcs_after = 0;
+    int jumps = 0;
     for (int i = 0; i < bg.n_buckets(); ++i) {
         arcs_after += static_cast<int>(bg.bucket(i).bucket_arcs.size());
         jumps += static_cast<int>(bg.bucket(i).jump_arcs.size());
@@ -352,7 +353,8 @@ TEST_CASE("Backward bucket arcs are generated") {
                               {.bucket_steps = {5.0, 1.0}, .bidirectional = true});
     bg.build();
 
-    int fw_arcs = 0, bw_arcs = 0;
+    int fw_arcs = 0;
+    int bw_arcs = 0;
     for (int i = 0; i < bg.n_buckets(); ++i) {
         fw_arcs += static_cast<int>(bg.bucket(i).bucket_arcs.size());
         bw_arcs += static_cast<int>(bg.bucket(i).bw_bucket_arcs.size());
@@ -837,7 +839,9 @@ TEST_CASE("R1C: extend_along_arc multiple cuts mixed memory") {
     R1CResource r1c;
 
     // 3 cuts with different AM sets
-    R1Cut cut0, cut1, cut2;
+    R1Cut cut0;
+    R1Cut cut1;
+    R1Cut cut2;
     cut0.base_set = {1};
     cut0.multipliers = {0.5};
     cut0.memory_arcs = {{0, 0}, {1, 0}};  // arc 1 in AM for cut0
@@ -919,7 +923,9 @@ TEST_CASE("R1C: multiple cuts packed in one word") {
     R1CResource r1c;
 
     // 3 cuts
-    R1Cut cut0, cut1, cut2;
+    R1Cut cut0;
+    R1Cut cut1;
+    R1Cut cut2;
     cut0.base_set = {1};
     cut0.multipliers = {0.5};
     cut0.memory_arcs = {{0, 0}};

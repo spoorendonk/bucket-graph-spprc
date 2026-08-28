@@ -155,7 +155,7 @@ struct NgPathResource {
     /// extend_to_vertex.
     [[nodiscard]] std::pair<State, double> extend_along_arc(Direction dir, State s,
                                                             int arc_id) const {
-        auto& ai = arc_info[arc_id];
+        const auto& ai = arc_info[arc_id];
 
         if (dir == Direction::Forward) {
             // Forward: arc from→to, label at from, extending to to
@@ -173,22 +173,22 @@ struct NgPathResource {
                 }
             }
             return {new_s, 0.0};
-        } else {
-            // Backward: arc from→to traversed as to→from, label at to, extending to
-            // from
-            if (ai.bw_check_bit >= 0 && (s & (uint32_t{1} << ai.bw_check_bit))) {
-                return {0U, INF};
-            }
-
-            uint32_t new_s = 0;
-            for (int i = 0; i < ai.bw_n_pairs; ++i) {
-                auto [fp, tp] = ai.bw_shift_pairs[i];
-                if (s & (uint32_t{1} << fp)) {
-                    new_s |= (uint32_t{1} << tp);
-                }
-            }
-            return {new_s, 0.0};
         }
+
+        // Backward: arc from→to traversed as to→from, label at to, extending
+        // to from
+        if (ai.bw_check_bit >= 0 && (s & (uint32_t{1} << ai.bw_check_bit))) {
+            return {0U, INF};
+        }
+
+        uint32_t new_s = 0;
+        for (int i = 0; i < ai.bw_n_pairs; ++i) {
+            auto [fp, tp] = ai.bw_shift_pairs[i];
+            if (s & (uint32_t{1} << fp)) {
+                new_s |= (uint32_t{1} << tp);
+            }
+        }
+        return {new_s, 0.0};
     }
 
     /// extendToVertex: set the destination vertex's self bit, and also

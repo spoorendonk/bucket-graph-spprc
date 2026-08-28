@@ -672,7 +672,7 @@ private:
 
     int vertex_bucket_index(int vertex, const std::array<double, 2>& q) const {
         int start = vertex_bucket_start_[vertex];
-        auto& nb = vertex_n_buckets_[vertex];
+        const auto& nb = vertex_n_buckets_[vertex];
         auto& vstep = step_for_vertex(vertex);
 
         std::array<int, 2> k = {0, 0};
@@ -826,7 +826,8 @@ private:
         }
 
         // Tarjan's SCC
-        std::vector<int> index(n, -1), lowlink(n, -1);
+        std::vector<int> index(n, -1);
+        std::vector<int> lowlink(n, -1);
         std::vector<bool> on_stack(n, false);
         std::stack<int> stack;
         int idx = 0;
@@ -871,8 +872,8 @@ private:
 
         // Tarjan's produces SCCs in reverse topological order
         scc_topo.resize(n_scc);
-        std::iota(scc_topo.begin(), scc_topo.end(), 0);
-        std::reverse(scc_topo.begin(), scc_topo.end());
+        std::ranges::iota(scc_topo, 0);
+        std::ranges::reverse(scc_topo);
 
         // Build SCC-to-vertex mapping (deduplicated)
         auto& scc_vertices = (dir == Direction::Forward) ? fw_scc_vertices_ : bw_scc_vertices_;
@@ -885,8 +886,8 @@ private:
             }
         }
         for (auto& verts : scc_vertices) {
-            std::sort(verts.begin(), verts.end());
-            verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
+            std::ranges::sort(verts);
+            verts.erase(std::ranges::unique(verts).begin(), verts.end());
         }
     }
 
@@ -1468,7 +1469,7 @@ private:
                                        const BucketLabels& bl) const {
         int v = L->vertex;
         auto [start, end] = vertex_bucket_range(v);
-        auto& nb = vertex_n_buckets_[v];
+        const auto& nb = vertex_n_buckets_[v];
 
         int k0 = (bi - start) / nb[1];
         int k1 = (bi - start) % nb[1];
@@ -1581,7 +1582,7 @@ private:
         // EPS can possibly be dominated.
         double min_victim_cost = new_label->cost + min_dom_cost_ - EPS;
         auto start_it = std::lower_bound(bucket_costs.begin(), bucket_costs.end(), min_victim_cost);
-        std::size_t start = static_cast<std::size_t>(start_it - bucket_costs.begin());
+        auto start = static_cast<std::size_t>(start_it - bucket_costs.begin());
 
         // Precompute SoA pre-filter data (direction reversed vs dominated_in_bucket)
         [[maybe_unused]] uint32_t new_ng = 0;
@@ -1760,7 +1761,8 @@ private:
             has_r1c_ && opts_.stage != Stage::Heuristic1 && opts_.stage != Stage::Heuristic2;
 
         // Precompute q0/q1 for batch survivors.
-        double batch_q0[128], batch_q1[128];
+        double batch_q0[128];
+        double batch_q1[128];
         for (int i = 0; i < batch_size; ++i) {
             batch_q0[i] = batch[i]->q[0];
             batch_q1[i] = batch[i]->q[1];
@@ -1826,7 +1828,8 @@ private:
             // fallback and by the SIMD path's scalar tails so the semantics
             // live in exactly one place.
             auto scalar_pass = [&](int j) -> std::pair<bool, bool> {
-                bool a_ok = true, b_ok = true;
+                bool a_ok = true;
+                bool b_ok = true;
                 if (n_main_ >= 1) {
                     if (dir == Direction::Forward) {
                         a_ok = a_ok && (batch_q0[j] >= existing_q0 - EPS);
@@ -2084,7 +2087,7 @@ private:
 
     void process_scc(int scc_id, Direction dir, const std::vector<std::vector<int>>& scc_buckets,
                      BucketLabels& bl) {
-        auto& scc_bs = scc_buckets[scc_id];
+        const auto& scc_bs = scc_buckets[scc_id];
         if (scc_bs.empty()) {
             return;
         }
@@ -2290,7 +2293,7 @@ private:
 
     void update_c_best(int scc_id, Direction dir, const std::vector<std::vector<int>>& scc_buckets,
                        const BucketLabels& bl) {
-        auto& scc_bs = scc_buckets[scc_id];
+        const auto& scc_bs = scc_buckets[scc_id];
 
         // First pass: c_best from labels in bucket. compact_labels() runs
         // immediately before update_c_best at the SCC boundary, so every
@@ -2582,15 +2585,12 @@ private:
             return true;
         }
 
-        for (int arc_id : adj_.outgoing[v]) {
+        return std::ranges::any_of(adj_.outgoing[v], [&](int arc_id) {
             double arc_cost = reduced_costs_ ? reduced_costs_[arc_id] : pv_.arc_base_cost[arc_id];
             double base = L->cost + arc_cost;
             int j = pv_.arc_to[arc_id];
-            if (base + vertex_min_bw_c_best_[j] + min_dom_cost_ < theta) {
-                return true;
-            }
-        }
-        return false;
+            return base + vertex_min_bw_c_best_[j] + min_dom_cost_ < theta;
+        });
     }
 
     /// Compute the arrival bucket index for a bucket arc or jump arc.
@@ -2673,7 +2673,7 @@ private:
 
         // Recurse to adjacent smaller (opposite-sense) buckets: Φ_{b̃}
         int v = buckets_[b_tilde].vertex;
-        auto& nb_v = vertex_n_buckets_[v];
+        const auto& nb_v = vertex_n_buckets_[v];
         int k0 = (b_tilde - vstart) / nb_v[1];
         int k1 = (b_tilde - vstart) % nb_v[1];
 
@@ -2705,7 +2705,7 @@ private:
     bool should_eliminate_arc(int arr_bi, std::span<const uint64_t> b_bar, Direction dir) const {
         int arr_v = buckets_[arr_bi].vertex;
         auto [arr_vstart, arr_vend] = vertex_bucket_range(arr_v);
-        auto& arr_nb = vertex_n_buckets_[arr_v];
+        const auto& arr_nb = vertex_n_buckets_[arr_v];
         int arr_k0 = (arr_bi - arr_vstart) / arr_nb[1];
         int arr_k1 = (arr_bi - arr_vstart) % arr_nb[1];
 
@@ -3765,7 +3765,7 @@ private:
     int mirror_bucket(int bi) const {
         int v = buckets_[bi].vertex;
         int vstart = vertex_bucket_start_[v];
-        auto& nb_v = vertex_n_buckets_[v];
+        const auto& nb_v = vertex_n_buckets_[v];
         int k0 = (bi - vstart) / nb_v[1];
         int k1 = (bi - vstart) % nb_v[1];
         int mk0 = nb_v[0] - 1 - k0;

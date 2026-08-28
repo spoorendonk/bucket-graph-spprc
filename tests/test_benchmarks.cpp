@@ -1,5 +1,6 @@
 #include "instance_io.h"
 
+#include <algorithm>
 #include <bgspprc/resource.h>
 #include <bgspprc/solver.h>
 #include <cmath>
@@ -57,9 +58,11 @@ TEST_CASE("spprclib instances") {
         return;
     }
 
-    int tested = 0, passed = 0, failed = 0;
+    int tested = 0;
+    int passed = 0;
+    int failed = 0;
 
-    for (auto& entry : fs::directory_iterator(SPPRCLIB_DIR)) {
+    for (const auto& entry : fs::directory_iterator(SPPRCLIB_DIR)) {
         if (entry.path().extension() != ".sppcc") {
             continue;
         }
@@ -89,9 +92,7 @@ TEST_CASE("spprclib instances") {
 
         double best = INF;
         for (const auto& p : paths) {
-            if (p.reduced_cost < best) {
-                best = p.reduced_cost;
-            }
+            best = std::min(p.reduced_cost, best);
         }
 
         ++tested;
@@ -119,16 +120,17 @@ TEST_CASE("rcspp_dataset R1 instances") {
         return;
     }
 
-    int tested = 0, solved = 0;
+    int tested = 0;
+    int solved = 0;
 
-    for (auto& entry : fs::directory_iterator(RCSPP_DIR)) {
+    for (const auto& entry : fs::directory_iterator(RCSPP_DIR)) {
         if (entry.path().extension() != ".graph") {
             continue;
         }
         std::string name = entry.path().stem().string();
 
         // Only test R1xx instances (tight TW, fast to solve)
-        if (!(name[0] == 'R' && name[1] == '1')) {
+        if (name[0] != 'R' || name[1] != '1') {
             continue;
         }
 
@@ -161,9 +163,10 @@ TEST_CASE("rcspp_dataset RC1 instances") {
         return;
     }
 
-    int tested = 0, solved = 0;
+    int tested = 0;
+    int solved = 0;
 
-    for (auto& entry : fs::directory_iterator(RCSPP_DIR)) {
+    for (const auto& entry : fs::directory_iterator(RCSPP_DIR)) {
         if (entry.path().extension() != ".graph") {
             continue;
         }

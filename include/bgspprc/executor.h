@@ -66,9 +66,7 @@ void parallel_sort(Exec& exec, It first, It last, Cmp cmp) {
     // many that merge overhead dominates. 8 chunks is a reasonable default.
     constexpr int max_chunks = 8;
     int n_chunks = std::min(max_chunks, static_cast<int>(n / 512));
-    if (n_chunks < 2) {
-        n_chunks = 2;
-    }
+    n_chunks = std::max(n_chunks, 2);
 
     auto chunk_size = n / n_chunks;
 

@@ -34,9 +34,9 @@ struct PickupDeliveryResource {
 
     [[nodiscard]] State init_state(Direction dir) const {
         if (dir == Direction::Forward) {
-            return {0.0, Q};
+            return {.P = 0.0, .D = Q};
         }
-        return {Q, 0.0};
+        return {.P = Q, .D = 0.0};
     }
 
     /// No-op: all changes happen at vertices.
@@ -64,18 +64,17 @@ struct PickupDeliveryResource {
                 return {{}, INF};
             }
             double D_new = std::min(s.D - d, Q - P_new);
-            return {{P_new, D_new}, 0.0};
-        } else {
-            double D_new = s.D + d;
-            if (D_new > Q + EPS) {
-                return {{}, INF};
-            }
-            if (p > s.P + EPS) {
-                return {{}, INF};
-            }
-            double P_new = std::min(s.P - p, Q - D_new);
-            return {{P_new, D_new}, 0.0};
+            return {{.P = P_new, .D = D_new}, 0.0};
         }
+        double D_new = s.D + d;
+        if (D_new > Q + EPS) {
+            return {{}, INF};
+        }
+        if (p > s.P + EPS) {
+            return {{}, INF};
+        }
+        double P_new = std::min(s.P - p, Q - D_new);
+        return {{.P = P_new, .D = D_new}, 0.0};
     }
 
     /// Forward: INF if P1 > P2 or D1 < D2, else 0.
@@ -89,15 +88,14 @@ struct PickupDeliveryResource {
                 return INF;
             }
             return 0.0;
-        } else {
-            if (s1.D > s2.D + EPS) {
-                return INF;
-            }
-            if (s1.P < s2.P - EPS) {
-                return INF;
-            }
-            return 0.0;
         }
+        if (s1.D > s2.D + EPS) {
+            return INF;
+        }
+        if (s1.P < s2.P - EPS) {
+            return INF;
+        }
+        return 0.0;
     }
 
     /// Lower bound on domination_cost: 0 (returns 0 or INF).

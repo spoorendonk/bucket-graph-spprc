@@ -207,7 +207,7 @@ TEST_CASE("parallel_sort with SequentialExecutor - small input falls back to std
     SequentialExecutor exec;
     std::vector<int> data = {5, 3, 8, 1, 9, 2, 7, 4, 6};
     parallel_sort(exec, data.begin(), data.end(), std::less<>{});
-    CHECK(std::is_sorted(data.begin(), data.end()));
+    CHECK(std::ranges::is_sorted(data));
     CHECK(data == std::vector<int>{1, 2, 3, 4, 5, 6, 7, 8, 9});
 }
 
@@ -229,12 +229,12 @@ TEST_CASE("parallel_sort with SequentialExecutor - large input above threshold")
     SequentialExecutor exec;
     constexpr int n = 10000;
     std::vector<int> data(n);
-    std::iota(data.begin(), data.end(), 0);
+    std::ranges::iota(data, 0);
     std::mt19937 rng(42);
     std::shuffle(data.begin(), data.end(), rng);
 
     parallel_sort(exec, data.begin(), data.end(), std::less<>{});
-    CHECK(std::is_sorted(data.begin(), data.end()));
+    CHECK(std::ranges::is_sorted(data));
     CHECK(data.front() == 0);
     CHECK(data.back() == n - 1);
 }
@@ -243,12 +243,12 @@ TEST_CASE("parallel_sort with SequentialExecutor - custom comparator (descending
     SequentialExecutor exec;
     constexpr int n = 5000;
     std::vector<int> data(n);
-    std::iota(data.begin(), data.end(), 0);
+    std::ranges::iota(data, 0);
     std::mt19937 rng(123);
     std::shuffle(data.begin(), data.end(), rng);
 
     parallel_sort(exec, data.begin(), data.end(), std::greater<>{});
-    CHECK(std::is_sorted(data.begin(), data.end(), std::greater<>{}));
+    CHECK(std::ranges::is_sorted(data, std::greater<>{}));
     CHECK(data.front() == n - 1);
     CHECK(data.back() == 0);
 }
@@ -257,12 +257,12 @@ TEST_CASE("parallel_sort with StdThreadExecutor - large input above threshold") 
     StdThreadExecutor exec;
     constexpr int n = 10000;
     std::vector<int> data(n);
-    std::iota(data.begin(), data.end(), 0);
+    std::ranges::iota(data, 0);
     std::mt19937 rng(99);
     std::shuffle(data.begin(), data.end(), rng);
 
     parallel_sort(exec, data.begin(), data.end(), std::less<>{});
-    CHECK(std::is_sorted(data.begin(), data.end()));
+    CHECK(std::ranges::is_sorted(data));
     CHECK(data.front() == 0);
     CHECK(data.back() == n - 1);
 }
@@ -271,12 +271,12 @@ TEST_CASE("parallel_sort with StdThreadExecutor - stress 100k elements") {
     StdThreadExecutor exec;
     constexpr int n = 100000;
     std::vector<int> data(n);
-    std::iota(data.begin(), data.end(), 0);
+    std::ranges::iota(data, 0);
     std::mt19937 rng(777);
     std::shuffle(data.begin(), data.end(), rng);
 
     parallel_sort(exec, data.begin(), data.end(), std::less<>{});
-    CHECK(std::is_sorted(data.begin(), data.end()));
+    CHECK(std::ranges::is_sorted(data));
     CHECK(data.front() == 0);
     CHECK(data.back() == n - 1);
 }

@@ -3,6 +3,7 @@
 #include "arc.h"
 #include "types.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -40,7 +41,7 @@ public:
     }
 
     void clear() {
-        std::fill(bits_.begin(), bits_.end(), 0ULL);
+        std::ranges::fill(bits_, 0ULL);
         n_fixed_ = 0;
     }
 

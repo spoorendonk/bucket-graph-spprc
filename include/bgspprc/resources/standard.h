@@ -61,9 +61,8 @@ struct StandardResource {
         double d = consumption[arc_id];
         if (dir == Direction::Forward) {
             return {q + d, 0.0};
-        } else {
-            return {q - d, 0.0};
         }
+        return {q - d, 0.0};
     }
 
     /// Extend to vertex: clamp to vertex bounds and check feasibility.
@@ -77,13 +76,12 @@ struct StandardResource {
                 return {q_new, INF};
             }
             return {q_new, 0.0};
-        } else {
-            double q_new = std::min(q, ub[vertex]);
-            if (q_new < lb[vertex]) {
-                return {q_new, INF};
-            }
-            return {q_new, 0.0};
         }
+        double q_new = std::min(q, ub[vertex]);
+        if (q_new < lb[vertex]) {
+            return {q_new, INF};
+        }
+        return {q_new, 0.0};
     }
 
     [[nodiscard]] double domination_cost(Direction dir, int /*vertex*/, State s1, State s2) const {

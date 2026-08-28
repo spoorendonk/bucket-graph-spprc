@@ -49,7 +49,7 @@ public:
         }
         batch.remaining.fetch_add(n_tasks, std::memory_order_relaxed);
         {
-            std::lock_guard lock(mutex_);
+            std::scoped_lock lock(mutex_);
             for (int i = 0; i < n_tasks; ++i) {
                 queue_.push_back({&tasks[i], &batch});
             }
@@ -93,7 +93,7 @@ private:
             try {
                 (*task.fn)();
             } catch (...) {
-                std::lock_guard lock(task.batch->exception_mutex);
+                std::scoped_lock lock(task.batch->exception_mutex);
                 if (!task.batch->exception) {
                     task.batch->exception = std::current_exception();
                 }

@@ -48,8 +48,8 @@ struct Label {
                 arcs.push_back(l->parent_arc);
             }
         }
-        std::reverse(vertices.begin(), vertices.end());
-        std::reverse(arcs.begin(), arcs.end());
+        std::ranges::reverse(vertices);
+        std::ranges::reverse(arcs);
     }
 
     /// Get subpath for backward labels: returns vertices/arcs in forward

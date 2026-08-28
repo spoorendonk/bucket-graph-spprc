@@ -33,9 +33,8 @@ struct CapacityResource {
                                                             int arc_id) const {
         if (dir == bgspprc::Direction::Forward) {
             return {s + demand[arc_id], 0.0};
-        } else {
-            return {s - demand[arc_id], 0.0};
         }
+        return {s - demand[arc_id], 0.0};
     }
 
     [[nodiscard]] std::pair<State, double> extend_to_vertex(bgspprc::Direction dir, State s,

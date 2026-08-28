@@ -37,7 +37,7 @@ struct CumulativeCostResource {
           T_max(T_max_),
           n_arcs(n_arcs_) {}
 
-    [[nodiscard]] State init_state(Direction /*dir*/) const { return {0.0, 0.0}; }
+    [[nodiscard]] State init_state(Direction /*dir*/) const { return {.S = 0.0, .T_or_W = 0.0}; }
 
     /// Forward: S' = S + w_a * (T + l_a),  T' = T + l_a,  cost_delta = w_a * (T +
     /// l_a) Backward: S' = S + (W + w_a) * l_a,  W' = W + w_a,  cost_delta = (W +
@@ -49,11 +49,10 @@ struct CumulativeCostResource {
 
         if (dir == Direction::Forward) {
             double delta = w * (s.T_or_W + l);
-            return {{s.S + delta, s.T_or_W + l}, delta};
-        } else {
-            double delta = (s.T_or_W + w) * l;
-            return {{s.S + delta, s.T_or_W + w}, delta};
+            return {{.S = s.S + delta, .T_or_W = s.T_or_W + l}, delta};
         }
+        double delta = (s.T_or_W + w) * l;
+        return {{.S = s.S + delta, .T_or_W = s.T_or_W + w}, delta};
     }
 
     /// No vertex-level changes.
@@ -68,9 +67,8 @@ struct CumulativeCostResource {
         double cost_gap = s1.S - s2.S;
         if (dir == Direction::Forward) {
             return cost_gap + std::max(0.0, s1.T_or_W - s2.T_or_W) * W_max;
-        } else {
-            return cost_gap + std::max(0.0, s1.T_or_W - s2.T_or_W) * T_max;
         }
+        return cost_gap + std::max(0.0, s1.T_or_W - s2.T_or_W) * T_max;
     }
 
     /// Conservative lower bound on domination_cost across all state pairs.

@@ -242,7 +242,7 @@ static NgPathResource make_ng5() {
         {3, 2, 1},  // v3: {3, 2, 1}
         {4, 3, 2},  // v4: {4, 3, 2}
     };
-    return NgPathResource(5, 10, from, to, neighbors);
+    return {5, 10, from, to, neighbors};
 }
 
 TEST_CASE("NgPathResource: bit_map assigns local positions") {
@@ -1263,8 +1263,12 @@ static void check_elementary(const auto& paths) {
 }
 
 TEST_CASE("Solver: ng-path blocks cycles, mono and bidir agree") {
-    int from[6], to[6];
-    double cost[6], time_d[6], tw_lb[4], tw_ub[4];
+    int from[6];
+    int to[6];
+    double cost[6];
+    double time_d[6];
+    double tw_lb[4];
+    double tw_ub[4];
     const double* arc_res[1];
     const double* v_lb[1];
     const double* v_ub[1];
@@ -1298,8 +1302,12 @@ TEST_CASE("Solver: ng-path blocks cycles, mono and bidir agree") {
 }
 
 TEST_CASE("Solver: without ng-path, cycles are exploited") {
-    int from[6], to[6];
-    double cost[6], time_d[6], tw_lb[4], tw_ub[4];
+    int from[6];
+    int to[6];
+    double cost[6];
+    double time_d[6];
+    double tw_lb[4];
+    double tw_ub[4];
     const double* arc_res[1];
     const double* v_lb[1];
     const double* v_ub[1];
@@ -1487,7 +1495,7 @@ TEST_CASE("CumulativeCostResource: extend_along_arc forward") {
     CumulativeCostResource res(travel, wt, 10.0, 20.0, 2);
 
     // Start: S=0, T=0. Extend arc 0: delta = w*(T+l) = 2*(0+3) = 6
-    auto [s1, c1] = res.extend_along_arc(Direction::Forward, {0.0, 0.0}, 0);
+    auto [s1, c1] = res.extend_along_arc(Direction::Forward, {.S = 0.0, .T_or_W = 0.0}, 0);
     CHECK(s1.S == doctest::Approx(6.0));
     CHECK(s1.T_or_W == doctest::Approx(3.0));
     CHECK(c1 == doctest::Approx(6.0));
@@ -1506,7 +1514,7 @@ TEST_CASE("CumulativeCostResource: extend_along_arc backward") {
     CumulativeCostResource res(travel, wt, 10.0, 20.0, 1);
 
     // Start: S=0, W=0. Extend arc 0: delta = (W+w)*l = (0+2)*3 = 6
-    auto [s1, c1] = res.extend_along_arc(Direction::Backward, {0.0, 0.0}, 0);
+    auto [s1, c1] = res.extend_along_arc(Direction::Backward, {.S = 0.0, .T_or_W = 0.0}, 0);
     CHECK(s1.S == doctest::Approx(6.0));
     CHECK(s1.T_or_W == doctest::Approx(2.0));  // W' = 0 + 2
     CHECK(c1 == doctest::Approx(6.0));
@@ -1517,7 +1525,7 @@ TEST_CASE("CumulativeCostResource: extend_to_vertex is no-op") {
     double wt[] = {2.0};
     CumulativeCostResource res(travel, wt, 10.0, 20.0, 1);
 
-    auto [s, c] = res.extend_to_vertex(Direction::Forward, {5.0, 3.0}, 1);
+    auto [s, c] = res.extend_to_vertex(Direction::Forward, {.S = 5.0, .T_or_W = 3.0}, 1);
     CHECK(s.S == 5.0);
     CHECK(s.T_or_W == 3.0);
     CHECK(c == 0.0);
@@ -1610,7 +1618,7 @@ TEST_CASE("PickupDeliveryResource: extend_to_vertex forward feasible") {
 
     // Start: P=0, D=10. Visit v1: p=3, d=1.
     // P' = 0+3 = 3, D' = min(10-1, 10-3) = min(9, 7) = 7
-    auto [s1, c1] = res.extend_to_vertex(Direction::Forward, {0.0, 10.0}, 1);
+    auto [s1, c1] = res.extend_to_vertex(Direction::Forward, {.P = 0.0, .D = 10.0}, 1);
     CHECK(c1 == 0.0);
     CHECK(s1.P == doctest::Approx(3.0));
     CHECK(s1.D == doctest::Approx(7.0));
@@ -1622,7 +1630,7 @@ TEST_CASE("PickupDeliveryResource: extend_to_vertex forward infeasible pickup") 
     PickupDeliveryResource res(pk, dl, 10.0, 2);
 
     // P=5, D=5. Visit v1: p=8. P+p = 13 > Q=10 → infeasible
-    auto [s, c] = res.extend_to_vertex(Direction::Forward, {5.0, 5.0}, 1);
+    auto [s, c] = res.extend_to_vertex(Direction::Forward, {.P = 5.0, .D = 5.0}, 1);
     CHECK(c >= INF);
 }
 
@@ -1632,7 +1640,7 @@ TEST_CASE("PickupDeliveryResource: extend_to_vertex forward infeasible delivery"
     PickupDeliveryResource res(pk, dl, 10.0, 2);
 
     // P=0, D=5. Visit v1: d=7. d > D → infeasible
-    auto [s, c] = res.extend_to_vertex(Direction::Forward, {0.0, 5.0}, 1);
+    auto [s, c] = res.extend_to_vertex(Direction::Forward, {.P = 0.0, .D = 5.0}, 1);
     CHECK(c >= INF);
 }
 
@@ -1643,7 +1651,7 @@ TEST_CASE("PickupDeliveryResource: extend_to_vertex backward feasible") {
 
     // Start bw: P_bar=10, D_bar=0. Visit v2: p=3, d=4.
     // D_bar' = 0+4 = 4, P_bar' = min(10-3, 10-4) = min(7, 6) = 6
-    auto [s1, c1] = res.extend_to_vertex(Direction::Backward, {10.0, 0.0}, 2);
+    auto [s1, c1] = res.extend_to_vertex(Direction::Backward, {.P = 10.0, .D = 0.0}, 2);
     CHECK(c1 == 0.0);
     CHECK(s1.P == doctest::Approx(6.0));
     CHECK(s1.D == doctest::Approx(4.0));
@@ -1655,7 +1663,7 @@ TEST_CASE("PickupDeliveryResource: extend_to_vertex backward infeasible") {
     PickupDeliveryResource res(pk, dl, 10.0, 2);
 
     // P_bar=5, D_bar=3. Visit v1: p=8. p > P_bar → infeasible
-    auto [s, c] = res.extend_to_vertex(Direction::Backward, {5.0, 3.0}, 1);
+    auto [s, c] = res.extend_to_vertex(Direction::Backward, {.P = 5.0, .D = 3.0}, 1);
     CHECK(c >= INF);
 }
 
@@ -1664,7 +1672,7 @@ TEST_CASE("PickupDeliveryResource: extend_along_arc is no-op") {
     double dl[] = {0.0, 2.0};
     PickupDeliveryResource res(pk, dl, 10.0, 2);
 
-    auto [s, c] = res.extend_along_arc(Direction::Forward, {3.0, 7.0}, 0);
+    auto [s, c] = res.extend_along_arc(Direction::Forward, {.P = 3.0, .D = 7.0}, 0);
     CHECK(s.P == 3.0);
     CHECK(s.D == 7.0);
     CHECK(c == 0.0);
@@ -1790,8 +1798,7 @@ TEST_CASE("Solver: CumulativeCostResource changes optimal path") {
 
     using CcPack = ResourcePack<CumulativeCostResource>;
     CumulativeCostResource cc(travel, wt, 12.0, 100.0, NA);
-    Solver<CcPack> solver(pv, make_resource_pack(std::move(cc)),
-                          {.bucket_steps = {10.0, 1.0}, .theta = 1e9});
+    Solver<CcPack> solver(pv, make_resource_pack(cc), {.bucket_steps = {10.0, 1.0}, .theta = 1e9});
     solver.build();
     solver.set_stage(Stage::Exact);
     auto paths = solver.solve();
@@ -1856,8 +1863,7 @@ TEST_CASE("Solver: PickupDeliveryResource blocks capacity-violating paths") {
 
     using PdPack = ResourcePack<PickupDeliveryResource>;
     PickupDeliveryResource pd(pk, dl, 5.0, 4);
-    Solver<PdPack> solver(pv, make_resource_pack(std::move(pd)),
-                          {.bucket_steps = {10.0, 1.0}, .theta = 1e9});
+    Solver<PdPack> solver(pv, make_resource_pack(pd), {.bucket_steps = {10.0, 1.0}, .theta = 1e9});
     solver.build();
     solver.set_stage(Stage::Exact);
     auto paths = solver.solve();

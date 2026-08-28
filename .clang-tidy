@@ -3,9 +3,10 @@
 # comment — it gets folded into the check string and silently corrupts the
 # list. Keep all commentary out here, above the key.
 #
-# The disabled checks after the first two fight conventions this codebase
-# holds on purpose. Every one of them fired on untouched code, which is how a
-# gate teaches people to ignore it:
+# Every check disabled after the first two fired on untouched code, which is
+# how a gate teaches people to ignore it. Each is off for one of two reasons:
+# it fights a convention this codebase holds on purpose, or it is a defect in
+# clang-tidy itself. The reason is recorded per check below.
 #
 #   readability-identifier-length      Short names are the reference papers'
 #                                      notation and ordinary loop indices
@@ -30,6 +31,36 @@
 #                                      cli/main.cpp's fprintf calls. A
 #                                      crash analyses nothing, so this
 #                                      stays off until upstream fixes it.
+#   readability-function-cognitive-complexity
+#                                      The labeling hot paths score 60-265
+#                                      against a threshold of 25, and they
+#                                      are complex because dominance,
+#                                      concatenation and bucket fixing are.
+#                                      This project's standing rule is to
+#                                      explain such a function rather than
+#                                      split it mechanically, so the check
+#                                      can only ever be ignored here. It
+#                                      also fires on every doctest TEST_CASE
+#                                      body, which is a table of assertions,
+#                                      not a function to refactor.
+#   readability-convert-member-functions-to-static
+#                                      All 26 hits were Resource concept
+#                                      hooks (symmetric, init_state,
+#                                      domination_cost, ...). The concept
+#                                      fixes the signature; whether a given
+#                                      resource needs `this` is an
+#                                      implementation detail that must not
+#                                      leak into the interface, or a
+#                                      stateless resource and a stateful one
+#                                      would spell the same hook differently.
+#   modernize-use-integer-sign-comparison
+#                                      False positive in clang-tidy 21.1.8:
+#                                      it flags `i < static_cast<int>(v.size())`
+#                                      — both operands already int — and
+#                                      proposes std::cmp_less over the cast
+#                                      the code uses to resolve the very
+#                                      mismatch being reported. Re-test
+#                                      before re-enabling.
 Checks: >
   -*,
   bugprone-*,
@@ -44,11 +75,12 @@ Checks: >
   -readability-math-missing-parentheses,
   -readability-uppercase-literal-suffix,
   -bugprone-easily-swappable-parameters,
-  -modernize-use-std-print
+  -modernize-use-std-print,
+  -readability-function-cognitive-complexity,
+  -readability-convert-member-functions-to-static,
+  -modernize-use-integer-sign-comparison
 
 CheckOptions:
-  - key: readability-function-cognitive-complexity.Threshold
-    value: 25
   - key: readability-identifier-naming.ClassCase
     value: CamelCase
   - key: readability-identifier-naming.StructCase

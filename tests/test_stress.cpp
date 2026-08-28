@@ -41,17 +41,18 @@ static void check_parallel_bidir_agree(const ProblemView& pv, double tol = 1e9, 
     // Verify all sequential paths appear in parallel results
     auto to_set = [](const auto& paths) {
         std::vector<std::vector<int>> vs;
+        vs.reserve(paths.size());
         for (auto& p : paths) {
             vs.push_back(p.vertices);
         }
-        std::sort(vs.begin(), vs.end());
-        vs.erase(std::unique(vs.begin(), vs.end()), vs.end());
+        std::ranges::sort(vs);
+        vs.erase(std::ranges::unique(vs).begin(), vs.end());
         return vs;
     };
     auto seq_set = to_set(sp);
     auto par_set = to_set(pp);
     for (auto& path : seq_set) {
-        CHECK(std::find(par_set.begin(), par_set.end(), path) != par_set.end());
+        CHECK(std::ranges::find(par_set, path) != par_set.end());
     }
 }
 
@@ -80,18 +81,19 @@ static void check_mono_bidir_agree(const ProblemView& pv, double tol = 1e9, doub
     // so we check mono ⊆ bidir (same paths, bidir may have extras).
     auto to_set = [](const auto& paths) {
         std::vector<std::vector<int>> vs;
+        vs.reserve(paths.size());
         for (auto& p : paths) {
             vs.push_back(p.vertices);
         }
-        std::sort(vs.begin(), vs.end());
-        vs.erase(std::unique(vs.begin(), vs.end()), vs.end());
+        std::ranges::sort(vs);
+        vs.erase(std::ranges::unique(vs).begin(), vs.end());
         return vs;
     };
     auto mono_set = to_set(mp);
     auto bidir_set = to_set(bp);
     // Every mono path must appear in bidir
     for (auto& path : mono_set) {
-        CHECK(std::find(bidir_set.begin(), bidir_set.end(), path) != bidir_set.end());
+        CHECK(std::ranges::find(bidir_set, path) != bidir_set.end());
     }
 }
 
@@ -835,15 +837,18 @@ TEST_CASE("Stress: long chain, bidir must concatenate in middle") {
     // tw=[0,10] everywhere. Midpoint=5. Concat at arc 2→3 (fw q=6 > mid).
     constexpr int N = 6;
     constexpr int A = 5;
-    int from[A], to[A];
-    double cost[A], time_d[A];
+    int from[A];
+    int to[A];
+    double cost[A];
+    double time_d[A];
     for (int i = 0; i < A; ++i) {
         from[i] = i;
         to[i] = i + 1;
         cost[i] = 1.0;
         time_d[i] = 2.0;
     }
-    double tw_lb[N], tw_ub[N];
+    double tw_lb[N];
+    double tw_ub[N];
     for (int i = 0; i < N; ++i) {
         tw_lb[i] = 0.0;
         tw_ub[i] = 10.0;
@@ -1066,8 +1071,10 @@ TEST_CASE("Stress: 10-vertex layered graph, mono==bidir") {
     // Layer 4: {9} (sink)
     // Full connections between adjacent layers.
     constexpr int N = 10;
-    std::vector<int> vfrom, vto;
-    std::vector<double> vcost, vtime;
+    std::vector<int> vfrom;
+    std::vector<int> vto;
+    std::vector<double> vcost;
+    std::vector<double> vtime;
 
     auto add_arc = [&](int f, int t, double c, double d) {
         vfrom.push_back(f);
@@ -1097,7 +1104,8 @@ TEST_CASE("Stress: 10-vertex layered graph, mono==bidir") {
     add_arc(8, 9, 3.0, 1.0);
 
     int A = static_cast<int>(vfrom.size());
-    double tw_lb[N], tw_ub[N];
+    double tw_lb[N];
+    double tw_ub[N];
     for (int i = 0; i < N; ++i) {
         tw_lb[i] = 0.0;
         tw_ub[i] = 30.0;
@@ -1515,8 +1523,10 @@ TEST_CASE("Parallel bidir: 6-vertex with cross arcs") {
 
 TEST_CASE("Parallel bidir: random 8-vertex graph") {
     constexpr int N = 8;
-    std::vector<int> from_v, to_v;
-    std::vector<double> cost_v, time_v;
+    std::vector<int> from_v;
+    std::vector<int> to_v;
+    std::vector<double> cost_v;
+    std::vector<double> time_v;
     for (int i = 0; i < N; ++i) {
         for (int j = i + 1; j < N; ++j) {
             from_v.push_back(i);

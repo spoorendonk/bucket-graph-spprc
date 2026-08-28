@@ -319,7 +319,12 @@ static Result run_graph(const std::string& path, const Options& opts, Exec execu
         }
     } else {
         // Use ng-path resource
-        int ng_k = opts.ng > 0 ? opts.ng : (inst.ng_size > 0 ? inst.ng_size : 8);
+        int ng_k = 8;
+        if (opts.ng > 0) {
+            ng_k = opts.ng;
+        } else if (inst.ng_size > 0) {
+            ng_k = inst.ng_size;
+        }
         if (inst.ng_neighbors.empty() || (opts.ng > 0 && opts.ng != inst.ng_size)) {
             bool use_dist = opts.ng_metric == 1;  // auto (-1) defaults to cost for graph
             io::compute_ng_neighbors(inst, ng_k, use_dist);
@@ -445,13 +450,13 @@ template <Executor Exec>
 static void run_path_with(const std::string& path, const Options& opts, Exec executor) {
     if (fs::is_directory(path)) {
         std::vector<std::string> files;
-        for (auto& entry : fs::directory_iterator(path)) {
+        for (const auto& entry : fs::directory_iterator(path)) {
             auto ext = entry.path().extension().string();
             if (ext == ".sppcc" || ext == ".vrp" || ext == ".graph") {
                 files.push_back(entry.path().string());
             }
         }
-        std::sort(files.begin(), files.end());
+        std::ranges::sort(files);
         for (auto& f : files) {
             auto r = run_instance(f, opts, executor);
             print_result(r, opts);
@@ -501,7 +506,8 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--version") == 0) {
             std::printf("bgspprc %s (%s)\n", BGSPPRC_VERSION, BGSPPRC_GIT_HASH);
             return 0;
-        } else if (std::strcmp(argv[i], "--mono") == 0) {
+        }
+        if (std::strcmp(argv[i], "--mono") == 0) {
             opts.bidir = false;
         } else if (std::strcmp(argv[i], "--stage") == 0 && i + 1 < argc) {
             opts.stage = parse_stage(argv[++i]);
@@ -543,7 +549,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "Unknown option: %s\n", argv[i]);
             return 1;
         } else {
-            paths.push_back(argv[i]);
+            paths.emplace_back(argv[i]);
         }
     }
 
@@ -584,9 +590,10 @@ int main(int argc, char** argv) {
     // Log effective configuration when --stats is set.
     if (opts.stats) {
         const char* exec_name = opts.parallel ? "StdThread" : "Sequential";
-        const char* bidir_mode =
-            !opts.bidir ? "off"
-                        : (opts.parallel && opts.parallel_bidir ? "parallel" : "sequential");
+        const char* bidir_mode = "off";
+        if (opts.bidir) {
+            bidir_mode = opts.parallel && opts.parallel_bidir ? "parallel" : "sequential";
+        }
         std::fprintf(stderr, "bgspprc: executor=%s  bidir=%s\n", exec_name, bidir_mode);
     }
 

@@ -8,6 +8,7 @@
 #include <bgspprc/problem_view.h>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -226,13 +227,14 @@ inline Instance load_roberti_vrp(const std::string& path) {
 
     int dimension = 0;
     double capacity = 0;
-    std::vector<double> x, y;
+    std::vector<double> x;
+    std::vector<double> y;
     std::vector<double> demands;
     std::vector<double> profits;
     int depot = 1;
 
     std::string line;
-    enum Section { NONE, COORDS, DEMANDS, DEPOT, PROFIT } section = NONE;
+    enum Section : std::uint8_t { NONE, COORDS, DEMANDS, DEPOT, PROFIT } section = NONE;
 
     while (std::getline(file, line)) {
         if (line.starts_with("NAME")) {
@@ -264,7 +266,8 @@ inline Instance load_roberti_vrp(const std::string& path) {
             section = NONE;
         } else if (section == COORDS) {
             int id;
-            double cx, cy;
+            double cx;
+            double cy;
             if (std::sscanf(line.c_str(), "%d %lf %lf", &id, &cx, &cy) == 3) {
                 x[id - 1] = cx;
                 y[id - 1] = cy;
@@ -395,10 +398,10 @@ inline void compute_ng_neighbors(Instance& inst, int k = 8, bool use_distance = 
                 if (j == inst.source) {
                     continue;
                 }
-                candidates.push_back({metric[v * N + j], j});
+                candidates.emplace_back(metric[v * N + j], j);
             }
             // Sort ascending, break ties by ascending node ID
-            std::sort(candidates.begin(), candidates.end(), [](auto& a, auto& b) {
+            std::ranges::sort(candidates, [](auto& a, auto& b) {
                 return a.first < b.first || (a.first == b.first && a.second < b.second);
             });
 
@@ -426,12 +429,12 @@ inline void compute_ng_neighbors(Instance& inst, int k = 8, bool use_distance = 
     for (int a = 0; a < na; ++a) {
         int from = inst.arc_from[a];
         int to = inst.arc_to[a];
-        adj[from].push_back({to, inst.arc_cost[a]});
+        adj[from].emplace_back(to, inst.arc_cost[a]);
     }
 
     for (int v = 0; v < nv; ++v) {
         auto& out = adj[v];
-        std::sort(out.begin(), out.end(), [](auto& a, auto& b) {
+        std::ranges::sort(out, [](auto& a, auto& b) {
             return a.second < b.second || (a.second == b.second && a.first < b.first);
         });
 
@@ -476,7 +479,9 @@ inline Instance load_rcspp_graph(const std::string& path) {
     std::ifstream file(path);
     assert(file.is_open());
 
-    int n_vertices = 0, n_edges = 0, ng_size = 0;
+    int n_vertices = 0;
+    int n_edges = 0;
+    int ng_size = 0;
 
     struct Vertex {
         double a, b, d, Q;
@@ -499,14 +504,20 @@ inline Instance load_rcspp_graph(const std::string& path) {
         } else if (line[0] == 'v') {
             // v id a b d Q
             int id;
-            double a, b, d, Q;
+            double a;
+            double b;
+            double d;
+            double Q;
             std::sscanf(line.c_str(), "v %d %lf %lf %lf %lf", &id, &a, &b, &d, &Q);
             assert(id >= 0 && id < n_vertices);
-            vertices[id] = {a, b, d, Q};
+            vertices[id] = {.a = a, .b = b, .d = d, .Q = Q};
         } else if (line[0] == 'e') {
             // e id source target cost time
-            int eid, src, tgt;
-            double cost, time;
+            int eid;
+            int src;
+            int tgt;
+            double cost;
+            double time;
             std::sscanf(line.c_str(), "e %d %d %d %lf %lf", &eid, &src, &tgt, &cost, &time);
             inst.arc_from.push_back(src);
             inst.arc_to.push_back(tgt);
@@ -516,7 +527,8 @@ inline Instance load_rcspp_graph(const std::string& path) {
         } else if (line[0] == 'n') {
             // n vertex neighbor1 neighbor2 ...
             std::istringstream iss(line.substr(2));
-            int v, w;
+            int v;
+            int w;
             iss >> v;
             while (iss >> w) {
                 inst.ng_neighbors[v].push_back(w);
