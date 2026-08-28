@@ -20,16 +20,17 @@ struct CapacityResource {
     const double* demand;  // per-arc demand, size = n_arcs
     double capacity;       // maximum total demand (Q)
 
-    bool symmetric() const { return false; }
+    [[nodiscard]] bool symmetric() const { return false; }
 
-    State init_state(bgspprc::Direction dir) const {
+    [[nodiscard]] State init_state(bgspprc::Direction dir) const {
         if (dir == bgspprc::Direction::Forward) {
             return 0.0;  // no demand consumed
         }
         return capacity;  // backward: full capacity remaining
     }
 
-    std::pair<State, double> extend_along_arc(bgspprc::Direction dir, State s, int arc_id) const {
+    [[nodiscard]] std::pair<State, double> extend_along_arc(bgspprc::Direction dir, State s,
+                                                            int arc_id) const {
         if (dir == bgspprc::Direction::Forward) {
             return {s + demand[arc_id], 0.0};
         } else {
@@ -37,8 +38,8 @@ struct CapacityResource {
         }
     }
 
-    std::pair<State, double> extend_to_vertex(bgspprc::Direction dir, State s,
-                                              int /*vertex*/) const {
+    [[nodiscard]] std::pair<State, double> extend_to_vertex(bgspprc::Direction dir, State s,
+                                                            int /*vertex*/) const {
         if (dir == bgspprc::Direction::Forward) {
             if (s > capacity + bgspprc::EPS) {
                 return {s, bgspprc::INF};
@@ -53,7 +54,8 @@ struct CapacityResource {
 
     // Forward: lower accumulated demand dominates (more room left).
     // Backward: higher remaining capacity dominates.
-    double domination_cost(bgspprc::Direction dir, int /*vertex*/, State s1, State s2) const {
+    [[nodiscard]] double domination_cost(bgspprc::Direction dir, int /*vertex*/, State s1,
+                                         State s2) const {
         if (dir == bgspprc::Direction::Forward) {
             if (s1 > s2 + bgspprc::EPS) {
                 return bgspprc::INF;
@@ -66,11 +68,11 @@ struct CapacityResource {
         return 0.0;
     }
 
-    double min_domination_cost() const { return 0.0; }
+    [[nodiscard]] double min_domination_cost() const { return 0.0; }
 
     // Forward consumed + backward consumed must not exceed capacity.
-    double concatenation_cost(bgspprc::Symmetry /*sym*/, int /*vertex*/, State s_fw,
-                              State s_bw) const {
+    [[nodiscard]] double concatenation_cost(bgspprc::Symmetry /*sym*/, int /*vertex*/, State s_fw,
+                                            State s_bw) const {
         double bw_consumed = capacity - s_bw;
         if (s_fw + bw_consumed > capacity + bgspprc::EPS) {
             return bgspprc::INF;

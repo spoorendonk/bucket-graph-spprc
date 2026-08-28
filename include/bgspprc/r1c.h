@@ -64,16 +64,17 @@ struct R1CResource {
         precompute_betas();
     }
 
-    int n_active() const { return n_active_; }
+    [[nodiscard]] int n_active() const { return n_active_; }
 
     // ── Resource concept interface ──
 
-    bool symmetric() const { return true; }
+    [[nodiscard]] bool symmetric() const { return true; }
 
-    State init_state(Direction /*dir*/) const { return 0ULL; }
+    [[nodiscard]] State init_state(Direction /*dir*/) const { return 0ULL; }
 
     /// Memory reset along arc: keep bits for cuts where arc ∈ AM.
-    std::pair<State, double> extend_along_arc(Direction /*dir*/, State state, int arc_id) const {
+    [[nodiscard]] std::pair<State, double> extend_along_arc(Direction /*dir*/, State state,
+                                                            int arc_id) const {
         if (n_active_ == 0) {
             return {state, 0.0};
         }
@@ -81,7 +82,8 @@ struct R1CResource {
     }
 
     /// Toggle bits for cuts where vertex ∈ C. Overflow (1→0) applies cost +β (penalty).
-    std::pair<State, double> extend_to_vertex(Direction /*dir*/, State state, int vertex) const {
+    [[nodiscard]] std::pair<State, double> extend_to_vertex(Direction /*dir*/, State state,
+                                                            int vertex) const {
         if (n_active_ == 0) {
             return {state, 0.0};
         }
@@ -103,7 +105,8 @@ struct R1CResource {
     /// the dominated L2 lacks (s1 & ~s2), L1 pays one extra +β over an odd
     /// completion that L2 escapes, so L1 must be +β cheaper to dominate for every
     /// completion: c(L1) + Σ_{s1 & ~s2} β ≤ c(L2).
-    double domination_cost(Direction /*dir*/, int /*vertex*/, State s1, State s2) const {
+    [[nodiscard]] double domination_cost(Direction /*dir*/, int /*vertex*/, State s1,
+                                         State s2) const {
         if (n_active_ == 0) {
             return 0.0;
         }
@@ -116,11 +119,12 @@ struct R1CResource {
 
     /// Lower bound on domination_cost: 0. The dominance penalty is a sum of +β
     /// (β ≥ 0), so it is never negative.
-    double min_domination_cost() const { return 0.0; }
+    [[nodiscard]] double min_domination_cost() const { return 0.0; }
 
     /// Cost when joining fw/bw labels: if both sides hold the bit, the join
     /// completes that coefficient and is charged the +β overflow penalty.
-    double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State s_fw, State s_bw) const {
+    [[nodiscard]] double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State s_fw,
+                                            State s_bw) const {
         if (n_active_ == 0) {
             return 0.0;
         }
@@ -174,7 +178,7 @@ private:
 
     /// Sum of +β over the set bits of `mask` — the reduced-cost penalty for the
     /// coefficients those bits represent (β = -σ ≥ 0, so each overflow raises cost).
-    double compute_overflow_cost(uint64_t mask) const {
+    [[nodiscard]] double compute_overflow_cost(uint64_t mask) const {
         double cost = 0.0;
         while (mask) {
             int bit = std::countr_zero(mask);

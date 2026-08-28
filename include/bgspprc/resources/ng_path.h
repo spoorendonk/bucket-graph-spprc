@@ -36,7 +36,7 @@ struct NgPathResource {
     using State = uint32_t;
 
     /// Ng-path resource is always symmetric (Meta-Solver 2026 §4.2.2).
-    bool symmetric() const { return true; }
+    [[nodiscard]] bool symmetric() const { return true; }
 
     /// Per-arc precomputed transform data for both directions.
     struct ArcInfo {
@@ -148,12 +148,13 @@ struct NgPathResource {
 
     /// Initialize state: empty (BucketGraph calls extend_to_vertex to mark
     /// source/sink).
-    State init_state(Direction /*dir*/) const { return 0U; }
+    [[nodiscard]] State init_state(Direction /*dir*/) const { return 0U; }
 
     /// extendAlongArc: transform bit vector from source ordering to target
     /// ordering. Does NOT mark the destination vertex — that's done by
     /// extend_to_vertex.
-    std::pair<State, double> extend_along_arc(Direction dir, State s, int arc_id) const {
+    [[nodiscard]] std::pair<State, double> extend_along_arc(Direction dir, State s,
+                                                            int arc_id) const {
         auto& ai = arc_info[arc_id];
 
         if (dir == Direction::Forward) {
@@ -193,7 +194,8 @@ struct NgPathResource {
     /// extendToVertex: set the destination vertex's self bit, and also
     /// mark vertex in its own ng-neighborhood (if v ∈ N(v)) so that
     /// self-loop arcs are correctly detected by extend_along_arc's check.
-    std::pair<State, double> extend_to_vertex(Direction /*dir*/, State s, int vertex) const {
+    [[nodiscard]] std::pair<State, double> extend_to_vertex(Direction /*dir*/, State s,
+                                                            int vertex) const {
         s |= (uint32_t{1} << self_bit_[vertex]);
         int8_t self_as_neighbor = bit_map[static_cast<size_t>(vertex) * n_vertices_ + vertex];
         if (self_as_neighbor >= 0) {
@@ -205,7 +207,8 @@ struct NgPathResource {
     /// Domination: L1 dominates L2 only if L1's visited set is subset of L2's.
     /// Same vertex → same local mapping (including self bit, which is always set
     /// in both), so direct bitwise comparison works.
-    double domination_cost(Direction /*dir*/, int /*vertex*/, State s1, State s2) const {
+    [[nodiscard]] double domination_cost(Direction /*dir*/, int /*vertex*/, State s1,
+                                         State s2) const {
         if (s1 & ~s2) {
             return INF;
         }
@@ -213,13 +216,14 @@ struct NgPathResource {
     }
 
     /// Lower bound on domination_cost: 0 (subset check returns 0 or INF).
-    double min_domination_cost() const { return 0.0; }
+    [[nodiscard]] double min_domination_cost() const { return 0.0; }
 
     /// Concatenation: across-arc (i,j) produces fw state at j via
     /// extend_along_arc only (no self bit for j), while bw state at j has j's
     /// self bit set. Any common bit means a vertex visited in both directions →
     /// cycle.
-    double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State s_fw, State s_bw) const {
+    [[nodiscard]] double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State s_fw,
+                                            State s_bw) const {
         if (s_fw & s_bw) {
             return INF;
         }
@@ -228,7 +232,7 @@ struct NgPathResource {
 
     /// Strip self bit from state for SoA storage (all labels in a bucket share
     /// the same vertex, so the self bit is always 1 — redundant for dominance).
-    uint32_t compress_state(State s, int vertex) const {
+    [[nodiscard]] uint32_t compress_state(State s, int vertex) const {
         return s & ~(uint32_t{1} << self_bit_[vertex]);
     }
 };

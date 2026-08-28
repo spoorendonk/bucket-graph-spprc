@@ -21,7 +21,7 @@ struct PickupDeliveryResource {
         double D;  // forward: remaining delivery capacity; backward: delivery served
     };
 
-    bool symmetric() const { return false; }
+    [[nodiscard]] bool symmetric() const { return false; }
 
     const double* pickup;    // per-vertex pickup demand, size = n_vertices
     const double* delivery;  // per-vertex delivery demand, size = n_vertices
@@ -32,7 +32,7 @@ struct PickupDeliveryResource {
                            int n_vertices_)
         : pickup(pickup_), delivery(delivery_), Q(Q_), n_vertices(n_vertices_) {}
 
-    State init_state(Direction dir) const {
+    [[nodiscard]] State init_state(Direction dir) const {
         if (dir == Direction::Forward) {
             return {0.0, Q};
         }
@@ -40,7 +40,8 @@ struct PickupDeliveryResource {
     }
 
     /// No-op: all changes happen at vertices.
-    std::pair<State, double> extend_along_arc(Direction /*dir*/, State s, int /*arc_id*/) const {
+    [[nodiscard]] std::pair<State, double> extend_along_arc(Direction /*dir*/, State s,
+                                                            int /*arc_id*/) const {
         return {s, 0.0};
     }
 
@@ -49,7 +50,8 @@ struct PickupDeliveryResource {
     /// Backward: P_bar' = min(P_bar - p_v, Q - (D_bar + d_v)),
     ///           D_bar' = D_bar + d_v,
     ///           infeasible if D_bar + d_v > Q or p_v > P_bar.
-    std::pair<State, double> extend_to_vertex(Direction dir, State s, int vertex) const {
+    [[nodiscard]] std::pair<State, double> extend_to_vertex(Direction dir, State s,
+                                                            int vertex) const {
         double p = pickup[vertex];
         double d = delivery[vertex];
 
@@ -78,7 +80,7 @@ struct PickupDeliveryResource {
 
     /// Forward: INF if P1 > P2 or D1 < D2, else 0.
     /// Backward: INF if D_bar1 > D_bar2 or P_bar1 < P_bar2, else 0.
-    double domination_cost(Direction dir, int /*vertex*/, State s1, State s2) const {
+    [[nodiscard]] double domination_cost(Direction dir, int /*vertex*/, State s1, State s2) const {
         if (dir == Direction::Forward) {
             if (s1.P > s2.P + EPS) {
                 return INF;
@@ -99,10 +101,11 @@ struct PickupDeliveryResource {
     }
 
     /// Lower bound on domination_cost: 0 (returns 0 or INF).
-    double min_domination_cost() const { return 0.0; }
+    [[nodiscard]] double min_domination_cost() const { return 0.0; }
 
     /// Concatenation: INF if P_fw > P_bar_bw or D_bar_bw > D_fw, else 0.
-    double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State s_fw, State s_bw) const {
+    [[nodiscard]] double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State s_fw,
+                                            State s_bw) const {
         if (s_fw.P > s_bw.P + EPS) {
             return INF;
         }

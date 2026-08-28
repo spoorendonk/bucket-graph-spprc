@@ -40,11 +40,11 @@ struct ResourcePack {
     explicit ResourcePack(Rs... rs) : resources(std::move(rs)...) {}
 
     /// True if all resources in the pack support symmetric labeling.
-    bool symmetric() const {
+    [[nodiscard]] bool symmetric() const {
         return std::apply([](const auto&... rs) { return (rs.symmetric() && ...); }, resources);
     }
 
-    StatesTuple init_states(Direction dir) const {
+    [[nodiscard]] StatesTuple init_states(Direction dir) const {
         return std::apply([dir](const auto&... rs) { return StatesTuple{rs.init_state(dir)...}; },
                           resources);
     }
@@ -52,8 +52,9 @@ struct ResourcePack {
     /// Extend all resources along an arc (extendAlongArc). Returns (new_states,
     /// total_extra_cost). If any resource returns INF cost, the extension is
     /// infeasible.
-    std::pair<StatesTuple, double> extend_along_arc(Direction dir, const StatesTuple& states,
-                                                    int arc_id) const {
+    [[nodiscard]] std::pair<StatesTuple, double> extend_along_arc(Direction dir,
+                                                                  const StatesTuple& states,
+                                                                  int arc_id) const {
         StatesTuple new_states;
         double total_cost = 0.0;
         bool feasible = true;
@@ -84,8 +85,9 @@ struct ResourcePack {
 
     /// Extend all resources to a vertex (extendToVertex). Returns (new_states,
     /// total_extra_cost).
-    std::pair<StatesTuple, double> extend_to_vertex(Direction dir, const StatesTuple& states,
-                                                    int vertex) const {
+    [[nodiscard]] std::pair<StatesTuple, double> extend_to_vertex(Direction dir,
+                                                                  const StatesTuple& states,
+                                                                  int vertex) const {
         StatesTuple new_states;
         double total_cost = 0.0;
         bool feasible = true;
@@ -116,8 +118,8 @@ struct ResourcePack {
 
     /// Compute domination cost: how much extra cost L1 pays vs L2 due to resource
     /// states.
-    double domination_cost(Direction dir, int vertex, const StatesTuple& s1,
-                           const StatesTuple& s2) const {
+    [[nodiscard]] double domination_cost(Direction dir, int vertex, const StatesTuple& s1,
+                                         const StatesTuple& s2) const {
         double total = 0.0;
         auto do_dom = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
             ((total += std::get<Is>(resources).domination_cost(dir, vertex, std::get<Is>(s1),
@@ -133,7 +135,7 @@ struct ResourcePack {
 
     /// Lower bound on domination_cost across all possible state pairs.
     /// Used for c_best pruning: if c_best + min_dom_cost > L->cost, skip bucket.
-    double min_domination_cost() const {
+    [[nodiscard]] double min_domination_cost() const {
         double total = 0.0;
         auto do_min = [&]<std::size_t... Is>(std::index_sequence<Is...>) {
             ((total += std::get<Is>(resources).min_domination_cost()), ...);
@@ -144,8 +146,8 @@ struct ResourcePack {
 
     /// Compute concatenation cost adjustment for joining forward/backward labels.
     /// If any resource returns INF, the concatenation is infeasible.
-    double concatenation_cost(Symmetry sym, int vertex, const StatesTuple& s_fw,
-                              const StatesTuple& s_bw) const {
+    [[nodiscard]] double concatenation_cost(Symmetry sym, int vertex, const StatesTuple& s_fw,
+                                            const StatesTuple& s_bw) const {
         double total = 0.0;
         bool feasible = true;
         auto do_cat = [&]<std::size_t... Is>(std::index_sequence<Is...>) {

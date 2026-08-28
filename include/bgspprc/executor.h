@@ -45,7 +45,7 @@ struct SequentialExecutor {
         g();
     }
 
-    int n_threads() const { return 1; }
+    [[nodiscard]] int n_threads() const { return 1; }
 };
 
 static_assert(Executor<SequentialExecutor>, "SequentialExecutor must satisfy the Executor concept");

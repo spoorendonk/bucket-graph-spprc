@@ -21,7 +21,7 @@ struct CumulativeCostResource {
         double T_or_W;  // forward: arrival time T; backward: cumulative weight W
     };
 
-    bool symmetric() const { return false; }
+    [[nodiscard]] bool symmetric() const { return false; }
 
     const double* travel_time;  // per-arc travel time l_a, size = n_arcs
     const double* weight;       // per-arc weight w_a, size = n_arcs
@@ -37,12 +37,13 @@ struct CumulativeCostResource {
           T_max(T_max_),
           n_arcs(n_arcs_) {}
 
-    State init_state(Direction /*dir*/) const { return {0.0, 0.0}; }
+    [[nodiscard]] State init_state(Direction /*dir*/) const { return {0.0, 0.0}; }
 
     /// Forward: S' = S + w_a * (T + l_a),  T' = T + l_a,  cost_delta = w_a * (T +
     /// l_a) Backward: S' = S + (W + w_a) * l_a,  W' = W + w_a,  cost_delta = (W +
     /// w_a) * l_a
-    std::pair<State, double> extend_along_arc(Direction dir, State s, int arc_id) const {
+    [[nodiscard]] std::pair<State, double> extend_along_arc(Direction dir, State s,
+                                                            int arc_id) const {
         double l = travel_time[arc_id];
         double w = weight[arc_id];
 
@@ -56,13 +57,14 @@ struct CumulativeCostResource {
     }
 
     /// No vertex-level changes.
-    std::pair<State, double> extend_to_vertex(Direction /*dir*/, State s, int /*vertex*/) const {
+    [[nodiscard]] std::pair<State, double> extend_to_vertex(Direction /*dir*/, State s,
+                                                            int /*vertex*/) const {
         return {s, 0.0};
     }
 
     /// Forward: (S1 - S2) + max(0, T1 - T2) * W_max
     /// Backward: (S1 - S2) + max(0, W1 - W2) * T_max
-    double domination_cost(Direction dir, int /*vertex*/, State s1, State s2) const {
+    [[nodiscard]] double domination_cost(Direction dir, int /*vertex*/, State s1, State s2) const {
         double cost_gap = s1.S - s2.S;
         if (dir == Direction::Forward) {
             return cost_gap + std::max(0.0, s1.T_or_W - s2.T_or_W) * W_max;
@@ -74,10 +76,11 @@ struct CumulativeCostResource {
     /// Conservative lower bound on domination_cost across all state pairs.
     /// The actual minimum can be negative (e.g. s1.S < s2.S), but 0 is a safe
     /// bound for c_best pruning.
-    double min_domination_cost() const { return 0.0; }
+    [[nodiscard]] double min_domination_cost() const { return 0.0; }
 
     /// Cross-product: T_fw * W_bw.
-    double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State s_fw, State s_bw) const {
+    [[nodiscard]] double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State s_fw,
+                                            State s_bw) const {
         return s_fw.T_or_W * s_bw.T_or_W;
     }
 };

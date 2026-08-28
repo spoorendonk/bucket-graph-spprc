@@ -63,17 +63,17 @@ public:
         return !(old & mask);
     }
 
-    bool test(int i) const { return (bits_[i / 64] >> (i % 64)) & 1; }
+    [[nodiscard]] bool test(int i) const { return (bits_[i / 64] >> (i % 64)) & 1; }
 
     /// Thread-safe test using atomic_ref. Use when concurrent atomic_set() calls may
     /// modify the same word.
-    bool atomic_test(int i) const {
+    [[nodiscard]] bool atomic_test(int i) const {
         std::atomic_ref<uint64_t> word(const_cast<uint64_t&>(bits_[i / 64]));
         return (word.load(std::memory_order_relaxed) >> (i % 64)) & 1;
     }
 
-    int n_fixed() const { return n_fixed_; }
-    int n_total() const { return n_; }
+    [[nodiscard]] int n_fixed() const { return n_fixed_; }
+    [[nodiscard]] int n_total() const { return n_; }
 
     /// Add to the fixed counter. Used after atomic_set() to update the count.
     void add_fixed(int count) { n_fixed_ += count; }

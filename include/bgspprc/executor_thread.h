@@ -32,7 +32,7 @@ public:
     ThreadPool(const ThreadPool&) = delete;
     ThreadPool& operator=(const ThreadPool&) = delete;
 
-    int n_workers() const { return n_workers_; }
+    [[nodiscard]] int n_workers() const { return n_workers_; }
 
     /// A batch of submitted tasks. Caller can wait for completion.
     struct Batch {
@@ -237,7 +237,7 @@ struct StdThreadExecutor {
         detail::ThreadPool::wait(batch);
     }
 
-    int n_threads() const { return detail::global_thread_pool().n_workers() + 1; }
+    [[nodiscard]] int n_threads() const { return detail::global_thread_pool().n_workers() + 1; }
 };
 
 static_assert(Executor<StdThreadExecutor>, "StdThreadExecutor must satisfy the Executor concept");

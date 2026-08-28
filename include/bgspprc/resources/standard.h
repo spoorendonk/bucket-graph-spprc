@@ -27,7 +27,7 @@ struct StandardResource {
     /// Standard resource symmetry depends on arc consumptions and bounds
     /// (Meta-Solver 2026 §4.2.1). Caller should verify conditions externally;
     /// conservatively returns false.
-    bool symmetric() const { return false; }
+    [[nodiscard]] bool symmetric() const { return false; }
 
     const double* consumption;  // per-arc consumption d_a, size = n_arcs
     const double* lb;           // per-vertex lower bound, size = n_vertices
@@ -45,7 +45,7 @@ struct StandardResource {
           sink(sink_),
           n_arcs(n_arcs_) {}
 
-    State init_state(Direction dir) const {
+    [[nodiscard]] State init_state(Direction dir) const {
         if (dir == Direction::Forward) {
             return lb[source];
         }
@@ -54,7 +54,8 @@ struct StandardResource {
 
     /// Extend along arc. Returns (new_state, cost_delta).
     /// cost_delta = INF means infeasible.
-    std::pair<State, double> extend_along_arc(Direction dir, State q, int arc_id) const {
+    [[nodiscard]] std::pair<State, double> extend_along_arc(Direction dir, State q,
+                                                            int arc_id) const {
         // For a standard resource used as a non-main resource,
         // we do the same extension as main resources.
         double d = consumption[arc_id];
@@ -68,7 +69,8 @@ struct StandardResource {
     /// Extend to vertex: clamp to vertex bounds and check feasibility.
     /// Forward: q = max(q, lb[v]), infeasible if q > ub[v].
     /// Backward: q = min(q, ub[v]), infeasible if q < lb[v].
-    std::pair<State, double> extend_to_vertex(Direction dir, State q, int vertex) const {
+    [[nodiscard]] std::pair<State, double> extend_to_vertex(Direction dir, State q,
+                                                            int vertex) const {
         if (dir == Direction::Forward) {
             double q_new = std::max(q, lb[vertex]);
             if (q_new > ub[vertex]) {
@@ -84,7 +86,7 @@ struct StandardResource {
         }
     }
 
-    double domination_cost(Direction dir, int /*vertex*/, State s1, State s2) const {
+    [[nodiscard]] double domination_cost(Direction dir, int /*vertex*/, State s1, State s2) const {
         if (dir == Direction::Forward) {
             if (s1 > s2 + EPS) {
                 return INF;
@@ -98,9 +100,10 @@ struct StandardResource {
     }
 
     /// Lower bound on domination_cost: always 0.
-    double min_domination_cost() const { return 0.0; }
+    [[nodiscard]] double min_domination_cost() const { return 0.0; }
 
-    double concatenation_cost(Symmetry sym, int vertex, State s_fw, State s_bw) const {
+    [[nodiscard]] double concatenation_cost(Symmetry sym, int vertex, State s_fw,
+                                            State s_bw) const {
         if (sym == Symmetry::Symmetric) {
             if (s_fw + s_bw > ub[vertex] + EPS) {
                 return INF;

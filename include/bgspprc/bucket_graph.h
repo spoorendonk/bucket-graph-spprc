@@ -94,7 +94,7 @@ struct SolveTimings {
     Duration path_extraction{};
 
     /// Sum of all phase durations.
-    Duration total() const {
+    [[nodiscard]] Duration total() const {
         return forward_labeling + backward_labeling + completion_bounds + concatenation +
                path_extraction;
     }
@@ -607,7 +607,7 @@ private:
             }
         }
 
-        std::size_t size() const { return labels.size(); }
+        [[nodiscard]] std::size_t size() const { return labels.size(); }
     };
 
     // ── Bucket construction ──

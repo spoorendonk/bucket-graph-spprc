@@ -99,26 +99,28 @@ public:
     int fix_buckets(double theta) { return bg_.fix_buckets(theta); }
 
     /// Number of fixed buckets.
-    int n_fixed_buckets() const { return bg_.n_fixed_buckets(); }
+    [[nodiscard]] int n_fixed_buckets() const { return bg_.n_fixed_buckets(); }
 
     // ── Solve statistics ──
 
     /// Total bucket count.
-    int n_buckets() const { return bg_.n_buckets(); }
+    [[nodiscard]] int n_buckets() const { return bg_.n_buckets(); }
 
     /// Labels allocated by the pool during the last solve.
-    int64_t labels_created() const { return bg_.labels_created(); }
+    [[nodiscard]] int64_t labels_created() const { return bg_.labels_created(); }
 
     /// Dominance comparisons performed in the last solve.
-    int64_t dominance_checks() const { return bg_.dominance_checks(); }
-    int64_t dominance_checks(Direction d) const { return bg_.dominance_checks(d); }
+    [[nodiscard]] int64_t dominance_checks() const { return bg_.dominance_checks(); }
+    [[nodiscard]] int64_t dominance_checks(Direction d) const { return bg_.dominance_checks(d); }
 
     /// Labels surviving dominance in the last solve.
-    int64_t non_dominated_labels() const { return bg_.non_dominated_labels(); }
-    int64_t non_dominated_labels(Direction d) const { return bg_.non_dominated_labels(d); }
+    [[nodiscard]] int64_t non_dominated_labels() const { return bg_.non_dominated_labels(); }
+    [[nodiscard]] int64_t non_dominated_labels(Direction d) const {
+        return bg_.non_dominated_labels(d);
+    }
 
     /// Bucket arcs eliminated since last build.
-    int64_t eliminated_bucket_arcs() const { return bg_.eliminated_bucket_arcs(); }
+    [[nodiscard]] int64_t eliminated_bucket_arcs() const { return bg_.eliminated_bucket_arcs(); }
 
     /// Size of the compile-time resource state tuple in bytes.
     static constexpr std::size_t label_state_size() { return Pack::label_state_size(); }
@@ -128,7 +130,7 @@ public:
 
     /// Adaptive midpoint control for bidirectional labeling.
     void reset_midpoint() { bg_.reset_midpoint(); }
-    double midpoint() const { return bg_.midpoint(); }
+    [[nodiscard]] double midpoint() const { return bg_.midpoint(); }
 
     /// Access a resource in the pack (for runtime reconfiguration).
     template <typename R>
@@ -137,15 +139,15 @@ public:
     }
 
     /// Whether the last enumeration was complete (no caps hit).
-    bool enumeration_complete() const { return bg_.enumeration_complete(); }
+    [[nodiscard]] bool enumeration_complete() const { return bg_.enumeration_complete(); }
 
     /// Phase timing breakdown accumulated across all solve iterations
     /// (including A+ refinement retries).
-    const SolveTimings& solve_timings() const { return accumulated_timings_; }
+    [[nodiscard]] const SolveTimings& solve_timings() const { return accumulated_timings_; }
 
     /// Stage management.
     void set_stage(Stage stage) { stage_ = stage; }
-    Stage current_stage() const { return stage_; }
+    [[nodiscard]] Stage current_stage() const { return stage_; }
 
     /// Path enumeration within gap.
     std::vector<Path> enumerate(double gap) {
@@ -170,7 +172,7 @@ public:
     }
 
     /// Get current bucket steps.
-    const std::array<double, 2>& bucket_steps() const { return bg_.bucket_steps(); }
+    [[nodiscard]] const std::array<double, 2>& bucket_steps() const { return bg_.bucket_steps(); }
 
     /// Set per-vertex bucket step sizes.
     void set_vertex_bucket_steps(std::vector<std::array<double, 2>> steps) {
@@ -178,7 +180,7 @@ public:
     }
 
     /// Compute per-vertex steps from minimum inbound arc resource consumption.
-    std::vector<std::array<double, 2>> compute_min_inbound_arc_resource(
+    [[nodiscard]] std::vector<std::array<double, 2>> compute_min_inbound_arc_resource(
         int max_buckets = 200) const {
         return bg_.compute_min_inbound_arc_resource(max_buckets);
     }

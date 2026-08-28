@@ -115,7 +115,7 @@ public:
         count_ = 0;
     }
 
-    std::size_t count() const { return count_; }
+    [[nodiscard]] std::size_t count() const { return count_; }
 
 private:
     static constexpr std::size_t kBlockLabels = 64;  // labels per block (~8KB)
