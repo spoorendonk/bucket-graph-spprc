@@ -325,7 +325,7 @@ TEST_CASE("NgPathResource: extend + extend_to_vertex compose correctly") {
     auto [s0, _] = ng.extend_to_vertex(Direction::Forward, 0ULL, 0);     // mark source v0
     auto [s1_arc, c1] = ng.extend_along_arc(Direction::Forward, s0, 0);  // arc 0→1
     REQUIRE(c1 == 0.0);
-    auto [s1, __] = ng.extend_to_vertex(Direction::Forward, s1_arc, 1);  // mark v1
+    auto [s1, ignored_cost] = ng.extend_to_vertex(Direction::Forward, s1_arc, 1);  // mark v1
 
     // v0 should be mapped in v1's ordering
     int8_t v0_in_v1 = ng.bit_map[1 * 5 + 0];
@@ -344,7 +344,7 @@ TEST_CASE("NgPathResource: forward extend transforms bits across vertices") {
     // Extend 0→1 (arc 0), mark v1, then 1→2 (arc 2)
     auto [s1_arc, c1] = ng.extend_along_arc(Direction::Forward, s0, 0);
     REQUIRE(c1 == 0.0);
-    auto [s1, __] = ng.extend_to_vertex(Direction::Forward, s1_arc, 1);
+    auto [s1, ignored_cost] = ng.extend_to_vertex(Direction::Forward, s1_arc, 1);
 
     auto [s2_arc, c2] = ng.extend_along_arc(Direction::Forward, s1, 2);
     CHECK(c2 == 0.0);
@@ -369,11 +369,11 @@ TEST_CASE("NgPathResource: forward revisit detection") {
     // Path: 0→1 (arc 0), 1→2 (arc 2), 2→1 (arc 8) should be infeasible.
     auto [s1_arc, c1] = ng.extend_along_arc(Direction::Forward, s0, 0);
     REQUIRE(c1 == 0.0);
-    auto [s1, __] = ng.extend_to_vertex(Direction::Forward, s1_arc, 1);
+    auto [s1, ignored_cost] = ng.extend_to_vertex(Direction::Forward, s1_arc, 1);
 
     auto [s2_arc, c2] = ng.extend_along_arc(Direction::Forward, s1, 2);
     REQUIRE(c2 == 0.0);
-    auto [s2, ___] = ng.extend_to_vertex(Direction::Forward, s2_arc, 2);
+    auto [s2, ignored_cost2] = ng.extend_to_vertex(Direction::Forward, s2_arc, 2);
 
     // Try 2→1 (arc 8). v1 is in v2's ng-set. v1 was visited (its bit is set
     // in v2's ordering from the remap). The self-bit shift pair for arc 1→2
@@ -390,7 +390,7 @@ TEST_CASE("NgPathResource: visit outside ng-set is allowed") {
     // Path: 0→1 (arc 0), 1→3 (arc 3), 3→1 (arc 9)
     auto [s1_arc, c1] = ng.extend_along_arc(Direction::Forward, s0, 0);
     REQUIRE(c1 == 0.0);
-    auto [s1, __] = ng.extend_to_vertex(Direction::Forward, s1_arc, 1);
+    auto [s1, ignored_cost] = ng.extend_to_vertex(Direction::Forward, s1_arc, 1);
 
     // Arc 3: 1→3. v3 not in v1's ng-set → check_bit = -1 → no block.
     int8_t v3_in_v1 = ng.bit_map[1 * 5 + 3];
@@ -398,7 +398,7 @@ TEST_CASE("NgPathResource: visit outside ng-set is allowed") {
 
     auto [s2_arc, c2] = ng.extend_along_arc(Direction::Forward, s1, 3);
     CHECK(c2 == 0.0);  // feasible
-    auto [s2, ___] = ng.extend_to_vertex(Direction::Forward, s2_arc, 3);
+    auto [s2, ignored_cost2] = ng.extend_to_vertex(Direction::Forward, s2_arc, 3);
 
     // At v3: v1 should be mapped (self-bit shift pair: self_bit_[1] →
     // bit_map[3*5+1])
@@ -419,7 +419,7 @@ TEST_CASE("NgPathResource: backward extend") {
     // Arc 7: 3→4 (from=3, to=4). Backward: label at v4, extending to v3.
     auto [s1_arc, c1] = ng.extend_along_arc(Direction::Backward, s0, 7);
     CHECK(c1 == 0.0);
-    auto [s1, __] = ng.extend_to_vertex(Direction::Backward, s1_arc, 3);  // mark v3
+    auto [s1, ignored_cost] = ng.extend_to_vertex(Direction::Backward, s1_arc, 3);  // mark v3
 
     // v4's self bit was set. Self-bit shift pair for arc 7 backward:
     // (self_bit_[4]=3, bit_map[3*5+4]). v4 ∉ N(v3) → no shift pair added.
@@ -444,12 +444,12 @@ TEST_CASE("NgPathResource: backward revisit detection") {
     // Start fresh: backward on arc 6 (from=2, to=4): at v4, go to v2.
     auto [sb1_arc, cb1] = ng.extend_along_arc(Direction::Backward, s0, 6);
     REQUIRE(cb1 == 0.0);
-    auto [sb1, __] = ng.extend_to_vertex(Direction::Backward, sb1_arc, 2);  // mark v2
+    auto [sb1, ignored_cost] = ng.extend_to_vertex(Direction::Backward, sb1_arc, 2);  // mark v2
 
     // Now at v2. Backward on arc 2 (from=1, to=2): at v2, go to v1.
     auto [sb2_arc, cb2] = ng.extend_along_arc(Direction::Backward, sb1, 2);
     REQUIRE(cb2 == 0.0);
-    auto [sb2, ___] = ng.extend_to_vertex(Direction::Backward, sb2_arc, 1);  // mark v1
+    auto [sb2, ignored_cost2] = ng.extend_to_vertex(Direction::Backward, sb2_arc, 1);  // mark v1
 
     // At v1: v2 should be mapped (self-bit shift pair: self_bit_[2] →
     // bit_map[1*5+2])
@@ -592,7 +592,7 @@ TEST_CASE("NgPathResource: across-arc via extend + concat detects overlap") {
     auto [fw_at_v1, _] = ng.extend_to_vertex(Direction::Forward, 0ULL, 1);
 
     // bw state at v2 with self bit set
-    auto [bw_at_v2, __] = ng.extend_to_vertex(Direction::Backward, 0ULL, 2);
+    auto [bw_at_v2, ignored_cost] = ng.extend_to_vertex(Direction::Backward, 0ULL, 2);
 
     // Extend fw through arc 2 (1→2): remaps v1's self bit → v1's pos in v2's
     // ordering Does NOT set v2's self bit (that's extend_to_vertex's job, not
@@ -669,7 +669,7 @@ TEST_CASE("NgPathResource: splice with shared intermediate vertex") {
     auto [fw_at_v1, _] = ng.extend_to_vertex(Direction::Forward, 0ULL, 1);
 
     // bw at v2 with v1 marked in v2's ordering (v1 visited in bw path)
-    auto [bw_base, __] = ng.extend_to_vertex(Direction::Backward, 0ULL, 2);
+    auto [bw_base, ignored_cost] = ng.extend_to_vertex(Direction::Backward, 0ULL, 2);
     int8_t v1_in_v2 = ng.bit_map[2 * 5 + 1];
     REQUIRE(v1_in_v2 >= 0);
     uint64_t bw_at_v2 = bw_base | (1ULL << v1_in_v2);
@@ -705,11 +705,11 @@ TEST_CASE("NgPathResource: empty neighbors = no elementarity") {
     // Extend 0→1→2→1 — no cycle block because no ng-neighbors
     auto [s1_arc, c1] = ng.extend_along_arc(Direction::Forward, sv, 0);
     CHECK(c1 == 0.0);
-    auto [s1, __] = ng.extend_to_vertex(Direction::Forward, s1_arc, 1);
+    auto [s1, ignored_cost] = ng.extend_to_vertex(Direction::Forward, s1_arc, 1);
 
     auto [s2_arc, c2] = ng.extend_along_arc(Direction::Forward, s1, 1);
     CHECK(c2 == 0.0);
-    auto [s2, ___] = ng.extend_to_vertex(Direction::Forward, s2_arc, 2);
+    auto [s2, ignored_cost2] = ng.extend_to_vertex(Direction::Forward, s2_arc, 2);
 
     // Revisit v1 — allowed (no check bits since empty ng-sets)
     auto [s3_arc, c3] = ng.extend_along_arc(Direction::Forward, s2, 2);
@@ -758,7 +758,7 @@ TEST_CASE("NgPathResource: extend_along_arc omits destination self bit") {
     CHECK((s2_arc & (1ULL << ng.self_bit_[2])) == 0);  // no self bit for v2
 
     // After extend_to_vertex, it IS set.
-    auto [s2, __] = ng.extend_to_vertex(Direction::Forward, s2_arc, 2);
+    auto [s2, ignored_cost] = ng.extend_to_vertex(Direction::Forward, s2_arc, 2);
     CHECK((s2 & (1ULL << ng.self_bit_[2])) != 0);
 }
 

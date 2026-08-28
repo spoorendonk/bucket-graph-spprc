@@ -6,6 +6,7 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -2843,7 +2844,8 @@ private:
             int flat_size = n_entries * n_words;
             std::fill_n(scratch_b_bar_.data(), flat_size, uint64_t(0));
             auto b_bar = [&](int idx) -> std::span<uint64_t> {
-                return {scratch_b_bar_.data() + idx * n_words, static_cast<size_t>(n_words)};
+                return {scratch_b_bar_.data() + static_cast<std::ptrdiff_t>(idx) * n_words,
+                        static_cast<size_t>(n_words)};
             };
 
             // Process a single bucket: propagate Φ, then run elimination

@@ -183,8 +183,8 @@ inline Instance load_sppcc(const std::string& path) {
 
     // Pairwise ng-cost: dist(i,j) + node_weight[j] for all i,j in 0..N-1
     inst.n_orig = N;
-    inst.ng_cost.resize(N * N);
-    inst.ng_dist.resize(N * N);
+    inst.ng_cost.resize(static_cast<size_t>(N) * N);
+    inst.ng_dist.resize(static_cast<size_t>(N) * N);
     for (int i = 0; i < N; ++i) {
         for (int j = 0; j < N; ++j) {
             inst.ng_cost[i * N + j] = dist_matrix[i][j] + node_weights[j];
@@ -340,8 +340,8 @@ inline Instance load_roberti_vrp(const std::string& path) {
 
     // Pairwise ng-cost: dist(i,j) - profit[j] for all i,j in 0..N-1
     inst.n_orig = N;
-    inst.ng_cost.resize(N * N);
-    inst.ng_dist.resize(N * N);
+    inst.ng_cost.resize(static_cast<size_t>(N) * N);
+    inst.ng_dist.resize(static_cast<size_t>(N) * N);
     for (int i = 0; i < N; ++i) {
         for (int j = 0; j < N; ++j) {
             inst.ng_cost[i * N + j] = dist(i, j) - profits[j];
