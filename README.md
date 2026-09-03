@@ -235,28 +235,45 @@ ctest --test-dir build
 ./build/test_runner "*NgPath*"
 ```
 
-## Citation
+## Citing
 
-If you use this software, please cite the paper:
+Cite the paper for the result and the archived release for the code.
+[`CITATION.cff`](CITATION.cff) carries both in machine-readable form — GitHub's
+"Cite this repository" button reads it.
 
-> Spoorendonk, S. (2026). *bucket-graph-spprc: an extensible C++ library for the shortest path problem with resource constraints*. arXiv:2606.30847. <https://arxiv.org/abs/2606.30847>
+The paper is **arXiv:2606.30847**, <https://arxiv.org/abs/2606.30847>.
 
 ```bibtex
-@article{Spoorendonk2026,
-  title   = {bucket-graph-spprc: an extensible C++ library for the shortest
-             path problem with resource constraints},
-  author  = {Spoorendonk, Simon},
-  journal = {arXiv preprint arXiv:2606.30847},
-  year    = {2026}
+@misc{spoorendonk2026bgspprc,
+  title        = {bucket-graph-spprc: an extensible C++ library for the shortest
+                  path problem with resource constraints},
+  author       = {Spoorendonk, Simon},
+  year         = {2026},
+  eprint       = {2606.30847},
+  archivePrefix= {arXiv},
+  primaryClass = {math.OC},
+  url          = {https://arxiv.org/abs/2606.30847}
 }
 ```
 
-To cite a specific archived release instead, use its Zenodo DOI. Machine-readable
-metadata lives in [`CITATION.cff`](CITATION.cff), from which GitHub renders a
-"Cite this repository" button. The concept DOI
-[`10.5281/zenodo.20819208`](https://doi.org/10.5281/zenodo.20819208) always
-resolves to the latest release; the v0.1.0 version DOI is
-[`10.5281/zenodo.20819209`](https://doi.org/10.5281/zenodo.20819209).
+The archived code is on Zenodo. **v0.1.0 is [10.5281/zenodo.20819209](https://doi.org/10.5281/zenodo.20819209)**; the
+concept DOI [10.5281/zenodo.20819208](https://doi.org/10.5281/zenodo.20819208) always resolves to the latest version.
+Cite the version DOI when reproducibility matters — it pins one tree and one set
+of benchmark results:
+
+```bibtex
+@software{spoorendonk2026bgspprcsoftware,
+  title     = {bucket-graph-spprc: a header-only C++23 bucket graph labeling
+               library for the SPPRC},
+  author    = {Spoorendonk, Simon},
+  year      = {2026},
+  version   = {0.1.0},
+  doi       = {10.5281/zenodo.20819209},
+  url       = {https://doi.org/10.5281/zenodo.20819209}
+}
+```
+
+Cite a tag or a DOI, never `main`: the benchmark tables move with the code.
 
 ## References
 

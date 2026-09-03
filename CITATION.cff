@@ -1,7 +1,9 @@
 cff-version: 1.2.0
 title: "bucket-graph-spprc"
 type: software
-message: "If you use this software, please cite the paper referenced in preferred-citation."
+message: >-
+  If you use this software, please cite both the software (this file) and the
+  accompanying paper (listed under preferred-citation).
 authors:
   - family-names: Spoorendonk
     given-names: Simon
