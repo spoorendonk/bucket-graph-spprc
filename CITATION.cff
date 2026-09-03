@@ -14,7 +14,15 @@ repository-code: "https://github.com/spoorendonk/bucket-graph-spprc"
 url: "https://github.com/spoorendonk/bucket-graph-spprc"
 date-released: "2026-06-23"
 license: MIT
-doi: 10.5281/zenodo.20819208
+# Version DOI: this exact release. Matches `version:` above, so it is the one to
+# cite for reproducibility.
+doi: 10.5281/zenodo.20819209
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.20819208
+    description: >-
+      Concept DOI, resolving to the latest version of the software. Cite this
+      when you mean "bucket-graph-spprc" rather than one specific release.
 preferred-citation:
   type: article
   title: "bucket-graph-spprc: an extensible C++ library for the shortest path problem with resource constraints"
