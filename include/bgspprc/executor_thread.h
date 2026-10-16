@@ -63,12 +63,20 @@ public:
         }
     }
 
-    /// Block until all tasks in the batch have completed.
+    /// Block until all tasks in the batch have completed, running queued
+    /// tasks (of any batch) while waiting. Helping is what makes nested
+    /// dispatch safe: bidirectional labeling runs parallel_for inside a
+    /// parallel_invoke task, and a worker that blocked on its sub-batch could
+    /// otherwise leave that sub-batch queued with no free worker to take it.
     /// Rethrows the first exception from any task.
-    static void wait(Batch& batch) {
+    void wait(Batch& batch) {
         int val;
         while ((val = batch.remaining.load(std::memory_order_acquire)) != 0) {
-            batch.remaining.wait(val, std::memory_order_acquire);
+            // Sleeping is safe once the queue is empty: this batch's tasks are
+            // all queued before its wait starts, so they are running elsewhere.
+            if (!try_run_one()) {
+                batch.remaining.wait(val, std::memory_order_acquire);
+            }
         }
         if (batch.exception) {
             std::rethrow_exception(batch.exception);
@@ -90,17 +98,35 @@ private:
                 task = queue_.front();
                 queue_.pop_front();
             }
-            try {
-                (*task.fn)();
-            } catch (...) {
-                std::scoped_lock lock(task.batch->exception_mutex);
-                if (!task.batch->exception) {
-                    task.batch->exception = std::current_exception();
-                }
+            run(task);
+        }
+    }
+
+    bool try_run_one() {
+        Task task;
+        {
+            std::scoped_lock lock(mutex_);
+            if (queue_.empty()) {
+                return false;
             }
-            if (task.batch->remaining.fetch_sub(1, std::memory_order_release) == 1) {
-                task.batch->remaining.notify_all();
+            task = queue_.front();
+            queue_.pop_front();
+        }
+        run(task);
+        return true;
+    }
+
+    static void run(Task task) {
+        try {
+            (*task.fn)();
+        } catch (...) {
+            std::scoped_lock lock(task.batch->exception_mutex);
+            if (!task.batch->exception) {
+                task.batch->exception = std::current_exception();
             }
+        }
+        if (task.batch->remaining.fetch_sub(1, std::memory_order_release) == 1) {
+            task.batch->remaining.notify_all();
         }
     }
 
@@ -177,8 +203,11 @@ struct StdThreadExecutor {
         // that every computed chunk is actually dispatched (otherwise the tail
         // chunks would be silently dropped on very high core counts).
         static constexpr int kMaxPoolTasks = 128;
-        int n_chunks = std::min({total_threads, n, kMaxPoolTasks + 1});
-        int chunk_size = (n + n_chunks - 1) / n_chunks;
+        // n_chunks is recomputed from the chunk size so every chunk is
+        // non-empty: n=5 over 4 threads is 3 chunks of 2, not a 4th at [6,5).
+        int max_chunks = std::min({total_threads, n, kMaxPoolTasks + 1});
+        int chunk_size = (n + max_chunks - 1) / max_chunks;
+        int n_chunks = (n + chunk_size - 1) / chunk_size;
 
         // Build tasks for pool threads (chunks 1..n_chunks-1).
         // Pack (c_begin, c_end, chunk_idx) into a side struct so the lambda
@@ -210,10 +239,10 @@ struct StdThreadExecutor {
         try {
             f(begin, c0_end, 0);
         } catch (...) {
-            detail::ThreadPool::wait(batch);
+            pool.wait(batch);
             throw;
         }
-        detail::ThreadPool::wait(batch);
+        pool.wait(batch);
     }
 
     void parallel_invoke(auto&& f, auto&& g) const {
@@ -231,10 +260,10 @@ struct StdThreadExecutor {
         try {
             g();
         } catch (...) {
-            detail::ThreadPool::wait(batch);
+            pool.wait(batch);
             throw;
         }
-        detail::ThreadPool::wait(batch);
+        pool.wait(batch);
     }
 
     [[nodiscard]] int n_threads() const { return detail::global_thread_pool().n_workers() + 1; }

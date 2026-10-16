@@ -2,8 +2,10 @@
 #include <atomic>
 #include <bgspprc/executor_thread.h>
 #include <doctest/doctest.h>
+#include <functional>
 #include <numeric>
 #include <random>
+#include <stdexcept>
 #include <vector>
 
 using namespace bgspprc;
@@ -192,6 +194,101 @@ TEST_CASE("StdThreadExecutor parallel_for_chunked single-element range") {
     CHECK(c_begin_out == 7);
     CHECK(c_end_out == 8);
     CHECK(c_idx_out == 0);
+}
+
+TEST_CASE("StdThreadExecutor parallel_for_chunked short ranges give non-empty chunks") {
+    StdThreadExecutor exec;
+    const int n_threads = exec.n_threads();
+    // Lengths 0 and 1, shorter than the thread count, and just above it, where
+    // ceil-sized chunks used to leave trailing chunks starting past `end`.
+    for (int n = 0; n <= 3 * n_threads + 1; ++n) {
+        CAPTURE(n);
+        std::vector<std::atomic<int>> seen(n);
+        std::vector<std::atomic<int>> chunk_counts(n_threads);
+        std::atomic<int> empty_chunks{0};
+        exec.parallel_for_chunked(10, 10 + n, [&](int c_begin, int c_end, int chunk_idx) {
+            if (c_begin >= c_end || chunk_idx < 0 || chunk_idx >= n_threads) {
+                empty_chunks.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            chunk_counts[chunk_idx].fetch_add(1, std::memory_order_relaxed);
+            for (int i = c_begin; i < c_end; ++i) {
+                seen[i - 10].fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+        CHECK(empty_chunks.load() == 0);
+        for (int i = 0; i < n; ++i) {
+            CHECK(seen[i].load() == 1);
+        }
+        for (int c = 0; c < n_threads; ++c) {
+            CHECK(chunk_counts[c].load() <= 1);
+        }
+    }
+}
+
+TEST_CASE("StdThreadExecutor parallel_for_chunked rethrows a chunk's exception") {
+    StdThreadExecutor exec;
+    const int n = 4 * exec.n_threads();
+    // Throw from the last chunk, which runs on a pool worker whenever there
+    // is more than one thread, and from chunk 0, which runs on the caller.
+    for (int throw_at : {n - 1, 0}) {
+        CAPTURE(throw_at);
+        CHECK_THROWS_AS(exec.parallel_for_chunked(0, n,
+                                                  [&](int c_begin, int c_end, int) {
+                                                      if (c_begin <= throw_at && throw_at < c_end) {
+                                                          throw std::runtime_error("chunk");
+                                                      }
+                                                  }),
+                        std::runtime_error);
+    }
+}
+
+TEST_CASE("StdThreadExecutor parallel_invoke rethrows from either task") {
+    StdThreadExecutor exec;
+    CHECK_THROWS_AS(exec.parallel_invoke([] { throw std::runtime_error("f"); }, [] {}),
+                    std::runtime_error);
+    CHECK_THROWS_AS(exec.parallel_invoke([] {}, [] { throw std::runtime_error("g"); }),
+                    std::runtime_error);
+}
+
+TEST_CASE("StdThreadExecutor nested parallel_for inside parallel_invoke") {
+    // The shape of bidirectional labeling: each side of parallel_invoke runs
+    // a parallel_for large enough to dispatch to the pool.
+    StdThreadExecutor exec;
+    constexpr int n = 4 * kParallelForMinChunk;
+    std::vector<std::atomic<int>> fw(n);
+    std::vector<std::atomic<int>> bw(n);
+    for (int round = 0; round < 50; ++round) {
+        exec.parallel_invoke([&] { exec.parallel_for(0, n, [&](int i) { bw[i].fetch_add(1); }); },
+                             [&] { exec.parallel_for(0, n, [&](int i) { fw[i].fetch_add(1); }); });
+    }
+    for (int i = 0; i < n; ++i) {
+        CHECK(fw[i].load() == 50);
+        CHECK(bw[i].load() == 50);
+    }
+}
+
+TEST_CASE("ThreadPool with one worker completes nested batches") {
+    // One worker, as on a two-core machine: the worker runs the outer task,
+    // which waits on a sub-batch that only a helping wait can drain. Leaked
+    // like the global pool, since its detached worker references it forever.
+    auto& pool = *new detail::ThreadPool(1);
+    auto nested = [&pool](std::atomic<int>& hits) {
+        std::function<void()> inner = [&hits] { hits.fetch_add(1); };
+        detail::ThreadPool::Batch batch;
+        pool.submit(batch, &inner, 1);
+        hits.fetch_add(1);
+        pool.wait(batch);
+    };
+    std::atomic<int> outer_hits{0};
+    std::atomic<int> caller_hits{0};
+    std::function<void()> outer = [&] { nested(outer_hits); };
+    detail::ThreadPool::Batch batch;
+    pool.submit(batch, &outer, 1);
+    nested(caller_hits);
+    pool.wait(batch);
+    CHECK(outer_hits.load() == 2);
+    CHECK(caller_hits.load() == 2);
 }
 
 TEST_CASE("SequentialExecutor parallel_for_chunked empty range") {
