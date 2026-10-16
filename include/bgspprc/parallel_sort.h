@@ -7,6 +7,11 @@
 
 namespace bgspprc {
 
+// executor.h's closing comment ("NO free functions taking an Executor ... in
+// this namespace") is the shared reference text, written from the other
+// pricer repos' side: there it keeps their namespace from shadowing this
+// function by ADL. parallel_sort belongs here.
+
 /// Parallel sort: partition into chunks, sort each via parallel_for, then merge.
 /// Falls back to std::sort for sizes below kParallelSortThreshold.
 inline constexpr int kParallelSortThreshold = 4096;

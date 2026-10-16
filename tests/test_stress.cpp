@@ -1946,43 +1946,55 @@ TEST_CASE("Parallel bidir: parallel_bidir=false gives sequential bidir with StdT
 // ════════════════════════════════════════════════════════════════════
 
 TEST_CASE("ThreadPoolExecutor: borrowed ng and R1C views match owned sequential") {
+    // Customers 1..4 with a negative cycle 1 -> 2 -> 3 -> 1 (and 2 -> 1,
+    // 3 -> 2), so ng has cycles to block, and a 3-SRC cut on {1, 2, 3} that the
+    // best elementary path covers more than once, so the cut has a cost to add.
     constexpr int N = 6;
-    int from[] = {0, 0, 1, 2, 3, 4, 1, 2};
-    int to[] = {1, 2, 3, 4, 5, 5, 4, 3};
-    double cost[] = {5.0, 3.0, 4.0, 6.0, 2.0, 1.0, 7.0, 8.0};
-    double time_d[] = {1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 3.0, 2.0};
-    double tw_lb[] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-    double tw_ub[] = {20.0, 20.0, 20.0, 20.0, 20.0, 20.0};
-    const double* arc_res[] = {time_d};
-    const double* v_lb[] = {tw_lb};
-    const double* v_ub[] = {tw_ub};
+    std::vector<int> from = {0, 0, 0, 1, 2, 3, 2, 3, 1, 2, 3, 4};
+    std::vector<int> to = {1, 2, 3, 2, 3, 1, 1, 2, 4, 4, 4, 5};
+    std::vector<double> cost = {1.0, 1.0, 1.0, -4.0, -4.0, -4.0, -3.0, -3.0, 1.0, 1.0, 1.0, 0.0};
+    const int n_arcs = static_cast<int>(from.size());
+    std::vector<double> time_d(n_arcs, 1.0);
+    std::vector<double> tw_lb(N, 0.0);
+    std::vector<double> tw_ub(N, 20.0);
+    const double* arc_res[] = {time_d.data()};
+    const double* v_lb[] = {tw_lb.data()};
+    const double* v_ub[] = {tw_ub.data()};
 
     ProblemView pv;
     pv.n_vertices = N;
     pv.source = 0;
     pv.sink = N - 1;
-    pv.n_arcs = 8;
-    pv.arc_from = from;
-    pv.arc_to = to;
-    pv.arc_base_cost = cost;
+    pv.n_arcs = n_arcs;
+    pv.arc_from = from.data();
+    pv.arc_to = to.data();
+    pv.arc_base_cost = cost.data();
     pv.n_resources = 1;
     pv.arc_resource = arc_res;
     pv.vertex_lb = v_lb;
     pv.vertex_ub = v_ub;
     pv.n_main_resources = 1;
 
-    std::vector<std::vector<int>> neighbors = {{0, 1, 2}, {1, 0, 3}, {2, 0, 4},
-                                               {3, 1, 4}, {4, 2, 3}, {5, 3, 4}};
+    std::vector<std::vector<int>> neighbors(N);
+    for (int v = 0; v < N; ++v) {
+        for (int w = 0; w < N; ++w) {
+            neighbors[v].push_back(w);
+        }
+    }
     R1Cut cut;
-    cut.base_set = {3};
-    cut.multipliers = {0.5};
-    cut.memory_arcs = {{2, 0}, {7, 0}};
+    cut.base_set = {1, 2, 3};
+    cut.multipliers = {0.5, 0.5, 0.5};
+    for (int a = 0; a < n_arcs; ++a) {
+        cut.memory_arcs.emplace_back(a, 0);  // full memory
+    }
     cut.dual_value = -5.0;
+    const std::vector<R1Cut> cuts = {cut};
 
     // Core side: derived data built once, one pool for every solve.
-    const NgPathData ng_data(N, 8, from, to, neighbors);
+    const NgPathData ng_data(N, n_arcs, from.data(), to.data(), neighbors);
     R1CData r1c_data;
-    r1c_data.set_cuts(std::vector<R1Cut>{cut}, N, 8);
+    r1c_data.set_cuts(cuts, N, n_arcs);
+    R1CData no_cuts;
     ThreadPool pool(4);
     const ThreadPoolExecutor exec(pool);
 
@@ -1991,30 +2003,52 @@ TEST_CASE("ThreadPoolExecutor: borrowed ng and R1C views match owned sequential"
     static_assert(detail::NgResourceIndex<ViewPack>::has_ng);
     static_assert(detail::R1CResourceIndex<ViewPack>::has_r1c);
 
+    auto best = [](auto& bg) {
+        bg.build();
+        auto paths = bg.solve();
+        REQUIRE(!paths.empty());
+        return paths[0].reduced_cost;
+    };
+
     for (const bool bidirectional : {false, true}) {
         CAPTURE(bidirectional);
-        BucketGraph<OwnedPack> seq(pv, OwnedPack(NgPathResource(N, 8, from, to, neighbors), {}),
-                                   {.bucket_steps = {5.0, 1.0},
-                                    .theta = 1e9,
-                                    .bidirectional = bidirectional,
-                                    .stage = Stage::Exact});
-        seq.resource<R1CResource>().set_cuts(std::vector<R1Cut>{cut}, N, 8);
-        seq.build();
-        auto sp = seq.solve();
+        const BucketGraph<OwnedPack>::Options opts{.bucket_steps = {5.0, 1.0},
+                                                   .theta = 1e9,
+                                                   .bidirectional = bidirectional,
+                                                   .stage = Stage::Exact};
+        const BucketGraph<ViewPack>::Options view_opts{.bucket_steps = {5.0, 1.0},
+                                                       .theta = 1e9,
+                                                       .bidirectional = bidirectional,
+                                                       .stage = Stage::Exact};
+        const BucketGraph<ViewPack, ThreadPoolExecutor>::Options pool_opts{
+            .bucket_steps = {5.0, 1.0},
+            .theta = 1e9,
+            .bidirectional = bidirectional,
+            .stage = Stage::Exact};
 
-        BucketGraph<ViewPack, ThreadPoolExecutor> par(
-            pv, ViewPack(NgPathView(ng_data), R1CView(r1c_data)),
-            {.bucket_steps = {5.0, 1.0},
-             .theta = 1e9,
-             .bidirectional = bidirectional,
-             .stage = Stage::Exact},
-            exec);
-        par.build();
-        auto pp = par.solve();
+        BucketGraph<OwnedPack> owned(
+            pv, OwnedPack(NgPathResource(N, n_arcs, from.data(), to.data(), neighbors), {}), opts);
+        owned.resource<R1CResource>().set_cuts(cuts, N, n_arcs);
+        const double owned_cost = best(owned);
 
-        REQUIRE(!sp.empty());
-        REQUIRE(!pp.empty());
-        CHECK(sp[0].reduced_cost == doctest::Approx(pp[0].reduced_cost).epsilon(1e-6));
+        BucketGraph<ViewPack> view_seq(pv, ViewPack(NgPathView(ng_data), R1CView(r1c_data)),
+                                       view_opts);
+        BucketGraph<ViewPack, ThreadPoolExecutor> view_pool(
+            pv, ViewPack(NgPathView(ng_data), R1CView(r1c_data)), pool_opts, exec);
+        CHECK(best(view_seq) == doctest::Approx(owned_cost).epsilon(1e-9));
+        CHECK(best(view_pool) == doctest::Approx(owned_cost).epsilon(1e-9));
+
+        // Both resources bite: without the cut the path is cheaper, and
+        // without ng-sets the negative cycle makes it cheaper still.
+        BucketGraph<ViewPack> uncut(pv, ViewPack(NgPathView(ng_data), R1CView(no_cuts)), view_opts);
+        const double uncut_cost = best(uncut);
+        CHECK(uncut_cost < owned_cost - 1.0);
+        BucketGraph<EmptyPack> relaxed(pv, EmptyPack{},
+                                       {.bucket_steps = {5.0, 1.0},
+                                        .theta = 1e9,
+                                        .bidirectional = bidirectional,
+                                        .stage = Stage::Exact});
+        CHECK(best(relaxed) < uncut_cost - 1.0);
     }
 }
 
