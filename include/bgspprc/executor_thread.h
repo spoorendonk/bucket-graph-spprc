@@ -68,16 +68,27 @@ public:
     /// dispatch safe: bidirectional labeling runs parallel_for inside a
     /// parallel_invoke task, and a worker that blocked on its sub-batch could
     /// otherwise leave that sub-batch queued with no free worker to take it.
-    /// Rethrows the first exception from any task.
+    /// The waiter sleeps on cv_work_, so it wakes both for new work and for
+    /// its batch completing. Rethrows the first exception from any task.
     void wait(Batch& batch) {
-        int val;
-        while ((val = batch.remaining.load(std::memory_order_acquire)) != 0) {
-            // Sleeping is safe once the queue is empty: this batch's tasks are
-            // all queued before its wait starts, so they are running elsewhere.
-            if (!try_run_one()) {
-                batch.remaining.wait(val, std::memory_order_acquire);
+        std::unique_lock lock(mutex_);
+        for (;;) {
+            // Under mutex_: run() signals completion only after taking it, so
+            // a zero seen here cannot be missed by the cv wait below.
+            if (batch.remaining.load(std::memory_order_acquire) == 0) {
+                break;
             }
+            if (queue_.empty()) {
+                cv_work_.wait(lock);
+                continue;
+            }
+            Task task = queue_.front();
+            queue_.pop_front();
+            lock.unlock();
+            run(task);
+            lock.lock();
         }
+        lock.unlock();
         if (batch.exception) {
             std::rethrow_exception(batch.exception);
         }
@@ -102,21 +113,7 @@ private:
         }
     }
 
-    bool try_run_one() {
-        Task task;
-        {
-            std::scoped_lock lock(mutex_);
-            if (queue_.empty()) {
-                return false;
-            }
-            task = queue_.front();
-            queue_.pop_front();
-        }
-        run(task);
-        return true;
-    }
-
-    static void run(Task task) {
+    void run(Task task) {
         try {
             (*task.fn)();
         } catch (...) {
@@ -125,8 +122,13 @@ private:
                 task.batch->exception = std::current_exception();
             }
         }
+        // The batch may be gone once remaining hits 0 (its waiter returns), so
+        // completion is signalled through the pool's own mutex and cv only.
         if (task.batch->remaining.fetch_sub(1, std::memory_order_release) == 1) {
-            task.batch->remaining.notify_all();
+            {
+                std::scoped_lock lock(mutex_);
+            }
+            cv_work_.notify_all();
         }
     }
 
@@ -136,6 +138,20 @@ private:
     std::condition_variable cv_work_;
     std::deque<Task> queue_;
 };
+
+struct ChunkLayout {
+    int chunk_size;
+    int n_chunks;
+};
+
+/// Splits n > 0 items into at most max_chunks > 0 chunks of chunk_size, the
+/// last one possibly shorter. n_chunks is recomputed from the chunk size so
+/// every chunk is non-empty: n=5 over 4 is 3 chunks of 2, not a 4th at [6,5).
+constexpr ChunkLayout chunk_layout(int n, int max_chunks) {
+    int chunks = std::min(max_chunks, n);
+    int chunk_size = (n + chunks - 1) / chunks;
+    return {.chunk_size = chunk_size, .n_chunks = (n + chunk_size - 1) / chunk_size};
+}
 
 inline ThreadPool& global_thread_pool() {
     // Intentionally leaked: the pool must outlive all threads. A static local
@@ -203,11 +219,8 @@ struct StdThreadExecutor {
         // that every computed chunk is actually dispatched (otherwise the tail
         // chunks would be silently dropped on very high core counts).
         static constexpr int kMaxPoolTasks = 128;
-        // n_chunks is recomputed from the chunk size so every chunk is
-        // non-empty: n=5 over 4 threads is 3 chunks of 2, not a 4th at [6,5).
-        int max_chunks = std::min({total_threads, n, kMaxPoolTasks + 1});
-        int chunk_size = (n + max_chunks - 1) / max_chunks;
-        int n_chunks = (n + chunk_size - 1) / chunk_size;
+        auto [chunk_size, n_chunks] =
+            detail::chunk_layout(n, std::min(total_threads, kMaxPoolTasks + 1));
 
         // Build tasks for pool threads (chunks 1..n_chunks-1).
         // Pack (c_begin, c_end, chunk_idx) into a side struct so the lambda

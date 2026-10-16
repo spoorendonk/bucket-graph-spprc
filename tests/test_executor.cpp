@@ -196,6 +196,24 @@ TEST_CASE("StdThreadExecutor parallel_for_chunked single-element range") {
     CHECK(c_idx_out == 0);
 }
 
+TEST_CASE("chunk_layout tiles short ranges with non-empty chunks") {
+    // Independent of this machine's core count: the old ceil sizing left a
+    // chunk past the end from three threads up (n=5 over 4 gave [6,5)).
+    static_assert(detail::chunk_layout(5, 4).chunk_size == 2);
+    static_assert(detail::chunk_layout(5, 4).n_chunks == 3);
+    for (int max_chunks = 1; max_chunks <= 8; ++max_chunks) {
+        for (int n = 1; n <= 40; ++n) {
+            CAPTURE(max_chunks);
+            CAPTURE(n);
+            auto [chunk_size, n_chunks] = detail::chunk_layout(n, max_chunks);
+            CHECK(n_chunks >= 1);
+            CHECK(n_chunks <= std::min(max_chunks, n));
+            CHECK((n_chunks - 1) * chunk_size < n);  // last chunk non-empty
+            CHECK(n_chunks * chunk_size >= n);       // range covered
+        }
+    }
+}
+
 TEST_CASE("StdThreadExecutor parallel_for_chunked short ranges give non-empty chunks") {
     StdThreadExecutor exec;
     const int n_threads = exec.n_threads();
