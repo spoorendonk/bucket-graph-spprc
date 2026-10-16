@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <atomic>
 #include <bgspprc/executor_thread.h>
+#include <bgspprc/parallel_sort.h>
 #include <doctest/doctest.h>
 #include <functional>
 #include <numeric>
@@ -314,6 +315,76 @@ TEST_CASE("SequentialExecutor parallel_for_chunked empty range") {
     int n_calls = 0;
     exec.parallel_for_chunked(5, 5, [&](int, int, int) { ++n_calls; });
     CHECK(n_calls == 0);
+}
+
+// ── ThreadPoolExecutor (shared pricer contract, flowty/flowty#58) ──
+
+static_assert(Executor<ThreadPoolExecutor>);
+static_assert(sizeof(ThreadPoolExecutor) == sizeof(void*));
+
+TEST_CASE("ThreadPoolExecutor parallel_for covers the range once") {
+    ThreadPool pool(4);
+    const ThreadPoolExecutor exec(pool);
+    CHECK(exec.n_threads() == 4);
+    constexpr int n = 10000;
+    std::vector<std::atomic<int>> seen(n);
+    exec.parallel_for(0, n, [&](int i) { seen[i].fetch_add(1, std::memory_order_relaxed); });
+    for (int i = 0; i < n; ++i) {
+        CHECK(seen[i].load() == 1);
+    }
+}
+
+TEST_CASE("ThreadPoolExecutor parallel_for_chunked short ranges give non-empty chunks") {
+    ThreadPool pool(4);
+    const ThreadPoolExecutor exec(pool);
+    for (int n = 0; n <= 13; ++n) {
+        CAPTURE(n);
+        std::vector<std::atomic<int>> seen(n);
+        std::atomic<int> bad_chunks{0};
+        exec.parallel_for_chunked(0, n, [&](int c_begin, int c_end, int chunk_idx) {
+            if (c_begin >= c_end || chunk_idx < 0 || chunk_idx >= 4) {
+                bad_chunks.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            for (int i = c_begin; i < c_end; ++i) {
+                seen[i].fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+        CHECK(bad_chunks.load() == 0);
+        for (int i = 0; i < n; ++i) {
+            CHECK(seen[i].load() == 1);
+        }
+    }
+}
+
+TEST_CASE("ThreadPoolExecutor nested parallel_for inside parallel_invoke") {
+    ThreadPool pool(4);
+    const ThreadPoolExecutor exec(pool);
+    constexpr int n = 4 * kParallelForMinChunk;
+    std::vector<std::atomic<int>> fw(n);
+    std::vector<std::atomic<int>> bw(n);
+    exec.parallel_invoke([&] { exec.parallel_for(0, n, [&](int i) { bw[i].fetch_add(1); }); },
+                         [&] { exec.parallel_for(0, n, [&](int i) { fw[i].fetch_add(1); }); });
+    for (int i = 0; i < n; ++i) {
+        CHECK(fw[i].load() == 1);
+        CHECK(bw[i].load() == 1);
+    }
+}
+
+TEST_CASE("ThreadPoolExecutor rethrows a task's exception") {
+    ThreadPool pool(4);
+    const ThreadPoolExecutor exec(pool);
+    CHECK_THROWS_AS(exec.parallel_for(0, 4 * kParallelForMinChunk,
+                                      [](int i) {
+                                          if (i == 3 * kParallelForMinChunk) {
+                                              throw std::runtime_error("task");
+                                          }
+                                      }),
+                    std::runtime_error);
+    // The pool is still usable afterwards.
+    std::atomic<int> sum{0};
+    exec.parallel_for(0, 4 * kParallelForMinChunk, [&](int) { sum.fetch_add(1); });
+    CHECK(sum.load() == 4 * kParallelForMinChunk);
 }
 
 // ── parallel_sort ──

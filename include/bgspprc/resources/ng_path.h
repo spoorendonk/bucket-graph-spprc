@@ -12,6 +12,12 @@ namespace bgspprc {
 
 /// Ng-path resource for elementarity relaxation using LOCAL bit positions.
 ///
+/// Split by ownership (flowty/flowty#58): `NgPathData` owns the derived bit
+/// maps and per-arc tables, built once; `NgPathView` is the resource proper,
+/// 8 bytes, borrowing a `const NgPathData*` so a caller (e.g. a BCP core) can
+/// build the data once and hand the same tables to several solvers.
+/// `NgPathResource` is the owning form: the data plus the view's methods.
+///
 /// Each vertex v assigns local bit positions 0..k-1 to its k ng-neighbors,
 /// plus bit k = **self bit** representing v itself. State is a uint32_t
 /// (max 31 neighbors, covers ng=8/16/24).
@@ -32,12 +38,10 @@ namespace bgspprc {
 /// self bit set for j), then checks concatenation_cost with bw@j (which has
 /// j's self bit set). Since fw doesn't have j's self bit, j isn't
 /// double-counted.
-struct NgPathResource {
-    using State = uint32_t;
 
-    /// Ng-path resource is always symmetric (Meta-Solver 2026 §4.2.2).
-    [[nodiscard]] bool symmetric() const { return true; }
-
+/// Derived ng-path data: local bit maps and per-arc transforms. Owns its
+/// arrays; borrowed by `NgPathView`.
+struct NgPathData {
     /// Per-arc precomputed transform data for both directions.
     struct ArcInfo {
         // Forward: extending from→to
@@ -66,10 +70,10 @@ struct NgPathResource {
     // neighbors_[v] = list of vertex IDs in v's ng-neighborhood
     std::vector<std::vector<int>> neighbors_;
 
-    NgPathResource() : n_vertices_(0), n_arcs_(0) {}
+    NgPathData() : n_vertices_(0), n_arcs_(0) {}
 
-    NgPathResource(int n_vertices, int n_arcs, const int* arc_from, const int* arc_to,
-                   const std::vector<std::vector<int>>& neighbors)
+    NgPathData(int n_vertices, int n_arcs, const int* arc_from, const int* arc_to,
+               const std::vector<std::vector<int>>& neighbors)
         : n_vertices_(n_vertices), n_arcs_(n_arcs), neighbors_(neighbors) {
         // Build bit_map: for each vertex v, assign local positions to its neighbors
         bit_map.assign(static_cast<size_t>(n_vertices) * n_vertices, -1);
@@ -145,6 +149,21 @@ struct NgPathResource {
             }
         }
     }
+};
+
+/// Borrowing ng-path resource over caller-owned `NgPathData`. The data must
+/// outlive the view. `compress_state` is what lets BucketGraph find it as the
+/// ng resource of a pack (it duck-types that member).
+class NgPathView {
+public:
+    using State = uint32_t;
+
+    NgPathView() = default;
+    explicit NgPathView(const NgPathData& data) noexcept : data_(&data) {}
+    NgPathView(const NgPathData&&) = delete;
+
+    /// Ng-path resource is always symmetric (Meta-Solver 2026 §4.2.2).
+    [[nodiscard]] bool symmetric() const { return true; }
 
     /// Initialize state: empty (BucketGraph calls extend_to_vertex to mark
     /// source/sink).
@@ -155,7 +174,7 @@ struct NgPathResource {
     /// extend_to_vertex.
     [[nodiscard]] std::pair<State, double> extend_along_arc(Direction dir, State s,
                                                             int arc_id) const {
-        const auto& ai = arc_info[arc_id];
+        const auto& ai = data_->arc_info[arc_id];
 
         if (dir == Direction::Forward) {
             // Forward: arc from→to, label at from, extending to to
@@ -196,8 +215,9 @@ struct NgPathResource {
     /// self-loop arcs are correctly detected by extend_along_arc's check.
     [[nodiscard]] std::pair<State, double> extend_to_vertex(Direction /*dir*/, State s,
                                                             int vertex) const {
-        s |= (uint32_t{1} << self_bit_[vertex]);
-        int8_t self_as_neighbor = bit_map[static_cast<size_t>(vertex) * n_vertices_ + vertex];
+        s |= (uint32_t{1} << data_->self_bit_[vertex]);
+        int8_t self_as_neighbor =
+            data_->bit_map[static_cast<size_t>(vertex) * data_->n_vertices_ + vertex];
         if (self_as_neighbor >= 0) {
             s |= (uint32_t{1} << self_as_neighbor);
         }
@@ -233,7 +253,44 @@ struct NgPathResource {
     /// Strip self bit from state for SoA storage (all labels in a bucket share
     /// the same vertex, so the self bit is always 1 — redundant for dominance).
     [[nodiscard]] uint32_t compress_state(State s, int vertex) const {
-        return s & ~(uint32_t{1} << self_bit_[vertex]);
+        return s & ~(uint32_t{1} << data_->self_bit_[vertex]);
+    }
+
+private:
+    const NgPathData* data_ = nullptr;  // not owned
+};
+
+/// Owning ng-path resource: `NgPathData` plus the resource methods, forwarded
+/// to a view over itself.
+struct NgPathResource : NgPathData {
+    using State = NgPathView::State;
+    using NgPathData::NgPathData;
+
+    /// The borrowing view. Deleted on an rvalue, so a view of a temporary is a
+    /// compile error rather than a dangle.
+    [[nodiscard]] NgPathView view() const& noexcept { return NgPathView(*this); }
+    [[nodiscard]] NgPathView view() const&& = delete;
+
+    [[nodiscard]] bool symmetric() const { return view().symmetric(); }
+    [[nodiscard]] State init_state(Direction dir) const { return view().init_state(dir); }
+    [[nodiscard]] std::pair<State, double> extend_along_arc(Direction dir, State s,
+                                                            int arc_id) const {
+        return view().extend_along_arc(dir, s, arc_id);
+    }
+    [[nodiscard]] std::pair<State, double> extend_to_vertex(Direction dir, State s,
+                                                            int vertex) const {
+        return view().extend_to_vertex(dir, s, vertex);
+    }
+    [[nodiscard]] double domination_cost(Direction dir, int vertex, State s1, State s2) const {
+        return view().domination_cost(dir, vertex, s1, s2);
+    }
+    [[nodiscard]] double min_domination_cost() const { return view().min_domination_cost(); }
+    [[nodiscard]] double concatenation_cost(Symmetry sym, int vertex, State s_fw,
+                                            State s_bw) const {
+        return view().concatenation_cost(sym, vertex, s_fw, s_bw);
+    }
+    [[nodiscard]] uint32_t compress_state(State s, int vertex) const {
+        return view().compress_state(s, vertex);
     }
 };
 

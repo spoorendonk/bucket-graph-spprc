@@ -23,17 +23,11 @@ struct R1Cut {
     double dual_value = 0.0;  // σ_ℓ (dual variable, β = -σ_ℓ ≥ 0; clamped at 0)
 };
 
-/// lm-R1C resource conforming to the Resource concept.
-///
-/// Specialized for 3-Subset Row Cuts (|C|=3, p_v=1/2). State per cut: 1 bit,
-/// packed into a single uint64_t (max 64 active cuts).
-///
-/// extend_along_arc: memory reset (keep bits for cuts where arc ∈ AM)
-/// extend_to_vertex: toggle bits for cuts where vertex ∈ C, cost from overflow
-struct R1CResource {
-    static constexpr bool is_r1c_resource = true;
-    using State = uint64_t;
-
+/// Derived R1C data: the active cuts and their lookup masks. Owns its
+/// arrays; borrowed by `R1CView`. Rebuilt by `set_cuts` whenever the cuts or
+/// their duals change.
+class R1CData {
+public:
     /// Set the active cuts. Rebuilds all lookup masks.
     /// Throws if >64 cuts (single uint64_t state).
     /// The executor is used to parallelize mask building over cuts.
@@ -66,76 +60,9 @@ struct R1CResource {
 
     [[nodiscard]] int n_active() const { return n_active_; }
 
-    // ── Resource concept interface ──
-
-    [[nodiscard]] bool symmetric() const { return true; }
-
-    [[nodiscard]] State init_state(Direction /*dir*/) const { return 0ULL; }
-
-    /// Memory reset along arc: keep bits for cuts where arc ∈ AM.
-    [[nodiscard]] std::pair<State, double> extend_along_arc(Direction /*dir*/, State state,
-                                                            int arc_id) const {
-        if (n_active_ == 0) {
-            return {state, 0.0};
-        }
-        return {state & arc_keep_mask_[arc_id], 0.0};
-    }
-
-    /// Toggle bits for cuts where vertex ∈ C. Overflow (1→0) applies cost +β (penalty).
-    [[nodiscard]] std::pair<State, double> extend_to_vertex(Direction /*dir*/, State state,
-                                                            int vertex) const {
-        if (n_active_ == 0) {
-            return {state, 0.0};
-        }
-
-        uint64_t toggle = vertex_toggle_mask_[vertex];
-        uint64_t overflow = state & toggle;
-        state ^= toggle;
-
-        double cost = 0.0;
-        if (overflow) {
-            cost = compute_overflow_cost(overflow);
-        }
-        return {state, cost};
-    }
-
-    /// Extra cost L1 must overcome to dominate L2 — a non-negative PENALTY.
-    /// Holding a cut bit is a disadvantage (you are one base-set visit from paying
-    /// the +β overflow penalty). For each cut where the dominator L1 holds a bit
-    /// the dominated L2 lacks (s1 & ~s2), L1 pays one extra +β over an odd
-    /// completion that L2 escapes, so L1 must be +β cheaper to dominate for every
-    /// completion: c(L1) + Σ_{s1 & ~s2} β ≤ c(L2).
-    [[nodiscard]] double domination_cost(Direction /*dir*/, int /*vertex*/, State s1,
-                                         State s2) const {
-        if (n_active_ == 0) {
-            return 0.0;
-        }
-        uint64_t disadvantage = s1 & ~s2;
-        if (disadvantage) {
-            return compute_overflow_cost(disadvantage);
-        }
-        return 0.0;
-    }
-
-    /// Lower bound on domination_cost: 0. The dominance penalty is a sum of +β
-    /// (β ≥ 0), so it is never negative.
-    [[nodiscard]] double min_domination_cost() const { return 0.0; }
-
-    /// Cost when joining fw/bw labels: if both sides hold the bit, the join
-    /// completes that coefficient and is charged the +β overflow penalty.
-    [[nodiscard]] double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State s_fw,
-                                            State s_bw) const {
-        if (n_active_ == 0) {
-            return 0.0;
-        }
-        uint64_t both = s_fw & s_bw;
-        if (both) {
-            return compute_overflow_cost(both);
-        }
-        return 0.0;
-    }
-
 private:
+    friend class R1CView;
+
     /// Build arc_keep_mask_ and vertex_toggle_mask_ from cuts.
     /// Parallelizes the outer cut loop via the executor. Each cut writes a
     /// unique bit (1ULL << c), so concurrent |= targets disjoint bit lanes.
@@ -176,20 +103,6 @@ private:
         }
     }
 
-    /// Sum of +β over the set bits of `mask` — the reduced-cost penalty for the
-    /// coefficients those bits represent (β = -σ ≥ 0, so each overflow raises cost).
-    [[nodiscard]] double compute_overflow_cost(uint64_t mask) const {
-        double cost = 0.0;
-        while (mask) {
-            int bit = std::countr_zero(mask);
-            if (bit < n_active_) {
-                cost += betas_[bit];
-            }
-            mask &= mask - 1;
-        }
-        return cost;
-    }
-
     int n_vertices_ = 0;
     int n_arcs_ = 0;
     int n_active_ = 0;
@@ -198,6 +111,144 @@ private:
     std::vector<double> betas_;
     std::vector<uint64_t> arc_keep_mask_;       // [arc_id]
     std::vector<uint64_t> vertex_toggle_mask_;  // [vertex]
+};
+
+/// lm-R1C resource conforming to the Resource concept, borrowing caller-owned
+/// `R1CData` (flowty/flowty#58), 8 bytes. The data must outlive the view.
+/// BucketGraph finds it in a pack by the `is_r1c_resource` tag.
+///
+/// Specialized for 3-Subset Row Cuts (|C|=3, p_v=1/2). State per cut: 1 bit,
+/// packed into a single uint64_t (max 64 active cuts).
+///
+/// extend_along_arc: memory reset (keep bits for cuts where arc ∈ AM)
+/// extend_to_vertex: toggle bits for cuts where vertex ∈ C, cost from overflow
+class R1CView {
+public:
+    static constexpr bool is_r1c_resource = true;
+    using State = uint64_t;
+
+    R1CView() = default;
+    explicit R1CView(const R1CData& data) noexcept : data_(&data) {}
+    R1CView(const R1CData&&) = delete;
+
+    [[nodiscard]] int n_active() const { return data_->n_active(); }
+
+    // ── Resource concept interface ──
+
+    [[nodiscard]] bool symmetric() const { return true; }
+
+    [[nodiscard]] State init_state(Direction /*dir*/) const { return 0ULL; }
+
+    /// Memory reset along arc: keep bits for cuts where arc ∈ AM.
+    [[nodiscard]] std::pair<State, double> extend_along_arc(Direction /*dir*/, State state,
+                                                            int arc_id) const {
+        if (data_->n_active_ == 0) {
+            return {state, 0.0};
+        }
+        return {state & data_->arc_keep_mask_[arc_id], 0.0};
+    }
+
+    /// Toggle bits for cuts where vertex ∈ C. Overflow (1→0) applies cost +β (penalty).
+    [[nodiscard]] std::pair<State, double> extend_to_vertex(Direction /*dir*/, State state,
+                                                            int vertex) const {
+        if (data_->n_active_ == 0) {
+            return {state, 0.0};
+        }
+
+        uint64_t toggle = data_->vertex_toggle_mask_[vertex];
+        uint64_t overflow = state & toggle;
+        state ^= toggle;
+
+        double cost = 0.0;
+        if (overflow) {
+            cost = compute_overflow_cost(overflow);
+        }
+        return {state, cost};
+    }
+
+    /// Extra cost L1 must overcome to dominate L2 — a non-negative PENALTY.
+    /// Holding a cut bit is a disadvantage (you are one base-set visit from paying
+    /// the +β overflow penalty). For each cut where the dominator L1 holds a bit
+    /// the dominated L2 lacks (s1 & ~s2), L1 pays one extra +β over an odd
+    /// completion that L2 escapes, so L1 must be +β cheaper to dominate for every
+    /// completion: c(L1) + Σ_{s1 & ~s2} β ≤ c(L2).
+    [[nodiscard]] double domination_cost(Direction /*dir*/, int /*vertex*/, State s1,
+                                         State s2) const {
+        if (data_->n_active_ == 0) {
+            return 0.0;
+        }
+        uint64_t disadvantage = s1 & ~s2;
+        if (disadvantage) {
+            return compute_overflow_cost(disadvantage);
+        }
+        return 0.0;
+    }
+
+    /// Lower bound on domination_cost: 0. The dominance penalty is a sum of +β
+    /// (β ≥ 0), so it is never negative.
+    [[nodiscard]] double min_domination_cost() const { return 0.0; }
+
+    /// Cost when joining fw/bw labels: if both sides hold the bit, the join
+    /// completes that coefficient and is charged the +β overflow penalty.
+    [[nodiscard]] double concatenation_cost(Symmetry /*sym*/, int /*vertex*/, State s_fw,
+                                            State s_bw) const {
+        if (data_->n_active_ == 0) {
+            return 0.0;
+        }
+        uint64_t both = s_fw & s_bw;
+        if (both) {
+            return compute_overflow_cost(both);
+        }
+        return 0.0;
+    }
+
+private:
+    /// Sum of +β over the set bits of `mask` — the reduced-cost penalty for the
+    /// coefficients those bits represent (β = -σ ≥ 0, so each overflow raises cost).
+    [[nodiscard]] double compute_overflow_cost(uint64_t mask) const {
+        double cost = 0.0;
+        while (mask) {
+            int bit = std::countr_zero(mask);
+            if (bit < data_->n_active_) {
+                cost += data_->betas_[bit];
+            }
+            mask &= mask - 1;
+        }
+        return cost;
+    }
+
+    const R1CData* data_ = nullptr;  // not owned
+};
+
+/// Owning R1C resource: `R1CData` plus the resource methods, forwarded to a
+/// view over itself.
+struct R1CResource : R1CData {
+    static constexpr bool is_r1c_resource = true;
+    using State = R1CView::State;
+
+    /// The borrowing view. Deleted on an rvalue, so a view of a temporary is a
+    /// compile error rather than a dangle.
+    [[nodiscard]] R1CView view() const& noexcept { return R1CView(*this); }
+    [[nodiscard]] R1CView view() const&& = delete;
+
+    [[nodiscard]] bool symmetric() const { return view().symmetric(); }
+    [[nodiscard]] State init_state(Direction dir) const { return view().init_state(dir); }
+    [[nodiscard]] std::pair<State, double> extend_along_arc(Direction dir, State state,
+                                                            int arc_id) const {
+        return view().extend_along_arc(dir, state, arc_id);
+    }
+    [[nodiscard]] std::pair<State, double> extend_to_vertex(Direction dir, State state,
+                                                            int vertex) const {
+        return view().extend_to_vertex(dir, state, vertex);
+    }
+    [[nodiscard]] double domination_cost(Direction dir, int vertex, State s1, State s2) const {
+        return view().domination_cost(dir, vertex, s1, s2);
+    }
+    [[nodiscard]] double min_domination_cost() const { return view().min_domination_cost(); }
+    [[nodiscard]] double concatenation_cost(Symmetry sym, int vertex, State s_fw,
+                                            State s_bw) const {
+        return view().concatenation_cost(sym, vertex, s_fw, s_bw);
+    }
 };
 
 /// Backward-compatible alias.

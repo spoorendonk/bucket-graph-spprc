@@ -28,6 +28,7 @@
 #include "bucket.h"
 #include "executor.h"
 #include "label.h"
+#include "parallel_sort.h"
 #include "problem_view.h"
 #include "resource.h"
 #include "types.h"

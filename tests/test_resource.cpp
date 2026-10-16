@@ -1,3 +1,4 @@
+#include <bgspprc/bucket_graph.h>
 #include <bgspprc/resource.h>
 #include <bgspprc/resources/cumulative_cost.h>
 #include <bgspprc/resources/ng_path.h>
@@ -5,6 +6,7 @@
 #include <bgspprc/resources/standard.h>
 #include <bgspprc/solver.h>
 #include <doctest/doctest.h>
+#include <type_traits>
 
 using namespace bgspprc;
 
@@ -1299,6 +1301,74 @@ TEST_CASE("Solver: ng-path blocks cycles, mono and bidir agree") {
     REQUIRE(!bidir_paths.empty());
     CHECK(bidir_paths[0].reduced_cost == doctest::Approx(-9.0));
     check_elementary(bidir_paths);
+}
+
+// ── NgPathView: the borrowing split (flowty/flowty#58) ──
+
+static_assert(Resource<NgPathView>);
+static_assert(sizeof(NgPathView) == sizeof(void*));
+static_assert(std::is_trivially_copyable_v<NgPathView>);
+// BucketGraph finds the ng resource by duck-typing compress_state; the view
+// must still be found, or it silently loses the ng-bit pre-filter.
+static_assert(detail::NgResourceIndex<ResourcePack<NgPathView>>::has_ng);
+static_assert(detail::NgResourceIndex<ResourcePack<NgPathResource>>::has_ng);
+// No view of a temporary.
+static_assert(!std::is_constructible_v<NgPathView, NgPathData&&>);
+
+TEST_CASE("NgPathView: matches the owning resource on every operation") {
+    const auto ng = make_ng5();
+    const NgPathView view = ng.view();
+    // States over the local bits of a 3-neighbor set plus the self bit.
+    for (uint32_t s = 0; s < 16; ++s) {
+        for (auto dir : {Direction::Forward, Direction::Backward}) {
+            for (int a = 0; a < 10; ++a) {
+                CHECK(view.extend_along_arc(dir, s, a) == ng.extend_along_arc(dir, s, a));
+            }
+            for (int v = 0; v < 5; ++v) {
+                CHECK(view.extend_to_vertex(dir, s, v) == ng.extend_to_vertex(dir, s, v));
+                CHECK(view.compress_state(s, v) == ng.compress_state(s, v));
+                for (uint32_t s2 = 0; s2 < 16; ++s2) {
+                    CHECK(view.domination_cost(dir, v, s, s2) == ng.domination_cost(dir, v, s, s2));
+                }
+            }
+        }
+        for (uint32_t s2 = 0; s2 < 16; ++s2) {
+            CHECK(view.concatenation_cost(Symmetry::Symmetric, 0, s, s2) ==
+                  ng.concatenation_cost(Symmetry::Symmetric, 0, s, s2));
+        }
+    }
+    CHECK(view.symmetric() == ng.symmetric());
+    CHECK(view.init_state(Direction::Forward) == ng.init_state(Direction::Forward));
+    CHECK(view.min_domination_cost() == ng.min_domination_cost());
+}
+
+TEST_CASE("Solver: borrowed ng data solves like the owning resource") {
+    int from[6];
+    int to[6];
+    double cost[6];
+    double time_d[6];
+    double tw_lb[4];
+    double tw_ub[4];
+    const double* arc_res[1];
+    const double* v_lb[1];
+    const double* v_ub[1];
+    auto pv = make_cycle_pv(from, to, cost, time_d, tw_lb, tw_ub, arc_res, v_lb, v_ub);
+
+    // Built once, borrowed by both solvers.
+    const NgPathData ng_data(4, 6, from, to, make_full_neighbors(4));
+    using ViewPack = ResourcePack<NgPathView>;
+    for (const bool bidirectional : {false, true}) {
+        CAPTURE(bidirectional);
+        Solver<ViewPack> solver(
+            pv, ViewPack(NgPathView(ng_data)),
+            {.bucket_steps = {10.0, 1.0}, .bidirectional = bidirectional, .theta = 1e9});
+        solver.build();
+        solver.set_stage(Stage::Exact);
+        auto paths = solver.solve();
+        REQUIRE(!paths.empty());
+        CHECK(paths[0].reduced_cost == doctest::Approx(-9.0));
+        check_elementary(paths);
+    }
 }
 
 TEST_CASE("Solver: without ng-path, cycles are exploited") {

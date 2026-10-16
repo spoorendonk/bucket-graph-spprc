@@ -72,6 +72,8 @@ Options `BGSPPRC_BUILD_CLI` and `BGSPPRC_BUILD_TESTS` default ON at top-level, O
 - **`Label<Pack>`** (`label.h`) — Per-label state: vertex, bucket, cost, main resource values (q[0], q[1]), parent chain, and a compile-time tuple of all resource states. `BucketLabelPool` provides cache-line-aligned per-bucket arena allocation.
 - **`Bucket`** (`bucket.h`) — Grid cell: vertex, SCC, resource interval [lb,ub), c_best, bucket arcs, and jump arcs.
 - **`ProblemView`** (`problem_view.h`) — Non-owning view of problem data (vertices, arcs, costs, resource bounds). Caller retains ownership.
+- **`AdjacencyView`** / **`CsrAdjacency`** (`problem_view.h`) — Non-owning CSR topology and its owning builder, from the shared pricer contract (flowty/flowty#58). `Adjacency` (`vector<vector<int>>`) is bgspprc's own and stays as is.
+- **Executors** — `executor.h` is the shared contract text (flowty/flowty#58), kept byte-identical to the reference modulo namespace: the `Executor` concept, `SequentialExecutor`, and `ThreadPoolExecutor`, an 8-byte handle over a caller-owned `ThreadPool`. Don't edit it alone; change the reference and every copy. `StdThreadExecutor` (`executor_thread.h`) uses a process-wide pool. `parallel_sort` lives in `parallel_sort.h`.
 
 ### Resource System
 
@@ -81,6 +83,7 @@ Built-in resources:
 - **`StandardResource`** (`resources/standard.h`) — Single double state (time windows, capacity).
 - **`NgPathResource`** (`resources/ng_path.h`) — uint32_t state, local k+1 bit remapping with destination marking per Meta-Solver §4.2.2.
 - **`R1CResource`** (`r1c.h`) — uint64_t state for up to 64 rank-1 cuts. Conforms to Resource concept.
+- **Borrowing split**: `NgPathData`/`R1CData` own the derived tables; `NgPathView`/`R1CView` are 8-byte resources borrowing them, so a caller can build the data once and share it across solvers. `NgPathResource`/`R1CResource` derive from the data and forward to `view()`. BucketGraph finds ng by duck-typing `compress_state` and R1C by the `is_r1c_resource` tag, so both views keep those.
 - **`CumulativeCostResource`** (`resources/cumulative_cost.h`) — struct{S, T_or_W} for CCVRP.
 - **`PickupDeliveryResource`** (`resources/pickup_delivery.h`) — struct{P, D} for PDVRP.
 

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <bgspprc/bucket_graph.h>
 #include <bgspprc/executor_thread.h>
 #include <bgspprc/r1c.h>
@@ -9,6 +10,7 @@
 #include <bgspprc/solver.h>
 #include <cmath>
 #include <doctest/doctest.h>
+#include <random>
 #include <vector>
 
 using namespace bgspprc;
@@ -1936,4 +1938,190 @@ TEST_CASE("Parallel bidir: parallel_bidir=false gives sequential bidir with StdT
     CHECK(seq_bidir.solve_timings().parallel_labeling.count() == 0.0);
     // parallel_bidir=true should use parallel labeling
     CHECK(par_bidir.solve_timings().parallel_labeling.count() > 0.0);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Shared pricer contract (flowty/flowty#58): a core-owned ThreadPool and
+// borrowed derived data must solve exactly like the owning, sequential setup.
+// ════════════════════════════════════════════════════════════════════
+
+TEST_CASE("ThreadPoolExecutor: borrowed ng and R1C views match owned sequential") {
+    constexpr int N = 6;
+    int from[] = {0, 0, 1, 2, 3, 4, 1, 2};
+    int to[] = {1, 2, 3, 4, 5, 5, 4, 3};
+    double cost[] = {5.0, 3.0, 4.0, 6.0, 2.0, 1.0, 7.0, 8.0};
+    double time_d[] = {1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 3.0, 2.0};
+    double tw_lb[] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    double tw_ub[] = {20.0, 20.0, 20.0, 20.0, 20.0, 20.0};
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = N;
+    pv.source = 0;
+    pv.sink = N - 1;
+    pv.n_arcs = 8;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    std::vector<std::vector<int>> neighbors = {{0, 1, 2}, {1, 0, 3}, {2, 0, 4},
+                                               {3, 1, 4}, {4, 2, 3}, {5, 3, 4}};
+    R1Cut cut;
+    cut.base_set = {3};
+    cut.multipliers = {0.5};
+    cut.memory_arcs = {{2, 0}, {7, 0}};
+    cut.dual_value = -5.0;
+
+    // Core side: derived data built once, one pool for every solve.
+    const NgPathData ng_data(N, 8, from, to, neighbors);
+    R1CData r1c_data;
+    r1c_data.set_cuts(std::vector<R1Cut>{cut}, N, 8);
+    ThreadPool pool(4);
+    const ThreadPoolExecutor exec(pool);
+
+    using OwnedPack = ResourcePack<NgPathResource, R1CResource>;
+    using ViewPack = ResourcePack<NgPathView, R1CView>;
+    static_assert(detail::NgResourceIndex<ViewPack>::has_ng);
+    static_assert(detail::R1CResourceIndex<ViewPack>::has_r1c);
+
+    for (const bool bidirectional : {false, true}) {
+        CAPTURE(bidirectional);
+        BucketGraph<OwnedPack> seq(pv, OwnedPack(NgPathResource(N, 8, from, to, neighbors), {}),
+                                   {.bucket_steps = {5.0, 1.0},
+                                    .theta = 1e9,
+                                    .bidirectional = bidirectional,
+                                    .stage = Stage::Exact});
+        seq.resource<R1CResource>().set_cuts(std::vector<R1Cut>{cut}, N, 8);
+        seq.build();
+        auto sp = seq.solve();
+
+        BucketGraph<ViewPack, ThreadPoolExecutor> par(
+            pv, ViewPack(NgPathView(ng_data), R1CView(r1c_data)),
+            {.bucket_steps = {5.0, 1.0},
+             .theta = 1e9,
+             .bidirectional = bidirectional,
+             .stage = Stage::Exact},
+            exec);
+        par.build();
+        auto pp = par.solve();
+
+        REQUIRE(!sp.empty());
+        REQUIRE(!pp.empty());
+        CHECK(sp[0].reduced_cost == doctest::Approx(pp[0].reduced_cost).epsilon(1e-6));
+    }
+}
+
+/// Forwards to a ThreadPoolExecutor and counts pool-sized dispatches made
+/// while a parallel_invoke is running, i.e. the nested case.
+struct NestingProbeExecutor {
+    ThreadPoolExecutor inner;
+    std::atomic<int>* in_invoke;
+    std::atomic<int>* nested;
+
+    void note(int begin, int end) const {
+        if (in_invoke->load() > 0 && end - begin >= kParallelForMinChunk) {
+            nested->fetch_add(1);
+        }
+    }
+    void parallel_for(int begin, int end, auto&& f) const {
+        note(begin, end);
+        inner.parallel_for(begin, end, f);
+    }
+    void parallel_for_chunked(int begin, int end, auto&& f) const {
+        note(begin, end);
+        inner.parallel_for_chunked(begin, end, f);
+    }
+    void parallel_invoke(auto&& f, auto&& g) const {
+        in_invoke->fetch_add(1);
+        inner.parallel_invoke(f, g);
+        in_invoke->fetch_sub(1);
+    }
+    [[nodiscard]] int n_threads() const { return inner.n_threads(); }
+};
+static_assert(Executor<NestingProbeExecutor>);
+
+TEST_CASE("ThreadPoolExecutor: bidir with nested pool dispatch matches sequential") {
+    // compact_labels dispatches once a bucket SCC has >= 1024 buckets. With a
+    // bucket step wider than the horizon each vertex has one bucket, and the
+    // customer rings (i -> i+1, i -> i+7) make all customers one SCC, so the
+    // bidirectional solve dispatches to the pool inside parallel_invoke.
+    constexpr int kCustomers = 1100;
+    constexpr int N = kCustomers + 2;
+    constexpr double kHorizon = 8.0;
+    std::mt19937 rng(2026);
+    std::uniform_real_distribution<double> cost_dist(-3.0, 6.0);
+    std::vector<int> from;
+    std::vector<int> to;
+    std::vector<double> cost;
+    auto add_arc = [&](int i, int j) {
+        from.push_back(i);
+        to.push_back(j);
+        cost.push_back(cost_dist(rng));
+    };
+    for (int c = 0; c < kCustomers; ++c) {
+        const int v = c + 1;
+        add_arc(0, v);
+        add_arc(v, N - 1);
+        add_arc(v, (c + 1) % kCustomers + 1);
+        add_arc(v, (c + 7) % kCustomers + 1);
+    }
+    const int n_arcs = static_cast<int>(from.size());
+    std::vector<double> time_d(n_arcs, 1.0);
+    std::vector<double> tw_lb(N, 0.0);
+    std::vector<double> tw_ub(N, kHorizon);
+    const double* arc_res[] = {time_d.data()};
+    const double* v_lb[] = {tw_lb.data()};
+    const double* v_ub[] = {tw_ub.data()};
+
+    ProblemView pv;
+    pv.n_vertices = N;
+    pv.source = 0;
+    pv.sink = N - 1;
+    pv.n_arcs = n_arcs;
+    pv.arc_from = from.data();
+    pv.arc_to = to.data();
+    pv.arc_base_cost = cost.data();
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    std::vector<std::vector<int>> neighbors(N);
+    for (int c = 0; c < kCustomers; ++c) {
+        for (int k = 0; k < 4; ++k) {
+            neighbors[c + 1].push_back((c + k) % kCustomers + 1);
+        }
+    }
+    const NgPathData ng_data(N, n_arcs, from.data(), to.data(), neighbors);
+    using ViewPack = ResourcePack<NgPathView>;
+
+    BucketGraph<ViewPack> seq(
+        pv, ViewPack(NgPathView(ng_data)),
+        {.bucket_steps = {100.0, 1.0}, .theta = 1e9, .bidirectional = true, .stage = Stage::Exact});
+    seq.build();
+    auto sp = seq.solve();
+
+    ThreadPool pool(4);
+    std::atomic<int> in_invoke{0};
+    std::atomic<int> nested{0};
+    BucketGraph<ViewPack, NestingProbeExecutor> par(
+        pv, ViewPack(NgPathView(ng_data)),
+        {.bucket_steps = {100.0, 1.0}, .theta = 1e9, .bidirectional = true, .stage = Stage::Exact},
+        NestingProbeExecutor{
+            .inner = ThreadPoolExecutor(pool), .in_invoke = &in_invoke, .nested = &nested});
+    par.build();
+    auto pp = par.solve();
+
+    CHECK(nested.load() > 0);  // the case under test was actually reached
+    REQUIRE(!sp.empty());
+    REQUIRE(!pp.empty());
+    CHECK(sp[0].reduced_cost == doctest::Approx(pp[0].reduced_cost).epsilon(1e-6));
 }

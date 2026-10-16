@@ -179,6 +179,7 @@ if(BGSPPRC_BUILD_TESTS)
     set(BGSPPRC_TEST_SOURCES
         tests/test_main.cpp
         tests/test_executor.cpp
+        tests/test_problem_view.cpp
         tests/test_resource.cpp
         tests/test_bucket_graph.cpp
         tests/test_small_instance.cpp

@@ -6,6 +6,8 @@
 #include <bgspprc/solver.h>
 #include <cstdio>
 #include <doctest/doctest.h>
+#include <type_traits>
+#include <vector>
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -1404,6 +1406,53 @@ TEST_CASE("R1CResource: conforms to Resource concept") {
     CHECK(pack.symmetric());
     auto states = pack.init_states(Direction::Forward);
     CHECK(std::get<0>(states) == 0ULL);
+}
+
+// ── R1CView: the borrowing split (flowty/flowty#58) ──
+
+static_assert(Resource<R1CView>);
+static_assert(sizeof(R1CView) == sizeof(void*));
+static_assert(std::is_trivially_copyable_v<R1CView>);
+static_assert(detail::R1CResourceIndex<ResourcePack<R1CView>>::has_r1c);
+static_assert(detail::R1CResourceIndex<ResourcePack<R1CResource>>::has_r1c);
+static_assert(!Resource<R1CData>);  // data only: the view is the resource
+static_assert(!std::is_constructible_v<R1CView, R1CData&&>);
+
+TEST_CASE("R1CView: matches the owning resource and sees rebuilt cuts") {
+    R1Cut a;
+    a.base_set = {1, 2, 3};
+    a.multipliers = {0.5, 0.5, 0.5};
+    a.memory_arcs = {{0, 0}, {2, 0}};
+    a.dual_value = -2.0;
+    R1Cut b;
+    b.base_set = {2, 3, 4};
+    b.multipliers = {0.5, 0.5, 0.5};
+    b.memory_arcs = {{1, 0}, {3, 0}, {4, 0}};
+    b.dual_value = -3.5;
+
+    R1CResource owned;
+    owned.set_cuts(std::vector<R1Cut>{a, b}, 6, 6);
+    R1CData data;
+    const R1CView view(data);
+    data.set_cuts(std::vector<R1Cut>{a}, 6, 6);
+    CHECK(view.n_active() == 1);
+    data.set_cuts(std::vector<R1Cut>{a, b}, 6, 6);  // the view borrows, so it sees this
+    CHECK(view.n_active() == 2);
+
+    for (uint64_t s = 0; s < 4; ++s) {
+        for (auto dir : {Direction::Forward, Direction::Backward}) {
+            for (int i = 0; i < 6; ++i) {
+                CHECK(view.extend_along_arc(dir, s, i) == owned.extend_along_arc(dir, s, i));
+                CHECK(view.extend_to_vertex(dir, s, i) == owned.extend_to_vertex(dir, s, i));
+            }
+            for (uint64_t s2 = 0; s2 < 4; ++s2) {
+                CHECK(view.domination_cost(dir, 0, s, s2) == owned.domination_cost(dir, 0, s, s2));
+                CHECK(view.concatenation_cost(Symmetry::Symmetric, 0, s, s2) ==
+                      owned.concatenation_cost(Symmetry::Symmetric, 0, s, s2));
+            }
+        }
+    }
+    CHECK(owned.view().n_active() == owned.n_active());
 }
 
 // ── Warm starting (Phase 7) ──

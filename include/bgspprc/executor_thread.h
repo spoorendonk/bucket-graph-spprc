@@ -165,10 +165,6 @@ inline ThreadPool& global_thread_pool() {
 
 }  // namespace detail
 
-/// Minimum range size for parallel_for to dispatch to the thread pool.
-/// Below this, the overhead of task submission exceeds the parallelism benefit.
-inline constexpr int kParallelForMinChunk = 512;
-
 /// Thread-backed executor using a static thread pool.
 /// parallel_for distributes work across pool threads + the calling thread.
 /// parallel_invoke runs two tasks concurrently (one on pool, one on caller).
