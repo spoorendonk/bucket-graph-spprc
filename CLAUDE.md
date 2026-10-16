@@ -148,10 +148,11 @@ Git hooks live in `.githooks/` and are tracked; they came from
 `core.hooksPath` is per-checkout and cannot be committed, so **a fresh clone has
 no gates until it is set**. Here either `wcp init` or configuring the build
 once sets it: CMake points it at `.githooks` whenever it is anything else
-(`-DBGSPPRC_INSTALL_GIT_HOOKS=OFF` opts out).
+(`-DBGSPPRC_INSTALL_GIT_HOOKS=OFF` opts out). The wcp sections below name
+only `wcp init`; the CMake route gates a clone just as well.
 
 - **pre-commit** — `clang-format --dry-run -Werror` over every tracked C++ file. It checks, it does not reformat: run `clang-format -i` and commit again. No tests at commit.
-- **commit-msg** — Conventional Commits, subject ≤72 chars. `fixup!`/`squash!`/`amend!` pass through so `git rebase --autosquash` works (a local edit to wcp's hook).
+- **commit-msg** — Conventional Commits, subject ≤72 chars. `fixup!`/`squash!`/`amend!` pass through so `git rebase --autosquash` works, and `type!:` marks a breaking change (both local edits to wcp's hook).
 - **pre-push** — refuses merge commits on the trunk and a HEAD without a review receipt (`## Self-Review`), then runs the clean/build/test fences above in a fresh worktree of the pushed commit. Docs-only pushes skip the build.
 
 The old hooks also auto-formatted and re-staged (with shfmt and ruff too),
