@@ -1,6 +1,7 @@
 #pragma once
 
 #include "executor.h"
+#include "parallel_sort.h"  // was in executor.h; kept reachable from here
 
 #include <atomic>
 #include <condition_variable>

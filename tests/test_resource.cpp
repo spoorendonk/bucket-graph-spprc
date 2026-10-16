@@ -1307,6 +1307,7 @@ TEST_CASE("Solver: ng-path blocks cycles, mono and bidir agree") {
 
 static_assert(Resource<NgPathView>);
 static_assert(sizeof(NgPathView) == sizeof(void*));
+static_assert(!std::is_default_constructible_v<NgPathView>);  // would dereference null
 static_assert(std::is_trivially_copyable_v<NgPathView>);
 // BucketGraph finds the ng resource by duck-typing compress_state; the view
 // must still be found, or it silently loses the ng-bit pre-filter.

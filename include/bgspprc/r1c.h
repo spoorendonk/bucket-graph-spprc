@@ -127,7 +127,9 @@ public:
     static constexpr bool is_r1c_resource = true;
     using State = uint64_t;
 
-    R1CView() = default;
+    // No default: a view must borrow something. Without cuts, borrow an
+    // R1CData that has none (n_active() == 0), like a default R1CResource.
+    R1CView() = delete;
     explicit R1CView(const R1CData& data) noexcept : data_(&data) {}
     R1CView(const R1CData&&) = delete;
 

@@ -158,7 +158,8 @@ class NgPathView {
 public:
     using State = uint32_t;
 
-    NgPathView() = default;
+    // No default: a view must borrow something.
+    NgPathView() = delete;
     explicit NgPathView(const NgPathData& data) noexcept : data_(&data) {}
     NgPathView(const NgPathData&&) = delete;
 

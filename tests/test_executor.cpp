@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <atomic>
 #include <bgspprc/executor_thread.h>
-#include <bgspprc/parallel_sort.h>
 #include <doctest/doctest.h>
 #include <functional>
 #include <numeric>

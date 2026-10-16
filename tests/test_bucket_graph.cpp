@@ -1412,6 +1412,7 @@ TEST_CASE("R1CResource: conforms to Resource concept") {
 
 static_assert(Resource<R1CView>);
 static_assert(sizeof(R1CView) == sizeof(void*));
+static_assert(!std::is_default_constructible_v<R1CView>);  // would dereference null
 static_assert(std::is_trivially_copyable_v<R1CView>);
 static_assert(detail::R1CResourceIndex<ResourcePack<R1CView>>::has_r1c);
 static_assert(detail::R1CResourceIndex<ResourcePack<R1CResource>>::has_r1c);

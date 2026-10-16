@@ -7,6 +7,7 @@
 #include "bucket_graph.h"
 #include "executor.h"
 #include "label.h"
+#include "parallel_sort.h"
 #include "problem_view.h"
 #include "r1c.h"
 #include "resource.h"
