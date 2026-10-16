@@ -50,11 +50,13 @@ esac
 
 # This project's own: `git commit --fixup` subjects pass, so `git rebase
 # --autosquash` works. Folded away before a push, they never reach main.
+# Also this project's: `type!:` marks a breaking change, as Conventional
+# Commits allows (the `!?` in the pattern below).
 case $subject in
 fixup!\ * | squash!\ * | amend!\ *) exit 0 ;;
 esac
 
-if ! printf '%s\n' "$subject" | grep -qE "^($TYPES)(\(.+\))?: .+"; then
+if ! printf '%s\n' "$subject" | grep -qE "^($TYPES)(\(.+\))?!?: .+"; then
 	cat >&2 <<'EOF'
 ERROR: commit message does not follow Conventional Commits.
 

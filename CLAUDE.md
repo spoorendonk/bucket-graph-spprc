@@ -146,9 +146,9 @@ project — there is no `pyproject.toml` and no venv by default.
 Git hooks live in `.githooks/` and are tracked; they came from
 [wcp](https://github.com/spoorendonk/wcp) (`wcp init`), see the sections below.
 `core.hooksPath` is per-checkout and cannot be committed, so **a fresh clone has
-no gates until it is set**: `wcp init` sets it, and so does configuring the
-build once (CMake sets it when it is unset; `-DBGSPPRC_INSTALL_GIT_HOOKS=OFF`
-opts out).
+no gates until it is set**. Here either `wcp init` or configuring the build
+once sets it: CMake points it at `.githooks` whenever it is anything else
+(`-DBGSPPRC_INSTALL_GIT_HOOKS=OFF` opts out).
 
 - **pre-commit** — `clang-format --dry-run -Werror` over every tracked C++ file. It checks, it does not reformat: run `clang-format -i` and commit again. No tests at commit.
 - **commit-msg** — Conventional Commits, subject ≤72 chars. `fixup!`/`squash!`/`amend!` pass through so `git rebase --autosquash` works (a local edit to wcp's hook).
@@ -169,8 +169,10 @@ records a reason per disabled check, and there are only two acceptable ones:
 the check fights a convention this codebase holds on purpose, or it is a defect
 in clang-tidy itself (two currently are — see the notes above `Checks:`).
 
-clang-format and clang-tidy must be **version 18 or newer**. 18 and 21 were
-verified to format this tree byte-identically.
+Use clang-format and clang-tidy **18 or newer**; 18 and 21 were verified to
+format this tree byte-identically. Nothing checks this: pre-commit runs
+whatever clang-format is first on PATH (or in `.venv/bin`), so an older one
+refuses commits of correctly formatted files.
 
 There are deliberately **no Claude Code hooks**. The rules they used to enforce
 are now conventions, stated here:
