@@ -1,3 +1,4 @@
+# wcp: config/.clangd base=9df32cc95db1
 CompileFlags:
   CompilationDatabase: build/
 Diagnostics:

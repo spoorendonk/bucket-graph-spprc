@@ -1,269 +1,2298 @@
-#!/bin/bash
-# Git pre-push hook.
-# Final gate before sharing code — catches what pre-commit doesn't.
+#!/bin/sh
+# wcp: pre-push base=c4f9e3c64b56
+# Linear history on the trunk, then the review receipt.
 #
-# Flow:
-#   1. Deletion-only push -> nothing to gate, exit early
-#   2. Clean build + test -> block on failure
-#   3. Remaining issues (complexity, type errors, warnings) -> warn and continue
-
-set -e
-
-HOOK_DIR=$(dirname "$0")
-# shellcheck source=lib.sh source-path=SCRIPTDIR
-. "$HOOK_DIR/lib.sh"
-
-# ============================================================
-# Step 0: Skip deletion-only pushes
-# ============================================================
+# A real file in this repository, not a shim — see the note in `commit-msg` for
+# what the `# wcp:` line above is for and why editing this is allowed.
 #
-# Git feeds one line per ref on stdin:
-#   <local ref> <local sha> <remote ref> <remote sha>
-# A deletion has an all-zero local sha. Gating those means a clean rebuild and
-# a full suite run against a HEAD that has nothing to do with the ref being
-# removed. Read stdin only when it is not a terminal, so running this hook by
-# hand to test it does not block waiting for EOF.
-PUSH_REFS=""
-[ -t 0 ] || PUSH_REFS=$(cat)
-if [ -n "$PUSH_REFS" ] && ! echo "$PUSH_REFS" | grep -qvE '^[^ ]+ 0+ '; then
-	echo "pre-push: deletion only — nothing to gate."
-	exit 0
+# Self-contained: POSIX sh and git, nothing else. Every question below is
+# answered from refs that are already local, with one exception: whether the
+# remote already holds a trunk commit's review receipt, asked of the remote
+# this push is talking to anyway, and only when the push does not carry it.
+
+set -u
+
+#: What this project treats as the trunk. git names the remote ref in full on
+#: stdin — `refs/heads/main`, never `main`.
+TRUNKS='main master'
+
+#: Where review receipts live (#40): `refs/reviews/<sha>`, a ref named by the
+#: commit that was reviewed and pointing at it. Written by whoever reviewed,
+#: with the one line of git that CLAUDE.md documents; pushed with the branch,
+#: so CI can check it; read here and by the wcp status line. One spelling in
+#: every place is how the writer and the readers stay agreed about a ref none
+#: of them owns.
+#:
+#: A ref per commit rather than one notes ref: every session pushing to the
+#: trunk would push the same `refs/notes/*`, and all but the first would be
+#: refused as non-fast-forward. A ref named by its own commit cannot conflict,
+#: and pushing one the remote already has is a no-op.
+#:
+#: Deliberately not written by any tool of wcp's. A receipt that needed wcp
+#: installed, or one harness running, would be a gate that stops working on the
+#: machine that has neither — the same reason these hooks are shell files that
+#: call no wcp.
+RECEIPTS='refs/reviews'
+#: Where reviews were recorded before #40; looked at only to say they moved.
+LEGACY_STAMP='.last-review'
+
+#: git passes the remote's name first; it goes into the push line printed below.
+remote_name=${1:-origin}
+
+err() { printf '%s\n' "$*" >&2; }
+
+# A plausible object name, and nothing option-shaped. Not defensive tidiness:
+# the shas below arrive on stdin from outside this process, and a field holding
+# `--output=/tmp/pwned..HEAD` reaches `git log` as an option and creates that
+# file (demonstrated on git 2.43). 64 rather than 40, because a sha256
+# repository names its own objects in 64 hex digits and rejecting them would
+# stand this check down on exactly the repositories nobody is testing it on.
+is_sha() {
+	case ${1:-} in
+	'' | *[!0-9a-fA-F]*) return 1 ;;
+	esac
+	[ ${#1} -ge 4 ] && [ ${#1} -le 64 ]
+}
+
+# git's all-zero object name: the ref does not exist on that side.
+is_absent() {
+	case ${1:-} in
+	'' | *[!0]*) return 1 ;;
+	esac
+	return 0
+}
+
+is_trunk_ref() {
+	for trunk in $TRUNKS; do
+		if [ "$1" = "refs/heads/$trunk" ]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+# ------------------------------------------------------- linear history (#98)
+#
+# First, because it is the only question here answered from the refs git names
+# on stdin rather than from HEAD: `git push origin feature:main` puts a merge on
+# the trunk from a branch that is level with its own upstream, so a check
+# standing behind the early exit below would never see it. It is also the
+# cheapest thing this hook does, and the one refusal an author can act on
+# without a review: a push that cannot land should be told so, rather than told
+# to run a review on history that cannot land either.
+#
+# The rule judges *the range this push adds*, not the branch's ancestry. A trunk
+# carrying merges from before the rule existed would otherwise refuse every push
+# forever, and the range is the honest unit anyway: history becomes shared at
+# the moment it stops being cheap to rewrite.
+#
+# Drained once, into a variable. git closes stdin after the first read, and a
+# second `cat` would return nothing — which would read here as "no refs", and
+# then as a check that stood down reporting success.
+refs=$(cat)
+
+blocked=''
+while read -r local_ref local_sha remote_ref remote_sha extra; do
+	# Exactly four fields. Anything else is not a line git wrote.
+	[ -n "${remote_sha:-}" ] || continue
+	[ -z "${extra:-}" ] || continue
+
+	# Read off the *remote* ref, so `git push origin feature:main` is a trunk
+	# update whatever the branch is called locally. A feature branch carrying a
+	# merge is not this rule's business.
+	is_trunk_ref "$remote_ref" || continue
+	is_sha "$local_sha" && is_sha "$remote_sha" || continue
+
+	# A deletion adds nothing; a trunk the remote does not have yet would make
+	# the range the branch's entire history.
+	is_absent "$local_sha" && continue
+	is_absent "$remote_sha" && continue
+
+	# `log` rather than `rev-list --count`: a refusal has to name the commits,
+	# and a count names nothing anybody can go and look at. Subjects, because a
+	# bare abbreviated sha identifies the merge to git and to nobody else.
+	if ! found=$(git log --merges --format='%h %s' "$remote_sha..$local_sha" -- 2>/dev/null); then
+		# Open, but not silent. git puts the sha the *remote* advertised on
+		# stdin, and a clone that has not fetched does not have that object, so
+		# this is reachable without contriving anything. A gate that decided it
+		# could not judge has to say so, or its silence when it found nothing
+		# means the same as its silence when it could not look.
+		err "warning: $remote_ref: git could not resolve $(printf '%.12s' "$remote_sha")..$(printf '%.12s' "$local_sha"), so this push was not checked for merge commits. \`git fetch\` and push again to have it checked."
+		continue
+	fi
+	[ -n "$found" ] || continue
+
+	count=$(printf '%s\n' "$found" | wc -l | tr -d '[:space:]')
+	plural=s
+	[ "$count" = 1 ] && plural=''
+	base=$(printf '%.12s' "$remote_sha")
+
+	# The remedy has to name the branch it acts on: `git push origin
+	# feature:main` is refused while the author stands on `main`, and a bare
+	# `git rebase <sha>` there rewrites the wrong branch — worse for the
+	# `reset --hard`, which is the destructive half. Named only when the local
+	# ref is a branch; for `HEAD:main`, and for the tag push nobody makes,
+	# there is no branch name to hand to `git rebase`.
+	case $local_ref in
+	refs/heads/*) branch=${local_ref#refs/heads/} ;;
+	*) branch='' ;;
+	esac
+	if [ -n "$branch" ]; then
+		rebase="git rebase $base $branch"
+		replay="or, on $branch, replay the work by hand:"
+	else
+		rebase="git rebase $base"
+		replay="or, on the branch you are pushing, replay the work by hand:"
+	fi
+
+	blocked=$(
+		printf 'This push adds %s merge commit%s to %s:\n' "$count" "$plural" "$remote_ref"
+		printf '%s\n' "$found" | sed 's/^/      /'
+		printf 'Rebase them out and push the result:\n      %s\n' "$rebase"
+		printf '%s\n      git reset --hard %s   # then re-apply your commits\n' "$replay" "$base"
+	)
+	break
+done <<EOF
+$refs
+EOF
+
+if [ -n "$blocked" ]; then
+	err "=== Linear history ==="
+	err "$blocked"
+	err "Push blocked: the trunk takes no merge commits."
+	exit 1
 fi
 
-# Work out what this push actually changes, relative to the upstream trunk.
-# Fetch BEFORE probing for the branch: on a fresh clone origin/main may not
-# exist as a ref yet, and probing first silently fell through to "master",
-# then to a HEAD~1 diff that covers only the last commit.
-MAIN_BRANCH="main"
-git fetch origin "$MAIN_BRANCH" --quiet 2>/dev/null ||
-	{
-		MAIN_BRANCH="master"
-		git fetch origin master --quiet 2>/dev/null || true
-	}
-git rev-parse --verify "origin/$MAIN_BRANCH" &>/dev/null || MAIN_BRANCH=""
-
-if [ -n "$MAIN_BRANCH" ]; then
-	CHANGED_FILES=$(git diff --name-only "origin/$MAIN_BRANCH"...HEAD 2>/dev/null || true)
-	[ -z "$CHANGED_FILES" ] && exit 0
-else
-	# No upstream to compare against. Gate everything rather than guessing a
-	# base: skipping here would no-op the whole hook on a fresh clone.
-	echo "pre-push: no origin/$MAIN_BRANCH to diff against — gating the full tree."
-	CHANGED_FILES=$(git ls-files)
-fi
-
-CPP_TUS=$(echo "$CHANGED_FILES" | grep -E '\.(cpp|cc|cxx)$' || true)
-PY_FILES=$(echo "$CHANGED_FILES" | grep -E '\.py$' || true)
-# The git hooks themselves are extensionless, so a bare '\.sh$' left the
-# riskiest shell in the repo outside the shell gate it runs.
-SH_FILES=$(echo "$CHANGED_FILES" | grep -E '(\.sh$|^\.githooks/)' || true)
-
-# Docs-only pushes skip build+test. Note this deliberately does NOT filter
-# deletions out of CHANGED_FILES: a delete-only push is still a code change
-# and must be gated. Steps that cannot cope with a missing path filter
-# themselves, at their own call site.
+# ------------------------------------------------------------------ receipts
 #
-# '.txt' is deliberately NOT treated as documentation: CMakeLists.txt ends in
-# .txt, so doing so classified a build-system-only change as docs and skipped
-# the build entirely. Everything unrecognised counts as code — the safe
-# direction for a gate is to run when unsure.
-CODE_FILES=$(echo "$CHANGED_FILES" |
-	grep -vE '^(\.githooks/|LICENSE|CHANGELOG)' |
-	grep -vE '\.(md|rst)$' |
-	grep -vE '^\.(gitignore|gitattributes)$' || true)
+# A receipt is `refs/reviews/<sha>` pointing at `<sha>`. Self-reported, like
+# the stamp file it replaced: it records that somebody ran a review at that
+# commit, not what the review found.
 
-# ============================================================
-# Step 1: Clean build + test (hard block)
-# ============================================================
+# Whether commit $1 has its receipt.
+has_receipt() {
+	is_sha "$1" || return 1
+	[ "$(git rev-parse -q --verify "$RECEIPTS/$1^{commit}" 2>/dev/null)" = "$1" ]
+}
 
-# Pull a fenced block out of the "## Build & Test" section of CLAUDE.md, so the
-# gate runs exactly the commands the docs tell a human to run.
-extract_block() {
-	local tag="$1"
-	if [ -f "CLAUDE.md" ]; then
-		sed -n -e '/^## Build & Test/,/^## /{' \
-			-e "/^\`\`\`${tag}$/,/^\`\`\`$/{ /^\`\`\`/d; p; }" \
-			-e '}' CLAUDE.md
+# Why commit $1 has no receipt, in one line; nothing when it has one.
+missing_review() {
+	has_receipt "$1" && return 0
+	# Counted from the nearest reviewed ancestor when there is one: commits
+	# behind is work in progress, no review at all is a gate that never ran.
+	# Only receipts on $1's own history count: one on a branch built on top
+	# of $1 reviewed that branch, not $1.
+	reviewed=$(git for-each-ref --merged="$1" "$RECEIPTS/" 2>/dev/null | awk '{ print $1 }')
+	if [ -n "$reviewed" ]; then
+		# Word-split on purpose: one object name per receipt.
+		# shellcheck disable=SC2086
+		since=$(git rev-list --count "$1" --not $reviewed 2>/dev/null) || since='?'
+		printf 'WARNING: the last reviewed commit is %s commit(s) behind %.12s.\n' "${since:-?}" "$1"
+	else
+		printf 'WARNING: no review has been recorded for %.12s or anything before it.\n' "$1"
 	fi
 }
 
-if [ -z "$CODE_FILES" ]; then
-	echo ""
-	echo "=== Skipping build+test (docs-only) ==="
-else
-	CLEAN_CMD=$(extract_block clean)
-	BUILD_CMD=$(extract_block build)
-	TEST_CMD=$(extract_block test)
-
-	# Both fences are required. Running whichever one resolved and silently
-	# skipping the other turns a renamed fence into "All checks passed" on a
-	# push that never built or never tested. There is deliberately no
-	# auto-detect fallback: guessing a build gates a different build than the
-	# documented one, which is the same failure wearing a hat.
-	MISSING=""
-	[ -z "$BUILD_CMD" ] && MISSING="${MISSING} \`\`\`build"
-	[ -z "$TEST_CMD" ] && MISSING="${MISSING} \`\`\`test"
-	if [ -n "$MISSING" ]; then
-		echo ""
-		echo "Push blocked: could not read the gate commands from CLAUDE.md."
-		echo "  Missing fenced block(s):${MISSING}"
-		echo ""
-		echo "  The '## Build & Test' section must contain \`\`\`build and \`\`\`test"
-		echo "  fenced blocks, and must be followed by another '## ' heading"
-		echo "  (a '# ' heading does not terminate the section)."
-		exit 1
+refuse_review() {
+	err "=== Review check ==="
+	err "$1"
+	# Spelled out in full, because the reader may never have seen this
+	# repository and there is no wcp command to send them to: wcp ships no
+	# reviewer and no way to record one. A review and two lines of git that
+	# work on any machine with git and nothing else installed.
+	err "Push blocked. Have this commit reviewed, then record it and push it with its receipt:"
+	err "      1. run your code reviewer (in Claude Code: /code-review)"
+	err "      2. git update-ref \"$RECEIPTS/\$(git rev-parse HEAD)\" HEAD"
+	err "      3. git push --atomic $remote_name HEAD \"$RECEIPTS/\$(git rev-parse HEAD)\""
+	err "The receipt names the commit reviewed, so committing again needs a new review."
+	err "Reviewed in another clone? Receipts are not fetched by default:"
+	err "      git fetch $remote_name '$RECEIPTS/*:$RECEIPTS/*'"
+	# A clone set up before #40 records reviews in a file, which nothing reads
+	# any more. Said here rather than read: two receipts are two to keep agreed.
+	legacy="$(git rev-parse --absolute-git-dir 2>/dev/null)/$LEGACY_STAMP"
+	if [ -r "$legacy" ]; then
+		err "($LEGACY_STAMP is no longer read: a review is recorded as $RECEIPTS/<sha> now.)"
 	fi
+	exit 1
+}
 
-	BUILD_FAILED=0
-	if [ -n "$CLEAN_CMD" ]; then
-		echo ""
-		echo "=== Clean ==="
-		set +e
-		eval "$CLEAN_CMD"
-		rc=$?
-		set -e
-		[ "$rc" -ne 0 ] && BUILD_FAILED=1
-	fi
-	if [ "$BUILD_FAILED" -eq 0 ]; then
-		echo ""
-		echo "=== Build ==="
-		set +e
-		eval "$BUILD_CMD"
-		rc=$?
-		set -e
-		[ "$rc" -ne 0 ] && BUILD_FAILED=1
-	fi
-	if [ "$BUILD_FAILED" -eq 0 ]; then
-		echo ""
-		echo "=== Test ==="
-		set +e
-		eval "$TEST_CMD"
-		rc=$?
-		set -e
-		[ "$rc" -ne 0 ] && BUILD_FAILED=1
-	fi
+# ---------------------------------------------------- the receipt travels (#40)
+#
+# A trunk update must carry its commit's receipt in the same push, or CI, the
+# one place a `--no-verify` push or a clone without these hooks is seen, fails
+# it. So the honest path is refused here, where it is cheap to put right.
+#
+# git leaves a ref the remote already holds off stdin: a receipt pushed with a
+# feature branch, which then lands on the trunk by fast-forward, or a commit
+# pushed to a second trunk. So a receipt missing from stdin is looked for on
+# the remote itself before the push is refused. A remote that cannot be asked
+# is a refusal, as an unreadable receipt always is.
+while read -r local_ref local_sha remote_ref remote_sha extra; do
+	[ -n "${remote_sha:-}" ] || continue
+	[ -z "${extra:-}" ] || continue
+	is_trunk_ref "$remote_ref" || continue
+	is_sha "$local_sha" || continue
+	is_absent "$local_sha" && continue
 
-	if [ "$BUILD_FAILED" -ne 0 ]; then
-		echo ""
-		echo "Push blocked: build or tests failed."
-		exit 1
-	fi
-fi
+	missing=$(missing_review "$local_sha")
+	[ -z "$missing" ] || refuse_review "$missing"
 
-# ============================================================
-# Step 2: Remaining issues (warn and continue)
-# ============================================================
-
-ISSUES=""
-
-if [ -n "$CPP_TUS" ]; then
-	if CLANG_TIDY=$(resolve_clang_tool clang-tidy "clang-tidy warnings"); then
-		COMPILE_DB=""
-		[ -f "build/compile_commands.json" ] && COMPILE_DB="build"
-		[ -f "compile_commands.json" ] && COMPILE_DB="."
-
-		if [ -n "$COMPILE_DB" ]; then
-			echo ""
-			echo "=== Running clang-tidy ==="
-			# Collected across TUs and deduplicated below rather than appended
-			# to ISSUES per TU. Every translation unit pulls in the same library
-			# headers, so a push touching four test files reported each header
-			# finding four times.
-			TIDY_DIAGS=""
-			for f in $CPP_TUS; do
-				[ -f "$f" ] || continue
-				set +e
-				RESULT=$("$CLANG_TIDY" -p "$COMPILE_DB" --quiet "$f" 2>&1)
-				rc=$?
-				set -e
-				# Check the exit status, not just the text. A crashed
-				# clang-tidy prints a stack dump containing neither
-				# "warning:" nor "error:", so grepping alone scores the
-				# translation unit clean and analyses nothing. Crash output
-				# is reported whole and unfiltered — a stack dump is only
-				# useful intact.
-				if [ "$rc" -ne 0 ]; then
-					ISSUES="${ISSUES}clang-tidy exited $rc on $f (analysis did NOT complete):"$'\n'
-					ISSUES="${ISSUES}${RESULT}"$'\n'
-				else
-					TIDY_DIAGS="${TIDY_DIAGS}${RESULT}"$'\n'
-				fi
-			done
-			# Keep only the "file:line:col: severity: message [check]" lines and
-			# drop repeats, first occurrence wins. The source snippet and caret
-			# that clang-tidy prints under each finding are what made the
-			# duplication unreadable, and the location is enough to jump to.
-			TIDY_DIAGS=$(echo "$TIDY_DIAGS" | grep -E '(warning|error):' | awk '!seen[$0]++' || true)
-			if [ -n "$TIDY_DIAGS" ]; then
-				ISSUES="${ISSUES}${TIDY_DIAGS}"$'\n'
-			else
-				echo "clang-tidy: clean"
-			fi
-		else
-			echo "NOTE: no compile_commands.json — skipping clang-tidy."
+	carried=''
+	while read -r _ref receipt_sha receipt_ref _rest; do
+		if [ "$receipt_ref" = "$RECEIPTS/$local_sha" ] && [ "$receipt_sha" = "$local_sha" ]; then
+			carried=yes
 		fi
+	done <<RECEIPTS_IN_PUSH
+$refs
+RECEIPTS_IN_PUSH
+	if [ -z "$carried" ]; then
+		held=$(git ls-remote "${2:-$remote_name}" "$RECEIPTS/$local_sha" 2>/dev/null |
+			awk -v ref="$RECEIPTS/$local_sha" '$2 == ref { print $1 }')
+		[ "$held" = "$local_sha" ] && carried=yes
 	fi
+	if [ -z "$carried" ]; then
+		case $local_ref in
+		refs/heads/*) source=${local_ref#refs/heads/} ;;
+		*) source=$local_sha ;;
+		esac
+		err "=== Review receipt ==="
+		err "This push updates $remote_ref to $(printf '%.12s' "$local_sha") without its review receipt, which CI checks for,"
+		err "and the remote does not hold it either (or could not be asked)."
+		err "Push them together:"
+		err "      git push --atomic $remote_name $source:$remote_ref $RECEIPTS/$local_sha"
+		exit 1
+	fi
+done <<TRUNK_UPDATES
+$refs
+TRUNK_UPDATES
+
+# ------------------------------------------------------------- nothing to push
+#
+# git runs this hook even when the push carries nothing: an "Everything
+# up-to-date" push, `git push origin --delete <branch>`, a tag push, a receipt
+# pushed on its own. Without this, a delete from a clean trunk is refused until
+# somebody reviews again.
+#
+# `@{push}`, which is where *this branch* would go, rather than the trunk: a
+# branch that tracks something unusual is pushed where it tracks. Commits rather
+# than changed files, because an empty commit or a revert pair carries no file
+# change and is still something to have reviewed. Unknown is not nothing — no
+# push target, a detached HEAD, a first push — and the first push of a branch is
+# the one that most needs the review.
+ahead=$(git rev-list --count '@{push}..HEAD' 2>/dev/null) || ahead=''
+
+# --------------------------------------------------------------- review check
+#
+# Every push with something to push needs a receipt for HEAD, a feature
+# branch's too: only a trunk update's receipt has to travel, but every
+# branch's has to exist. Every unreadable case is a reason to block; the
+# alternative is a push cleared by a review nobody can point at.
+#
+# The receipt stays: it is the record, here and on the remote. A later commit
+# has no receipt of its own, so the next push is refused until it is reviewed.
+if [ "$ahead" != 0 ]; then
+	head=$(git rev-parse HEAD 2>/dev/null) || head=''
+	if [ -z "$head" ]; then
+		refuse_review 'WARNING: git could not resolve HEAD, so the review cannot be verified.'
+	fi
+	missing=$(missing_review "$head")
+	[ -z "$missing" ] || refuse_review "$missing"
 fi
 
-if [ -n "$PY_FILES" ]; then
-	if RUFF=$(require_tool ruff "ruff complexity check"); then
-		for f in $PY_FILES; do
-			[ -f "$f" ] || continue
-			RESULT=$("$RUFF" check --select C901 --no-fix "$f" 2>&1 || true)
-			if [ -n "$RESULT" ] && ! echo "$RESULT" | grep -q "^All checks passed"; then
-				ISSUES="${ISSUES}${RESULT}"$'\n'
-			fi
-		done
-	fi
-fi
+# ------------------------------------------------------------------ local CI
+#
+# The project's own build and tests, run on the tip of each branch this push
+# updates — the commit the branch will point at, not each commit before it,
+# which would multiply the cost for little — from the tagged blocks under
+# CLAUDE.md's `## Build & Test`: `clean`,
+# then `build`, then `test`, then `lint` if the project has one. Last, so a push the checks above refuse does not
+# pay for a build. A project opts in by having a `build` block — the C++
+# templates do, the Python one has only `test` — and a clone opts out with
+# `git config hooks.localCi off`.
+#
+# **The commit pushed, not the working tree.** The blocks run in a worktree
+# checked out at the pushed commit, with CLAUDE.md read from that commit:
+# uncommitted edits can neither rescue a broken commit nor block a clean one,
+# and `git push origin other:main` tests `other`. The worktree is made for the
+# push outside this checkout, in `git config hooks.localCiDir` or else
+# `${XDG_CACHE_HOME:-$HOME/.cache}/local-ci` (on disk, never a RAM `/tmp`), and
+# removed after; a relative `hooks.localCiDir` is taken under
+# `${XDG_CACHE_HOME:-$HOME/.cache}`, not under the checkout. One a push killed
+# outright left behind is removed by the next local CI run in the same place,
+# once the push that made it is gone. Outside, so that a tool looking for its
+# config in parent directories (clang-tidy or clang-format with none at the
+# commit's root, or `InheritParentConfig`) meets the cache directory, `$HOME`
+# and `/`, never this checkout's working copy (#143); a config in `$HOME`
+# applies to a checkout under it the same way. Only when that cache directory
+# is unset or cannot be written is it made under this checkout's git
+# directory, and then the hook says so. A build cache that keys on content
+# (ccache with `base_dir` set to the source tree, `CMAKE_CURRENT_SOURCE_DIR`,
+# wherever that is) is what makes its build cheap, not a kept build directory.
+# Submodules are checked out, and `.venv/bin` (the pinned tools) of this
+# checkout, or of the main checkout from a linked worktree, is put first on
+# PATH.
+#
+# **Lint only what the push changed.** A C++ project registers clang-tidy as
+# one ctest test per source, named `clang_tidy:<path from the repository
+# root>`, and over a whole tree those tests are most of the gate's time. With
+# a `lint` block, the `test` block runs as written (it excludes the
+# `clang_tidy:` tests itself) and the `lint` block's `ctest` is split as
+# follows. Without one, every `ctest` the `test` block runs is: the suite with
+# `-E '^clang_tidy:'` (merged into an exclusion the block has), then the
+# `clang_tidy:` tests the push reaches, which the hook runs itself through
+# its lint runner (`tidy_runner`, #178): a changed source's own unit, one
+# stub unit per changed header in place of everything that includes it, and
+# a cache of the passes, so a re-push or a build-file edit re-tidies only
+# what changed. The scheduled full lint runs what the gate leaves out: a
+# changed header's includers, and a change only clang-tidy's own
+# preprocessing reaches (the cache's key is what the compiler read), so it
+# runs uncached: ctest, or this hook with `hooks.tidyCache off`. Every unit
+# runs (through the cache) when the change is unknown (a new branch with no
+# trunk to compare against, a remote commit this clone lacks), when a
+# `.clang-tidy` or a CMake file changed,
+# when a path matches a line of the optional `lint-every` block (one extended
+# regex per line, trailing blanks and a CR ignored: the project's own lint
+# driver, say), or with `PRE_PUSH_FULL_LINT=1`. Tests the runner cannot run
+# itself (a command that is not clang-tidy, a property ctest must honour) go
+# to `ctest -R` as before, with this push's reach: the changed sources and
+# every source whose recorded dependencies (`ninja -t deps` in the test
+# directory, current because the build has just run) include a changed file,
+# or all of them for the reasons above or a changed header with no record.
+# So does everything when there is no `python3` (`PRE_PUSH_PYTHON` names
+# another), no JSON listing from ctest, or no dependency log. Only a `ctest`
+# the block runs itself is split; one inside a script it calls runs as
+# written. The whole lint belongs in the project's scheduled run.
+#
+# **Where it runs.** `git config hooks.localCiCpus <list>` pins the local CI
+# to those CPUs (`taskset -c`), so a `-j$(nproc)` in a block follows it, and
+# `hooks.localCiJobs` sets how many units the lint runner tidies at a time.
+#
+# **A warm worktree** (#183). `git config hooks.localCiWorktree <path>` (a
+# relative one under the cache directory) runs the local CI in that one
+# worktree, kept between pushes, instead of a new one each time: the pushed
+# commit is checked out there by force, `git clean` (without `-x`, so the
+# ignored build directory stays; `-f` twice, so a submodule the commit dropped
+# goes, #216) removes what the last commit left untracked,
+# the `clean` block is skipped, and the tree stays when the push ends. The
+# next push then builds incrementally. Meant for a clone that does nothing but
+# push, a merge queue's (`wcp queue`): one push at a time holds it, through a
+# `.lock` directory beside it, and another push is refused while that push
+# runs; a lock whose push was killed is taken over, also one killed before it
+# wrote its owner into the lock, once the lock has stayed without one for
+# `LOCK_GRACE` seconds. So a push that cannot write its owner gives the lock
+# back and is refused. Taken over under a token one push at a time holds,
+# the owner replaced by a rename, and let go only while it is still this
+# push's (#216); a token a killed push left is taken over by making one in
+# it (#231). A killed push's owner is told from a later process
+# given its pid by its start time; the git locks it left in the worktree
+# (`index.lock`, `HEAD.lock`, any of a submodule's) are removed by the next
+# push that holds the lock, which checks the submodules out by force and
+# cleans them (#198). A build the cache cannot see changing (a
+# patch file, a dropped `-D` option that lingers in `CMakeCache.txt`) is not
+# redone: remove the worktree, and the next push builds from scratch.
+#
+# **Timed.** Each step's wall time is printed as it ends, the build's with
+# ccache's hits and misses over it, and once more on one line at the end.
+#
+# Skipped when the push changes only documentation: `*.md` other than
+# CLAUDE.md (its blocks are this CI's commands), LICENSE, .gitignore.
 
-if [ -n "$SH_FILES" ]; then
-	if SHELLCHECK=$(require_tool shellcheck "shellcheck"); then
-		for f in $SH_FILES; do
-			[ -f "$f" ] || continue
-			# -x so sourced files are followed; without it every hook that
-			# sources lib.sh reports SC1091 against itself.
-			RESULT=$("$SHELLCHECK" -x "$f" 2>&1 || true)
-			if [ -n "$RESULT" ]; then
-				ISSUES="${ISSUES}${RESULT}"$'\n'
-			fi
-		done
-	fi
-fi
+#: The test-name prefix of a project's per-source clang-tidy tests.
+TIDY_TESTS='clang_tidy:'
+#: Header-like files: without a dependency record, one of these changing
+#: reaches every source.
+HEADER_LIKE='\.(h|hh|hpp|hxx|inl|ipp|tpp|tcc|inc|def|cuh|cppm|ixx|mxx)$'
+#: Files that may change the flags or the inputs of any source: the lint of
+#: every source runs when one changes. `.in` is a `configure_file` template,
+#: whose output the dependency log names in the build directory instead.
+EVERY_SOURCE='(^|/)(CMakeLists\.txt|CMakePresets\.json|CMakeUserPresets\.json|vcpkg\.json|conanfile\.(txt|py))$|\.(cmake|in)$'
+#: How many tests one `ctest -R` names, and how long the regex may grow: kwsys
+#: refuses one past its compiled-size limit, and ctest then runs no test and
+#: passes.
+LINT_CHUNK=100
+LINT_CHUNK_BYTES=8000
 
-if [ -n "$PY_FILES" ]; then
-	# mypy stops at the first unreadable path ("errors prevented further
-	# checking"), so a single deleted .py would both fake a failure and mask
-	# real type errors in every surviving file. Filter to paths that exist.
-	MYPY_FILES=""
-	for f in $PY_FILES; do
-		[ -f "$f" ] && MYPY_FILES="${MYPY_FILES} $f"
+# The `$1` block under `## Build & Test`, from the CLAUDE.md on stdin.
+extract_block() {
+	sed -n -e '/^## Build & Test/,/^## /{' \
+		-e "/^\`\`\`$1\$/,/^\`\`\`\$/{ /^\`\`\`/d; p; }" \
+		-e '}'
+}
+
+#: Seconds as `1h02m03s`, `2m03s` or `3s`, for awk.
+DURATION_AWK='function d(s) {
+	if (s >= 3600) return sprintf("%dh%02dm%02ds", s / 3600, s % 3600 / 60, s % 60)
+	if (s >= 60) return sprintf("%dm%02ds", s / 60, s % 60)
+	return s "s"
+}'
+
+duration() { awk -v s="$1" "$DURATION_AWK"' BEGIN { print d(s) }'; }
+
+now() { date +%s; }
+
+# Records step `$1`, begun at `$2`, in the timings file and on stderr, with
+# `$3` after the time when given.
+timed() {
+	took=$(($(now) - $2))
+	printf '%s %s\n' "$1" "$took" >>"$CI_TIMINGS"
+	err "=== Local CI: $1 took $(duration "$took")${3:-} ==="
+}
+
+# ccache's hits and misses so far, as `hits misses`; nothing without ccache or
+# with one too old for `--print-stats`. Machine-wide counters, so a build
+# beside this one blurs the difference.
+ccache_counts() {
+	command -v ccache >/dev/null 2>&1 || return 0
+	ccache --print-stats 2>/dev/null | awk '
+		$1 == "direct_cache_hit" || $1 == "preprocessed_cache_hit" { h += $2 }
+		$1 == "cache_miss" { m += $2 }
+		END { if (NR) print h + 0, m + 0 }'
+}
+
+# `$1` single-quoted for `eval`.
+quote() {
+	printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+# Every file in the tree that an object read, for each object whose last build
+# read one of the files on stdin, relative to the worktree top; from ninja's
+# dependency log in build directory `$1`. Its sources are among them — several,
+# for a unity build — and the caller keeps those with a test. Fails when there
+# is no log to read. A dependency is absolute, or relative to the build
+# directory, and an absolute one names the worktree as the build was given it,
+# which may be through a symlink. A header reached only through a precompiled
+# header is not in the other objects' records, and is missed.
+dependents() {
+	[ -f "$1/build.ninja" ] && command -v ninja >/dev/null 2>&1 || return 1
+	deps=$(ninja -C "$1" -t deps 2>/dev/null) || return 1
+	[ -n "$deps" ] || return 1
+	wanted=$(cat)
+	printf '%s\n' "$deps" |
+		TOP="$CI_SRC" LOGICAL_TOP="$CI_LOGICAL_SRC" BUILD="$(cd "$1" && pwd -P)" WANTED="$wanted" awk '
+		function norm(p,    n, i, k, parts, out) {
+			if (substr(p, 1, 1) != "/") p = ENVIRON["BUILD"] "/" p
+			n = split(p, parts, "/")
+			k = 0
+			for (i = 1; i <= n; i++) {
+				if (parts[i] == "..") { if (k > 0) k-- }
+				else if (parts[i] != "." && parts[i] != "") out[++k] = parts[i]
+			}
+			p = ""
+			for (i = 1; i <= k; i++) p = p "/" out[i]
+			top = ENVIRON["TOP"] "/"
+			if (index(p, top) == 1) return substr(p, length(top) + 1)
+			top = ENVIRON["LOGICAL_TOP"] "/"
+			if (index(p, top) == 1) return substr(p, length(top) + 1)
+			return ""
+		}
+		function flush(    i) {
+			if (hit) for (i = 1; i <= nd; i++) if (deps[i] != "") print deps[i]
+			nd = 0
+			hit = 0
+		}
+		BEGIN { n = split(ENVIRON["WANTED"], w, "\n"); for (i = 1; i <= n; i++) want[w[i]] = 1 }
+		/^[^ ]/ { flush(); next }
+		/^    / {
+			d = norm(substr($0, 5))
+			deps[++nd] = d
+			if (d in want) hit = 1
+		}
+		END { flush() }'
+}
+
+# Why the `lint-every` block runs the whole lint: the first line a changed path
+# matches, or one grep cannot read, which runs it too rather than narrowing a
+# lint the project asked to widen. Nothing when no line matches.
+lint_every_match() {
+	printf '%s\n' "$CI_LINT_EVERY" | while IFS= read -r pattern; do
+		[ -n "$pattern" ] || continue
+		if printf '%s\n' "$CI_CHANGED" | grep -qE -- "$pattern" 2>/dev/null; then
+			matched=0
+		else
+			matched=$?
+		fi
+		if [ "$matched" = 0 ]; then
+			printf 'a changed path matches the lint-every line %s\n' "$pattern"
+			break
+		elif [ "$matched" != 1 ]; then
+			printf 'the lint-every line %s is not an extended regex grep can read\n' "$pattern"
+			break
+		fi
 	done
-	if [ -n "$MYPY_FILES" ] && MYPY=$(require_tool mypy "mypy type checking"); then
-		echo ""
-		echo "=== Running mypy ==="
-		# shellcheck disable=SC2086
-		RESULT=$("$MYPY" --strict $MYPY_FILES 2>&1 || true)
-		if echo "$RESULT" | grep -qE 'error:'; then
-			ISSUES="${ISSUES}${RESULT}"$'\n'
+}
+
+# Whether a changed path is a directory in the worktree: a submodule, which
+# git names as one path however many of its files changed.
+moved_submodule() {
+	while IFS= read -r path; do
+		[ -z "$path" ] || [ ! -d "$CI_SRC/$path" ] || return 0
+	done <<CHANGED
+$CI_CHANGED
+CHANGED
+	return 1
+}
+
+# Why the push lints every source rather than what it reaches; nothing when
+# it can be narrowed.
+every_source_reason() {
+	if [ "${PRE_PUSH_FULL_LINT:-0}" = 1 ]; then
+		echo 'PRE_PUSH_FULL_LINT=1'
+	elif printf '%s\n' "$CI_CHANGED" | grep -qx '/unknown'; then
+		echo 'what the push changes is unknown'
+	elif printf '%s\n' "$CI_CHANGED" | grep -qE '(^|/)\.clang-tidy$'; then
+		echo 'a .clang-tidy changed'
+	elif printf '%s\n' "$CI_CHANGED" | grep -qE "$EVERY_SOURCE"; then
+		echo 'a build file changed, which may change the flags or inputs of any source'
+	elif every=$(lint_every_match) && [ -n "$every" ]; then
+		printf '%s\n' "$every"
+	elif moved_submodule; then
+		echo 'a submodule moved, and the dependency log names its files rather than it'
+	fi
+}
+
+# Of the `clang_tidy:` tests `$2` (one per line) in build directory `$1`, the
+# ones this push reaches, one per line, and on stderr why.
+lint_selection() {
+	all=$2
+	total=$(printf '%s\n' "$all" | wc -l | tr -d '[:space:]')
+	why=$(every_source_reason)
+	if [ -n "$why" ]; then
+		:
+	elif ! reached=$(printf '%s\n' "$CI_CHANGED" | dependents "$1"); then
+		if printf '%s\n' "$CI_CHANGED" | grep -qE "$HEADER_LIKE"; then
+			why='a header changed and there is no ninja dependency log to say what includes it'
 		else
-			echo "mypy: clean"
+			reached=$CI_CHANGED
 		fi
 	fi
-fi
+	if [ -n "$why" ]; then
+		err "=== Local CI: lint, all $total $TIDY_TESTS tests: $why ==="
+		printf '%s\n' "$all"
+		return 0
+	fi
+	# In ctest's order.
+	picked=$(printf '%s\n%s\n' "$CI_CHANGED" "$reached" | ALL="$all" PREFIX="$TIDY_TESTS" awk '
+		$0 != "" { reached[ENVIRON["PREFIX"] $0] = 1 }
+		END { n = split(ENVIRON["ALL"], t, "\n"); for (i = 1; i <= n; i++) if (t[i] in reached) print t[i] }')
+	count=0
+	[ -z "$picked" ] || count=$(printf '%s\n' "$picked" | wc -l | tr -d '[:space:]')
+	err "=== Local CI: lint, $count of $total $TIDY_TESTS tests: the ones this push reaches ==="
+	[ -z "$picked" ] || printf '%s\n' "$picked"
+}
 
-if [ -n "$ISSUES" ]; then
-	echo ""
-	echo "==========================================="
-	echo "  Issues found:"
-	echo "==========================================="
-	echo "$ISSUES"
-	echo "==========================================="
-	echo ""
-	echo "Warning: pushing with known issues."
-else
-	echo ""
-	echo "All checks passed."
-fi
+# The lint runner (#178), in Python for the JSON it reads and the hashes it
+# keeps; `tidy_itself` runs it with `python3 -I`. What it does:
+#
+# - **Which units.** The `clang_tidy:` tests whose command is clang-tidy
+#   itself, with no property ctest would have to honour; the others are left
+#   to ctest, selected as before. A changed source's unit is tidied for its
+#   own diagnostics only (`--header-filter='^$'`). A changed header an
+#   includer reports on (the command's `--header-filter`, else
+#   `HeaderFilterRegex` from its `.clang-tidy`, inherited ones too, else
+#   clang-tidy's default, less the exclusion; not a header it reads as a
+#   system header) is tidied through a stub, a unit of one line
+#   `#include "<header>"` with the first such includer's flags, filtered
+#   to that header; its includers are left to the scheduled full lint. A
+#   changed header no includer reports on has its includers tidied for
+#   their own diagnostics. A stub is a screen: one that fails (a header
+#   that does not compile on its own, or a finding no includer reports,
+#   such as a macro's name a use in the unit exempts) hands its header to
+#   its includers, filtered to that header however they spell its path, and
+#   they decide. A header whose flags cannot be copied has its includers
+#   tidied instead.
+#   Any other changed file a unit read (`.inl`, `.def`, data) has its
+#   includers tidied with the configuration's own filter. When every source
+#   is linted (`every_source_reason`): every unit for its own diagnostics, a
+#   stub for every tracked header in scope any unit reads, and with their
+#   own filter the units that read a tracked `.inl`-like file in scope and
+#   those with no dependency record. A
+#   test's `TIMEOUT`, else the block's `ctest --timeout`, holds as under
+#   ctest. A run that says it could not read the configuration fails, though
+#   clang-tidy exits 0 after it.
+# - **The cache.** A pass is stored with its output, a failure never. Its key
+#   is a sha256 over the runner's schema, `clang-tidy --version`, the command,
+#   the unit's compilation database entries, the configuration's bytes and the
+#   path and content of every file the unit's last build read (its ninja
+#   dependency log, system headers too), with the worktree spelled as a
+#   placeholder so each push's fresh one hits. A stub is keyed by its header
+#   and its includer's inputs, the `.clang-tidy` files up from the header's
+#   directory among them. A unit the log does not cover runs uncached. The
+#   log is what the build's compiler read: a file only clang-tidy's own
+#   preprocessing reaches (under `#ifdef __clang__`, say) is not in the key,
+#   and a change to it alone is left to the scheduled full lint, which
+#   therefore runs uncached.
+#   It is `git config hooks.tidyCacheDir`, else
+#   `${XDG_CACHE_HOME:-$HOME/.cache}/local-ci-tidy`; `hooks.tidyCache off` turns it
+#   off, and an entry unused for 30 days is removed. Deleting it is safe.
+# - **In parallel**, `hooks.localCiJobs` at a time, else one per CPU this
+#   process may use; the largest sources first.
+tidy_runner() {
+	cat <<'PY'
+from __future__ import annotations
+
+import concurrent.futures
+import hashlib
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+
+E = os.environ
+#: Bumped whenever what a key covers changes: every stored pass then misses.
+SCHEMA = "tidy-runner 2"
+PREFIX = E["CI_TIDY_PREFIX"]
+HEADER = re.compile(r"\.(h|hh|hpp|hxx|cuh)$")
+#: What a stub cannot stand in for: these files make sense only inside the
+#: unit that includes them, so their includers are tidied instead.
+HEADER_LIKE = re.compile(r"\.(h|hh|hpp|hxx|inl|ipp|tpp|tcc|inc|def|cuh|cppm|ixx|mxx)$")
+#: Test properties the runner honours as ctest would, or that only steer
+#: ctest's scheduling; a test with any other runs through ctest.
+PLAIN = {"LABELS", "WORKING_DIRECTORY", "COST", "PROCESSORS", "RUN_SERIAL", "RESOURCE_LOCK", "TIMEOUT"}
+TIDY_EXE = re.compile(r"(^|/)clang-tidy(-[0-9.]+)?$")
+#: The worktree, as `pwd -P` spells it first: every path the runner keeps is
+#: spelled so, though a build run from the other spelling logs that one.
+ROOTS = list(dict.fromkeys(r for r in (E["CI_SRC"], E.get("CI_LOGICAL_SRC", "")) if r))
+
+
+def block_timeout(args: str) -> float | None:
+    """The `--timeout` the block gives ctest, which holds for a test with no `TIMEOUT`."""
+    try:
+        words = shlex.split(args)
+    except ValueError:
+        return None
+    for i, word in enumerate(words):
+        value = words[i + 1] if word == "--timeout" and i + 1 < len(words) else None
+        if word.startswith("--timeout="):
+            value = word[len("--timeout=") :]
+        if value is not None:
+            try:
+                return float(value) or None
+            except ValueError:
+                return None
+    return None
+
+
+BLOCK_TIMEOUT = block_timeout(E.get("CI_TIDY_CTEST_ARGS", ""))
+#: A unit's own diagnostics only: a changed header is tidied through its stub.
+MAIN_ONLY = "^$"
+DIAG_ERROR = "[clang-diagnostic-error]"
+CONFIG_ERROR = re.compile(r"^Error (parsing|reading configuration) ", re.MULTILINE)
+
+
+def say(msg: str) -> None:
+    print(f"=== Local CI: {msg} ===", file=sys.stderr, flush=True)
+
+
+def norm(path: str, base: str) -> str:
+    path = os.path.normpath(path if os.path.isabs(path) else os.path.join(base, path))
+    for root in ROOTS[1:]:
+        if path == root or path.startswith(root + "/"):
+            return ROOTS[0] + path[len(root) :]
+    return path
+
+
+def rel(path: str) -> str | None:
+    """`path` relative to the worktree, or None outside it."""
+    for root in ROOTS:
+        if path == root or path.startswith(root + "/"):
+            return path[len(root) + 1 :]
+    return None
+
+
+def spelled(text: str) -> str:
+    """`text` with the worktree spelled as a placeholder: each push's is new.
+
+    As written, and as a header filter escapes it (`local-ci/x\\.abc/src`).
+    """
+    for root in sorted(ROOTS, key=len, reverse=True):
+        text = text.replace(ere_escape(root), "@SRC@").replace(root, "@SRC@")
+    return text
+
+
+class Hasher:
+    def __init__(self) -> None:
+        self.known: dict[str, str | None] = {}
+
+    def file(self, path: str) -> str | None:
+        if path not in self.known:
+            try:
+                with open(path, "rb") as f:
+                    self.known[path] = hashlib.sha256(f.read()).hexdigest()
+            except OSError:
+                self.known[path] = None
+        return self.known[path]
+
+
+HASH = Hasher()
+
+
+def option(cmd: list[str], *names: str) -> tuple[int, int, str] | None:
+    """Where option `names` sits in `cmd`: `(index, width, value)`, width 1 for `-x=v`, 2 for `-x v`."""
+    for i, arg in enumerate(cmd[1:], 1):
+        for name in names:
+            if arg == name and i + 1 < len(cmd):
+                return i, 2, cmd[i + 1]
+            if arg.startswith(name + "="):
+                return i, 1, arg[len(name) + 1 :]
+    return None
+
+
+def with_option(cmd: list[str], names: tuple[str, ...], value: str) -> list[str]:
+    """`cmd` with option `names[0]` set to `value`, replacing any spelling of it."""
+    found = option(cmd, *names)
+    out = list(cmd)
+    if found is not None:
+        i, width, _ = found
+        out[i : i + width] = [f"{names[0]}={value}"]
+    else:
+        out.insert(1, f"{names[0]}={value}")
+    return out
+
+
+HEADER_FILTER = ("--header-filter", "-header-filter")
+EXCLUDE_FILTER = ("--exclude-header-filter", "-exclude-header-filter")
+INLINE_CONFIG = ("--config", "-config")
+DATABASE = ("-p", "--p")
+CONFIG_FILE = ("--config-file", "-config-file")
+
+
+class Unit:
+    """One `clang_tidy:` test clang-tidy runs here, or why it cannot."""
+
+    def __init__(self, test: dict[str, object], test_dir: str) -> None:
+        self.name = str(test["name"])
+        self.rel = self.name[len(PREFIX) :]
+        self.cmd = [str(a) for a in test.get("command") or []]  # type: ignore[union-attr]
+        props = {p["name"]: p["value"] for p in test.get("properties") or []}  # type: ignore[union-attr,index]
+        # ctest's default is the test's own build directory, which the
+        # listing does not name: only absolute paths are read without one.
+        self.cwd = str(props.get("WORKING_DIRECTORY") or test_dir)
+        try:
+            self.timeout = float(props.get("TIMEOUT") or 0) or BLOCK_TIMEOUT
+        except (TypeError, ValueError):
+            self.timeout = BLOCK_TIMEOUT
+        relative = any(not a.startswith("-") and not os.path.isabs(a) for a in self.cmd[1:])
+        self.why_not = ""
+        self.source = ""
+        self.database = ""
+        if not self.cmd or not TIDY_EXE.search(self.cmd[0]):
+            self.why_not = "its command is not clang-tidy itself"
+        elif set(props) - PLAIN:
+            self.why_not = "it sets " + ", ".join(sorted(set(props) - PLAIN))
+        elif relative and "WORKING_DIRECTORY" not in props:
+            self.why_not = "it names a relative path and no WORKING_DIRECTORY"
+        else:
+            for arg in self.cmd[1:]:
+                if not arg.startswith("-") and rel(norm(arg, self.cwd)) == self.rel:
+                    self.source = arg
+            if not self.source:
+                self.why_not = f"its command does not name {self.rel}"
+        if not self.why_not:
+            found = option(self.cmd, *DATABASE)
+            start = os.path.dirname(norm(self.source, self.cwd))
+            if found is not None:
+                self.database = norm(found[2], self.cwd)
+            else:
+                # As clang-tidy looks for one: up from the source.
+                d = start
+                while True:
+                    if os.path.isfile(os.path.join(d, "compile_commands.json")):
+                        self.database = d
+                        break
+                    if d == os.path.dirname(d):
+                        break
+                    d = os.path.dirname(d)
+        self.path = norm(self.source, self.cwd) if self.source else ""
+
+    def config_bytes(self, start: str = "") -> str:
+        """What the configuration hashes to: `--config-file`, or each `.clang-tidy` up from `start`.
+
+        `start` is the source's directory unless given: a stub's is its header's.
+        """
+        found = option(self.cmd, *CONFIG_FILE)
+        if found is not None:
+            return HASH.file(norm(found[2], self.cwd)) or "missing"
+        # Those that exist only: the directories above the worktree are named
+        # anew for each push.
+        parts = []
+        d = start or os.path.dirname(self.path)
+        while True:
+            digest = HASH.file(os.path.join(d, ".clang-tidy"))
+            if digest is not None:
+                parts.append(f"{spelled(d)}:{digest}")
+            if d == os.path.dirname(d):
+                break
+            d = os.path.dirname(d)
+        return ";".join(parts)
+
+    def config_path(self, start: str = "") -> str | None:
+        """The configuration clang-tidy reads for a file in `start`, the source's directory unless given."""
+        found = option(self.cmd, *CONFIG_FILE)
+        if found is not None:
+            return norm(found[2], self.cwd)
+        d = start or os.path.dirname(self.path)
+        while True:
+            if os.path.isfile(os.path.join(d, ".clang-tidy")):
+                return os.path.join(d, ".clang-tidy")
+            if d == os.path.dirname(d):
+                return None
+            d = os.path.dirname(d)
+
+
+class Database:
+    """A build directory's compile commands and ninja dependency log."""
+
+    def __init__(self, directory: str) -> None:
+        self.directory = directory
+        self.entries: dict[str, list[dict[str, object]]] = {}
+        self.deps: dict[str, list[str] | None] = {}
+        try:
+            with open(os.path.join(directory, "compile_commands.json"), encoding="utf-8") as f:
+                for entry in json.load(f):
+                    d = str(entry.get("directory", directory))
+                    self.entries.setdefault(norm(str(entry["file"]), d), []).append(entry)
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        try:
+            dump = subprocess.run(
+                ["ninja", "-C", directory, "-t", "deps"], capture_output=True, text=True, check=True
+            ).stdout
+        except (OSError, subprocess.CalledProcessError):
+            dump = ""
+        obj = None
+        for line in dump.splitlines():
+            if line and not line.startswith(" "):
+                head, _, tail = line.partition(": #deps")
+                obj = norm(head, directory)
+                self.deps[obj] = [] if "(VALID)" in tail else None
+            elif line.startswith("    ") and obj is not None and self.deps.get(obj) is not None:
+                self.deps[obj].append(norm(line[4:], directory))  # type: ignore[union-attr]
+
+    def entry(self, path: str) -> dict[str, object] | None:
+        """`path`'s first entry: the flags a stub copies."""
+        found = self.entries.get(path)
+        return found[0] if found else None
+
+    def all_entries(self, path: str) -> list[dict[str, object]]:
+        """Every entry for `path`: clang-tidy runs each, one per target that builds it."""
+        return self.entries.get(path, [])
+
+    def closure(self, path: str) -> list[str] | None:
+        """Every file the last builds of `path`'s objects read, or None when the log cannot say."""
+        entries = self.all_entries(path)
+        if not entries:
+            return None
+        read: list[str] = []
+        for entry in entries:
+            if "output" not in entry:
+                return None
+            obj = norm(str(entry["output"]), str(entry.get("directory", self.directory)))
+            deps = self.deps.get(obj)
+            if deps is None:
+                return None
+            read += deps
+        return read
+
+
+DATABASES: dict[str, Database] = {}
+
+
+def database(directory: str) -> Database | None:
+    if not directory:
+        return None
+    if directory not in DATABASES:
+        DATABASES[directory] = Database(directory)
+    return DATABASES[directory]
+
+
+def yaml_scalar(text: str, key: str) -> str | None:
+    """A one-line YAML scalar `key: value`, quoted or not; None when absent or not one line."""
+    m = re.search(rf"^{key}:[ \t]*(.*?)[ \t]*$", text, re.MULTILINE)
+    if not m or not m.group(1) or m.group(1)[0] in "|>":
+        return None
+    v = m.group(1)
+    if v[0] == "'" and v.endswith("'") and len(v) > 1:
+        return v[1:-1].replace("''", "'")
+    if v[0] == '"' and v.endswith('"') and len(v) > 1:
+        return bytes(v[1:-1], "utf-8").decode("unicode_escape")
+    return v.split(" #")[0]
+
+
+class Scope:
+    """Which headers a unit reports on: its header filter less its exclusion.
+
+    Each is the command's option, else the key in the nearest `.clang-tidy`,
+    else in a parent's while one says `InheritParentConfig: true`, else
+    clang-tidy's default for its version. One it cannot read (an inline
+    `--config`, a key spread over lines, a version it cannot tell) is taken
+    as every header.
+    """
+
+    def __init__(self, unit: Unit) -> None:
+        self.include: re.Pattern[str] | None = None
+        self.exclude: re.Pattern[str] | None = None
+        self.unknown = True
+        if option(unit.cmd, *INLINE_CONFIG) is not None:
+            return
+        found = option(unit.cmd, *HEADER_FILTER)
+        include = found[2] if found is not None else None
+        found = option(unit.cmd, *EXCLUDE_FILTER)
+        exclude = found[2] if found is not None else None
+        config = unit.config_path()
+        while config is not None and (include is None or exclude is None):
+            try:
+                with open(config, encoding="utf-8") as f:
+                    text = f.read()
+            except OSError:
+                return
+            if include is None:
+                include = yaml_scalar(text, "HeaderFilterRegex")
+                if include is None and re.search(r"^HeaderFilterRegex:", text, re.MULTILINE):
+                    return
+            if exclude is None:
+                exclude = yaml_scalar(text, "ExcludeHeaderFilterRegex")
+                if exclude is None and re.search(r"^ExcludeHeaderFilterRegex:", text, re.MULTILINE):
+                    return
+            parent = os.path.dirname(os.path.dirname(config))
+            inherits = (yaml_scalar(text, "InheritParentConfig") or "").lower() in ("true", "yes", "on")
+            if not inherits or option(unit.cmd, *CONFIG_FILE) is not None or parent == os.path.dirname(config):
+                break
+            config = unit.config_path(parent)
+        if include is None:
+            # Set nowhere: clang-tidy's default, every non-system header from 22 on.
+            m = re.search(r"version (\d+)\.", tidy_version(unit.cmd[0]))
+            if m is None:
+                return
+            include = ".*" if int(m.group(1)) >= 22 else ""
+        try:
+            self.include = re.compile(include) if include else None
+            self.exclude = re.compile(exclude) if exclude else None
+        except re.error:
+            return
+        self.unknown = False
+
+    def covers(self, path: str) -> bool:
+        if self.unknown:
+            return True
+        if self.include is None:
+            return False
+        names = [path, rel(path) or path]
+        if not any(self.include.search(n) for n in names):
+            return False
+        return not (self.exclude and any(self.exclude.search(n) for n in names))
+
+
+SCOPES: dict[str, Scope] = {}
+
+
+def scope_of(unit: Unit) -> Scope:
+    if unit.name not in SCOPES:
+        SCOPES[unit.name] = Scope(unit)
+    return SCOPES[unit.name]
+
+
+def ere_escape(path: str) -> str:
+    return re.sub(r"([][\\.*+?^$(){}|])", r"\\\1", path)
+
+
+def header_filter(header: str) -> str:
+    """A header filter for `header` alone, however an includer spells it.
+
+    clang-tidy matches the name the include resolved to: the header's path
+    under either spelling of the worktree, or one through a `..` the
+    include or a search path holds (`src/../include/x.h`,
+    `include/sub/../x.h`). So the filter is the path, or any path in the
+    worktree through a `..` that ends in the header's file name; another
+    file only that last could take is not likely.
+    """
+    inner = rel(header)
+    if inner is None:
+        return "^" + ere_escape(header) + "$"
+    roots = "|".join(ere_escape(r) for r in ROOTS)
+    if len(ROOTS) > 1:
+        roots = f"({roots})"
+    name = ere_escape(os.path.basename(inner))
+    return f"^{roots}/({ere_escape(inner)}|(.*/)?\\.\\./(.*/)?{name})$"
+
+
+def system_dirs(entry: dict[str, object] | None) -> list[str]:
+    """The directories `entry` searches as system headers (`-isystem`, `-idirafter`)."""
+    if entry is None:
+        return []
+    if "arguments" in entry:
+        args = [str(a) for a in entry["arguments"]]  # type: ignore[union-attr]
+    else:
+        try:
+            args = shlex.split(str(entry.get("command", "")))
+        except ValueError:
+            return []
+    base = str(entry.get("directory", ""))
+    dirs = []
+    for i, arg in enumerate(args):
+        for flag in ("-isystem", "-idirafter"):
+            if arg == flag and i + 1 < len(args):
+                dirs.append(norm(args[i + 1], base))
+            elif arg.startswith(flag) and len(arg) > len(flag):
+                dirs.append(norm(arg[len(flag) :].lstrip("="), base))
+    return dirs
+
+
+def tracked() -> set[str] | None:
+    """The worktree's tracked files, a submodule's not among them; None when git cannot say."""
+    env = {k: v for k, v in E.items() if not k.startswith("GIT_")}
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-z"], cwd=ROOTS[0], env=env, capture_output=True, check=True
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return {norm(p, ROOTS[0]) for p in out.decode("utf-8", "surrogateescape").split("\0") if p}
+
+
+class Job:
+    def __init__(
+        self, label: str, cmd: list[str], cwd: str, key: str | None, size: int, timeout: float | None = None
+    ) -> None:
+        self.label = label
+        self.timeout = timeout
+        self.cmd = cmd
+        self.cwd = cwd
+        self.key = key
+        self.size = size
+        self.header = ""  # the header a stub stands in for
+        self.confirms = ""  # the header whose failed stub this unit judges
+        self.output = ""
+        self.ok = False
+        self.cached = False
+
+
+class Cache:
+    def __init__(self, directory: str) -> None:
+        self.directory = directory
+        if directory:
+            try:
+                os.makedirs(directory, exist_ok=True)
+            except OSError as exc:
+                say(f"lint: the tidy cache {directory} cannot be made ({exc.strerror}); every unit runs")
+                self.directory = ""
+        self.prune()
+
+    def path(self, key: str) -> str:
+        return os.path.join(self.directory, key[:2], key)
+
+    def hit(self, key: str | None) -> str | None:
+        if not self.directory or key is None:
+            return None
+        try:
+            with open(self.path(key), encoding="utf-8", errors="replace") as f:
+                out = f.read()
+            os.utime(self.path(key))
+            return out
+        except OSError:
+            return None
+
+    def store(self, key: str | None, output: str) -> None:
+        if not self.directory or key is None:
+            return
+        path = self.path(key)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = f"{path}.{os.getpid()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(output)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+    def prune(self, days: int = 30) -> None:
+        """Entries no push has used for `days`, at most once a day."""
+        if not self.directory:
+            return
+        stamp = os.path.join(self.directory, ".pruned")
+        now = time.time()
+        try:
+            if now - os.stat(stamp).st_mtime < 86400:
+                return
+        except OSError:
+            pass
+        try:
+            with open(stamp, "w"):
+                pass
+            # Only what is shaped as an entry: the directory may be shared.
+            for top in os.scandir(self.directory):
+                if top.is_dir() and re.fullmatch(r"[0-9a-f]{2}", top.name):
+                    for entry in os.scandir(top.path):
+                        if (
+                            re.fullmatch(r"[0-9a-f]{64}(\.[0-9]+\.tmp)?", entry.name)
+                            and entry.name.startswith(top.name)
+                            and now - entry.stat().st_mtime > days * 86400
+                        ):
+                            os.unlink(entry.path)
+        except OSError:
+            pass
+
+
+VERSIONS: dict[str, str] = {}
+
+
+def tidy_version(exe: str) -> str:
+    if exe not in VERSIONS:
+        try:
+            VERSIONS[exe] = subprocess.run([exe, "--version"], capture_output=True, text=True).stdout
+        except OSError:
+            VERSIONS[exe] = ""
+    return VERSIONS[exe]
+
+
+def key_of(
+    unit: Unit,
+    cmd: list[str],
+    entries: list[dict[str, object]],
+    closure: list[str] | None,
+    extra: str,
+    config: str = "",
+) -> str | None:
+    """The cache key of running `cmd` for `unit`; None when its inputs cannot all be named."""
+    if not entries or closure is None:
+        return None
+    files = []
+    for path in sorted(set(closure)):
+        digest = HASH.file(path)
+        if digest is None:
+            return None
+        files.append([spelled(path), digest])
+    material = {
+        "schema": SCHEMA,
+        "tidy": tidy_version(cmd[0]),
+        "cmd": [spelled(a) for a in cmd],
+        "cwd": spelled(unit.cwd),
+        "entries": json.loads(spelled(json.dumps(entries, sort_keys=True, ensure_ascii=False))),
+        "config": config or unit.config_bytes(),
+        "files": files,
+        "extra": extra,
+    }
+    return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
+
+
+def unit_job(unit: Unit, filter_: str) -> Job:
+    db = database(unit.database)
+    cmd = with_option(unit.cmd, HEADER_FILTER, filter_) if filter_ else list(unit.cmd)
+    entries = db.all_entries(unit.path) if db else []
+    closure = db.closure(unit.path) if db else None
+    key = key_of(unit, cmd, entries, closure, "")
+    try:
+        size = os.path.getsize(unit.path)
+    except OSError:
+        size = 0
+    return Job(unit.name, cmd, unit.cwd, key, size, unit.timeout)
+
+
+def stub_job(header: str, unit: Unit, stubs: str, n: int) -> Job | None:
+    """A unit of one line, `#include "<header>"`, with `unit`'s flags; None when they cannot be copied."""
+    db = database(unit.database)
+    entry = db.entry(unit.path) if db else None
+    if entry is None:
+        return None
+    # Beside the header, so a `.clang-tidy` found up from it is the header's.
+    stub = os.path.join(os.path.dirname(header), f".tidy-stub-{n}.cpp")
+    named = str(entry["file"])
+    copied = dict(entry)
+    copied["file"] = stub
+    copied.pop("output", None)
+    if "arguments" in entry:
+        args = [str(a) for a in entry["arguments"]]  # type: ignore[union-attr]
+        if named not in args:
+            return None
+        copied["arguments"] = [stub if a == named else a for a in args]
+    else:
+        command = str(entry.get("command", ""))
+        if named not in command:
+            return None
+        copied["command"] = command.replace(named, stub)
+    directory = os.path.join(stubs, str(n))
+    try:
+        os.makedirs(directory, exist_ok=True)
+        with open(stub, "w", encoding="utf-8") as f:
+            f.write(f'#include "{header}"\n')
+        with open(os.path.join(directory, "compile_commands.json"), "w", encoding="utf-8") as f:
+            json.dump([copied], f)
+    except OSError:
+        return None
+    cmd = [stub if a == unit.source else a for a in unit.cmd]
+    cmd = with_option(cmd, DATABASE, directory)
+    cmd = with_option(cmd, HEADER_FILTER, header_filter(header))
+    key_cmd = [a.replace(stub, "@STUB@").replace(directory, "@STUBDB@") for a in cmd]
+    key_entry = json.loads(json.dumps(copied, ensure_ascii=False).replace(stub, "@STUB@"))
+    closure = db.closure(unit.path) if db else None
+    config = unit.config_bytes(os.path.dirname(header))
+    key = key_of(unit, key_cmd, [key_entry], closure, "stub " + spelled(header), config)
+    job = Job(f"{PREFIX}{rel(header) or header} (stub, flags of {unit.rel})", cmd, unit.cwd, key, 0, unit.timeout)
+    job.header = header
+    return job
+
+
+def run(job: Job) -> Job:
+    try:
+        done = subprocess.run(
+            job.cmd,
+            cwd=job.cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            timeout=job.timeout,
+        )
+        job.output = done.stdout
+        # A `.clang-tidy` it cannot parse is reported for every file, which
+        # it then lints with its defaults and exits 0: not the configured gate.
+        job.ok = done.returncode == 0 and not CONFIG_ERROR.search(job.output)
+    except subprocess.TimeoutExpired:
+        job.output = f"{job.cmd[0]}: timed out after {job.timeout:g} s (the test's TIMEOUT)"
+        job.ok = False
+    except OSError as exc:
+        job.output = f"{job.cmd[0]}: {exc.strerror}"
+        job.ok = False
+    return job
+
+
+def main() -> int:
+    try:
+        with open(E["CI_TIDY_TESTS"], encoding="utf-8") as f:
+            listing = json.load(f)
+        if not isinstance(listing, dict):
+            raise ValueError("not an object")
+    except (OSError, ValueError) as exc:
+        say(f"lint: ctest's JSON listing cannot be read ({exc}); ctest runs the lint as before")
+        return 2
+    test_dir = E["CI_TIDY_TEST_DIR"]
+    full = E.get("CI_TIDY_FULL", "")
+    changed = [c for c in E.get("CI_CHANGED", "").split("\n") if c]
+    try:
+        cpus = len(os.sched_getaffinity(0))
+    except AttributeError:
+        cpus = os.cpu_count() or 1
+    jobs_n = int(E.get("CI_TIDY_JOBS") or 0) or cpus
+
+    units = [Unit(t, test_dir) for t in listing.get("tests", []) if str(t.get("name", "")).startswith(PREFIX)]
+    direct = [u for u in units if not u.why_not]
+    # Printed for the hook to select from as before.
+    for u in units:
+        if u.why_not:
+            say(f"lint: {u.name} runs through ctest: {u.why_not}")
+            print(u.name)
+    if not direct:
+        return 0
+
+    # Who includes what, from each unit's dependency log.
+    includers: dict[str, list[Unit]] = {}
+    unlogged: list[Unit] = []
+    for u in direct:
+        db = database(u.database)
+        closure = db.closure(u.path) if db else None
+        if closure is None:
+            unlogged.append(u)
+            continue
+        for path in closure:
+            if path != u.path:
+                includers.setdefault(path, []).append(u)
+    if len(unlogged) == len(direct):
+        say("lint: no dependency log names what the units read; ctest runs them as before")
+        return 2
+
+    builds = {u.database for u in direct if u.database}
+    # Units tidied for their own diagnostics only; units tidied with the
+    # configuration's header filter (what they read changed, or is unknown,
+    # and no stub can stand in for it); headers tidied through a stub.
+    main_units: dict[str, Unit] = {}
+    whole: dict[str, Unit] = {}
+    headers: list[str] = []
+    if full:
+        # A unit with no dependency record may read any header: no stub can
+        # be said to stand in for its view of one, so it reports on its own.
+        main_units = {u.name: u for u in direct}
+        whole = {u.name: u for u in unlogged}
+        files = tracked()
+        for path in sorted(includers):
+            if rel(path) is None or any(path.startswith(b + "/") for b in builds):
+                continue
+            if files is not None and path not in files:
+                continue  # generated, or a submodule's: not this project's to lint
+            if HEADER.search(path):
+                headers.append(path)
+            elif HEADER_LIKE.search(path):
+                # No stub stands in for it, so the units that read it report on it.
+                for u in includers[path]:
+                    if scope_of(u).covers(path):
+                        whole[u.name] = u
+    else:
+        by_rel = {u.rel: u for u in direct}
+        for c in changed:
+            path = norm(c, E["CI_SRC"])
+            if c in by_rel:
+                main_units[by_rel[c].name] = by_rel[c]
+            if HEADER.search(c):
+                # One deleted is not tidied: what included it no longer
+                # builds, or does without it.
+                if os.path.isfile(path):
+                    headers.append(path)
+                # It may be in what an unlogged unit reads.
+                for u in unlogged:
+                    whole[u.name] = u
+                continue
+            for u in includers.get(path, []):
+                whole[u.name] = u
+            if HEADER_LIKE.search(c):
+                # It may be in what an unlogged unit reads.
+                for u in unlogged:
+                    whole[u.name] = u
+
+    jobs = [unit_job(u, "") for u in whole.values()]
+    jobs += [unit_job(u, MAIN_ONLY) for u in main_units.values() if u.name not in whole]
+    for n, header in enumerate(headers):
+        reach = sorted(includers.get(header, []), key=lambda u: u.rel)
+        if not reach:
+            if not unlogged:
+                say(f"lint: no unit includes {rel(header)}, so it is not tidied")
+            continue
+        # The first includer that reports on it: the filter takes it, and
+        # the header is not a system header there. With none, no stub stands
+        # in for it, and the full lint does not report on it either; but what
+        # it does to the units that read it is theirs to report.
+        def system(u: Unit) -> bool:
+            db = database(u.database)
+            entries = db.all_entries(u.path) if db else []
+            return bool(entries) and all(
+                any(header.startswith(d + "/") for d in system_dirs(e)) for e in entries
+            )
+
+        first = next((u for u in reach if scope_of(u).covers(header) and not system(u)), None)
+        if first is None:
+            if not full:
+                say(
+                    f"lint: no unit that includes {rel(header)} reports on it; "
+                    f"the {len(reach)} unit(s) that include it are tidied for their own diagnostics"
+                )
+                jobs += [unit_job(u, MAIN_ONLY) for u in reach if u.name not in whole]
+            continue
+        job = stub_job(header, first, E["CI_TIDY_STUBS"], n)
+        if job is None:
+            say(f"lint: {rel(header)} cannot be given {first.rel}'s flags; its includers are tidied instead")
+            jobs += [unit_job(u, header_filter(header)) for u in reach]
+        else:
+            jobs.append(job)
+    return execute(dedupe(jobs), Cache(E.get("CI_TIDY_CACHE", "")), jobs_n, includers, full)
+
+
+def dedupe(jobs: list[Job]) -> list[Job]:
+    """One job per command: a unit two reasons reach is tidied once."""
+    seen: set[str] = set()
+    out = []
+    for job in jobs:
+        sig = json.dumps(job.cmd)
+        if sig not in seen:
+            seen.add(sig)
+            out.append(job)
+    return out
+
+
+def execute(jobs: list[Job], cache: Cache, jobs_n: int, includers: dict[str, list[Unit]], full: str) -> int:
+    """Tidies `jobs`, cached ones aside.
+
+    A stub is a screen, not the verdict: a header read on its own can show a
+    finding no unit that includes it reports (a macro's naming, say, which a
+    use in the unit exempts), and the full lint is the units. So a stub that
+    fails hands its header to its includers, filtered to that header, and
+    they decide.
+    """
+    started = time.time()
+    stubs = sum(1 for j in jobs if j.header)
+    say(
+        f"lint: {len(jobs) - stubs} unit(s) and {stubs} header stub(s), {jobs_n} at a time"
+        + (f"; every unit: {full}" if full else "")
+    )
+    failed = 0
+    hits = 0
+    ran = 0
+    done: set[str] = set()
+    confirming: dict[str, bool] = {}  # header -> whether an includer failed on it
+    wave = jobs
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, jobs_n)) as pool:
+        while wave:
+            todo = []
+            for job in wave:
+                done.add(json.dumps(job.cmd))
+                if cache.hit(job.key) is None:
+                    todo.append(job)
+                else:
+                    hits += 1
+            wave = []
+            for job in pool.map(run, sorted(todo, key=lambda j: -j.size)):
+                ran += 1
+                if job.ok:
+                    cache.store(job.key, job.output)
+                elif job.header:
+                    reach = includers.get(job.header, [])
+                    why = "does not compile on its own" if DIAG_ERROR in job.output else "fails on its own"
+                    say(f"lint: {rel(job.header)} {why}; the {len(reach)} unit(s) that include it decide")
+                    confirming[job.header] = False
+                    for u in reach:
+                        confirm = unit_job(u, header_filter(job.header))
+                        confirm.confirms = job.header
+                        if json.dumps(confirm.cmd) not in done:
+                            wave.append(confirm)
+                    wave = dedupe(wave)
+                else:
+                    failed += 1
+                    if job.confirms:
+                        confirming[job.confirms] = True
+                    say(f"lint: {job.label} failed")
+                    print(job.output.rstrip("\n"), file=sys.stderr)
+    for header, includer_failed in sorted(confirming.items()):
+        if not includer_failed:
+            say(f"lint: {rel(header)} passes in every unit that includes it")
+    say(f"lint: {ran} tidied, {hits} cached, {failed} failed, in {time.time() - started:.0f}s")
+    return 1 if failed else 0
+
+
+try:
+    sys.exit(main())
+except Exception as exc:  # a fault here must not stop a push ctest could lint
+    import traceback
+
+    traceback.print_exc()
+    say(f"lint: the lint runner failed ({exc!r}); ctest runs the lint as before")
+    sys.exit(2)
+PY
+}
+
+# Runs the `clang_tidy:` tests in build directory `$1` itself, listed with the
+# block's arguments `$2`, through the runner below; prints the ones it leaves
+# to ctest. Returns 1 when one failed, and 2 when ctest is to run them all as
+# before: no Python, a listing ctest cannot give, no dependency log.
+tidy_itself() {
+	python=${PRE_PUSH_PYTHON:-python3}
+	if ! command -v "$python" >/dev/null 2>&1; then
+		err "=== Local CI: lint through ctest, uncached: $python is not on PATH ==="
+		return 2
+	fi
+	# The runner needs 3.7: on an older one it would not compile, and its exit
+	# would read as a unit that failed.
+	if ! "$python" -I -c 'import sys; sys.exit(sys.version_info < (3, 7))' >/dev/null 2>&1; then
+		err "=== Local CI: lint through ctest, uncached: $python is older than 3.7 ==="
+		return 2
+	fi
+	listing="${CI_TIMINGS%/*}/tidy-tests.json"
+	stubs="${CI_TIMINGS%/*}/tidy-stubs"
+	if ! eval "command ctest $2 --show-only=json-v1 -R '^$TIDY_TESTS'" >"$listing" 2>/dev/null; then
+		err "=== Local CI: lint through ctest, uncached: ctest cannot list its tests as JSON ==="
+		return 2
+	fi
+	mkdir -p "$stubs" || return 2
+	CI_TIDY_PREFIX=$TIDY_TESTS CI_TIDY_TESTS=$listing CI_TIDY_STUBS=$stubs \
+		CI_TIDY_TEST_DIR=$(cd "$1" && pwd -P) CI_TIDY_FULL=$(every_source_reason) \
+		CI_TIDY_CACHE=$CI_TIDY_CACHE CI_TIDY_JOBS=$CI_TIDY_JOBS CI_TIDY_CTEST_ARGS=$2 \
+		CI_SRC=$CI_SRC CI_LOGICAL_SRC=$CI_LOGICAL_SRC CI_CHANGED=$CI_CHANGED \
+		"$python" -I -c "$(tidy_runner)"
+}
+
+# `ctest`, while the `test` block runs: the suite without the `clang_tidy:`
+# tests, then the ones this push reaches. The tests are listed first, with the
+# block's own arguments (a preset, a test directory, labels): a `ctest` that
+# selects no `clang_tidy:` test, or that cannot list them, runs as written. So
+# does one that only lists or reports.
+ctest() {
+	# Listing, reporting, and the modes that drive a whole run (a script, a
+	# dashboard), where `-N` would not stop the listing below from running it.
+	preset=''
+	excludes=''
+	for arg do
+		case $arg in
+		-N | --show-only | --show-only=* | --help | --version | --print-labels | \
+			-S* | -D | --dashboard | -T | --test-action | -M | --test-model | --build-and-test)
+			command ctest "$@"
+			return
+			;;
+		--preset | --preset=*) preset=yes ;;
+		-E | --exclude-regex | --exclude-regex=*) excludes=yes ;;
+		esac
+	done
+	# A preset's own exclusion is replaced, not widened, by an `-E` given
+	# beside it, so the suite cannot be split from its lint without running
+	# tests the project left out: run as written, lint and all.
+	if [ -n "$preset" ] && [ -z "$excludes" ]; then
+		err "=== Local CI: a ctest preset with no -E; its clang_tidy: tests run as the preset has them ==="
+		started=$(now)
+		ctest_status=0
+		command ctest "$@" || ctest_status=1
+		timed "$ci_suite" "$started"
+		return "$ctest_status"
+	fi
+
+	# The block's arguments without its own `-R`, for the listing and the lint.
+	test_dir=.
+	bare=''
+	next=''
+	for arg do
+		case $next in
+		skip)
+			next=''
+			continue
+			;;
+		dir)
+			test_dir=$arg
+			next=''
+			;;
+		esac
+		case $arg in
+		-R | --tests-regex)
+			next=skip
+			continue
+			;;
+		--tests-regex=*) continue ;;
+		--test-dir) next=dir ;;
+		--test-dir=*) test_dir=${arg#--test-dir=} ;;
+		esac
+		bare="$bare $(quote "$arg")"
+	done
+	all=$(eval "command ctest $bare -N -R '^$TIDY_TESTS'" 2>/dev/null |
+		sed -n "s/^ *Test *#[0-9][0-9]*: \\($TIDY_TESTS.*\\)\$/\\1/p")
+	ctest_status=0
+	if [ -z "$all" ]; then
+		started=$(now)
+		command ctest "$@" || ctest_status=1
+		timed "$ci_suite" "$started"
+		return "$ctest_status"
+	fi
+
+	# The suite: the block's exclusion, or none, widened by the lint tests.
+	next=''
+	merged=''
+	for arg do
+		shift
+		if [ "$next" = exclude ]; then
+			arg="($arg)|^$TIDY_TESTS"
+			merged=yes
+			next=''
+		else
+			case $arg in
+			-E | --exclude-regex) next=exclude ;;
+			--exclude-regex=*)
+				arg="--exclude-regex=(${arg#--exclude-regex=})|^$TIDY_TESTS"
+				merged=yes
+				;;
+			esac
+		fi
+		set -- "$@" "$arg"
+	done
+	[ -n "$merged" ] || set -- "$@" -E "^$TIDY_TESTS"
+	started=$(now)
+	command ctest "$@" || ctest_status=1
+	timed "$ci_suite" "$started"
+
+	started=$(now)
+	tidy_status=0
+	leftover=$(tidy_itself "$test_dir" "$bare") || tidy_status=$?
+	case $tidy_status in
+	0) ;;
+	2) leftover=$all ;;
+	*) ctest_status=1 ;;
+	esac
+	selection=''
+	[ -z "$leftover" ] || selection=$(lint_selection "$test_dir" "$leftover")
+	if [ -z "$selection" ]; then
+		timed lint "$started"
+		return "$ctest_status"
+	fi
+	eval "set -- $bare"
+	chunk=''
+	n=0
+	while IFS= read -r name; do
+		name=$(printf '%s' "$name" | sed 's/[][\\.*+?^$(){}|]/\\&/g')
+		chunk="${chunk:+$chunk|}$name"
+		n=$((n + 1))
+		if [ "$n" -ge "$LINT_CHUNK" ] || [ "${#chunk}" -ge "$LINT_CHUNK_BYTES" ]; then
+			command ctest "$@" -R "^($chunk)\$" || ctest_status=1
+			chunk=''
+			n=0
+		fi
+	done <<SELECTION
+$selection
+SELECTION
+	if [ -n "$chunk" ]; then
+		command ctest "$@" -R "^($chunk)\$" || ctest_status=1
+	fi
+	timed lint "$started"
+	return "$ctest_status"
+}
+
+# Directory `$1` with its symlinks resolved; nothing when it is not there.
+physical() { (cd "$1" 2>/dev/null && pwd -P); }
+
+#: The file in a CI directory naming the push that owns it: `<host> <pid>
+#: <pid namespace>` on its first line, the namespace empty where there is no
+#: `/proc`, and its start time on the second, empty where it cannot be read.
+#: A hook from before #198 reads the first line alone, which judges the owner
+#: as it always did, so hooks of either age can share a cache directory
+#: (#203). Hooks from #198 to #203 wrote all four on one line, with the
+#: namespace `-` (at first, nothing) where there is none. Their lines are
+#: read too.
+CI_OWNER='.local-ci-owner'
+
+# This process's pid namespace, where Linux names one: a pid is only alive or
+# gone within it.
+pid_ns() { readlink /proc/self/ns/pid 2>/dev/null || :; }
+
+# When process `$1` started, so that a later process given its pid is told
+# from it (#198): in clock ticks since boot where Linux says
+# (`/proc/<pid>/stat`'s 22nd field, read after the command name, which may
+# hold blanks and parentheses), as `ps` says to the second where there is
+# no procfs (in UTC and the C locale, which every push shares), and nothing
+# when `/proc` is another pid namespace's, mounted where this one has none
+# (its `<pid>` is another process; so is `ps`'s, which reads it).
+start_time() {
+	if [ ! -d /proc/self ]; then
+		[ ! -d /proc/1 ] || return 0
+		TZ=UTC0 LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -d ' \n'
+		return 0
+	fi
+	[ "$(readlink "/proc/$$/ns/pid" 2>/dev/null)" = "$(pid_ns)" ] || return 0
+	stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 0
+	stat=${stat##*) }
+	# shellcheck disable=SC2086 # split into its fields on purpose
+	set -- $stat
+	[ $# -ge 20 ] || return 0
+	shift 19
+	printf '%s' "$1"
+}
+
+# This push's owner, as `CI_OWNER` holds it.
+owner_line() {
+	printf '%s %s %s\n%s\n' "$(uname -n 2>/dev/null)" "$$" "$(pid_ns)" "$(start_time $$)"
+}
+
+# Removes CI directory `$1` and git's record of its worktree. Not `git
+# worktree remove`, which is newer than the git these hooks promise to run on:
+# the directory, then the record, which the worktree's `.git` file names
+# (relative to the worktree when git writes relative paths, so resolved
+# before the worktree goes). The record only while it names this worktree
+# back: git reuses a record's name once the old one is pruned, and it may then
+# be a running push's. Not `git worktree prune`, which would also forget any
+# other worktree of this clone whose disk is not mounted right now.
+remove_ci_dir() {
+	admin=$(sed -n 's/^gitdir: //p' "$1/src/.git" 2>/dev/null)
+	case $admin in /*) ;; ?*) admin="$1/src/$admin" ;; esac
+	ours=''
+	case $admin in
+	*/worktrees/*)
+		if back=$(cat "$admin/gitdir" 2>/dev/null); then
+			case $back in /*) ;; *) back="$admin/$back" ;; esac
+			here=$(physical "$1/src")
+			if [ -n "$here" ] && [ "$(physical "${back%/.git}")" = "$here" ]; then
+				ours=$(physical "$admin")
+			fi
+		fi
+		;;
+	esac
+	rm -rf "$1"
+	[ -z "$ours" ] || rm -rf "$ours"
+}
+
+# Removes the CI directories under `$1` that a push killed outright left
+# behind (no trap runs on SIGKILL): those this user owns whose owner ran on
+# this host, in this pid namespace, and is gone. One with no owner file, or
+# whose owner runs elsewhere (another host, a container sharing the
+# directory), may belong to a push still running, and is left alone; so is
+# another user's, whose pid `kill -0` cannot tell from a gone one. A reused
+# pid is told by its start time where that can be read; elsewhere it keeps a
+# stale directory one push longer.
+prune_ci() {
+	for owner in "$1"/*/"$CI_OWNER"; do
+		! owner_gone "$owner" || remove_ci_dir "${owner%/*}"
+	done
+}
+
+#: How long a lock directory with no owner file, or a takeover token, is
+#: watched before it is taken as a killed push's: far longer than a push takes
+#: from making either to renaming its owner file in, a read, a `mktemp`, a
+#: write and a rename, then to letting the token go, a `mktemp` and a rename.
+LOCK_GRACE=2
+
+# Whether directory `$1`, this user's, is the same one `LOCK_GRACE` seconds on.
+# What told it, its inode and path, is left in `alone`.
+left_alone() {
+	[ -d "$1" ] && [ -O "$1" ] || return 1
+	alone=$(ls -di "$1" 2>/dev/null) || return 1
+	sleep "$LOCK_GRACE"
+	[ "$(ls -di "$1" 2>/dev/null)" = "$alone" ]
+}
+
+# Whether lock directory `$1` was left by a push killed between making it and
+# writing its owner file: still the same directory, with no owner in it (no
+# file, or an empty one an older hook opened), `LOCK_GRACE` seconds on.
+owner_unwritten() {
+	[ ! -s "$1/$CI_OWNER" ] && left_alone "$1" && [ ! -s "$1/$CI_OWNER" ]
+}
+
+# Whether owner file `$1` names a push that is gone: one by this user, on this
+# host, in this pid namespace, whose pid is no longer alive, or is now another
+# process's, one started at another time (#198). What the file held is left in
+# `owner_text`, so that a takeover takes the owner judged (#216).
+owner_gone() {
+	owner_text=''
+	[ -f "$1" ] && [ -O "${1%/*}" ] || return 1
+	owner_host=''
+	owner_pid=''
+	owner_ns=''
+	owner_start=''
+	# Not opened, gone since the test above: its push has ended and taken it.
+	owner_text=$(cat "$1" 2>/dev/null) || return 1
+	{
+		IFS= read -r first || return 1
+		read -r second || second=''
+	} <<EOF
+$owner_text
+EOF
+	# The earliest one-line owner wrote an empty namespace as nothing between
+	# two blanks, which a split on blanks drops (#216).
+	case $first in *'  '*) first="${first%%  *} - ${first#*  }" ;; esac
+	read -r owner_host owner_pid owner_ns owner_start <<EOF
+$first
+EOF
+	[ -n "$owner_start" ] || owner_start=$second
+	[ "$owner_ns" != - ] || owner_ns=''
+	host=$(uname -n 2>/dev/null) || host=''
+	[ -n "$host" ] && [ "$owner_host" = "$host" ] && [ "$owner_ns" = "$(pid_ns)" ] || return 1
+	case $owner_pid in '' | *[!0-9]*) return 1 ;; esac
+	kill -0 "$owner_pid" 2>/dev/null || return 0
+	[ -n "$owner_start" ] || return 1
+	now_start=$(start_time "$owner_pid")
+	[ -n "$now_start" ] && [ "$now_start" != "$owner_start" ]
+}
+
+# Removes this push's CI directory, if one is up, or releases the warm
+# worktree's lock. Also on the way out of an interrupted push: dash runs an
+# EXIT trap on exit only, so a signal exits.
+cleanup=''
+unlock=''
+unlock_owner=''
+remove_ci() {
+	if [ -n "$unlock" ]; then
+		# Only while it is still this push's: a push that took it over
+		# wrongly would otherwise lose it to a third (#216).
+		[ "$(cat "$unlock/$CI_OWNER" 2>/dev/null)" != "$unlock_owner" ] || rm -rf "$unlock"
+		unlock=''
+	fi
+	[ -n "$cleanup" ] || return 0
+	remove_ci_dir "$cleanup"
+	cleanup=''
+}
+trap remove_ci EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# A worktree at `$1`, detached at commit `$2`. Quiet by capture: `--quiet` is
+# newer than the git these hooks promise to run on.
+add_worktree() {
+	if ! added=$(git worktree add --detach "$1" "$2" 2>&1); then
+		err "$added"
+		err "Push blocked: could not create the local CI worktree."
+		return 1
+	fi
+}
+
+# Why git records the worktree at `$1` as locked, from the record's own
+# `locked` file (`worktree list --porcelain` says so only from git 2.31);
+# fails when no record of `$1` is locked. `$1` may be gone, so it is matched
+# by its parent's physical path and its name.
+worktree_lock() {
+	common=$(physical "$(git rev-parse --git-common-dir 2>/dev/null)")
+	[ -n "$common" ] || return 1
+	want="$(physical "$(dirname "$1")")/$(basename "$1")"
+	for record in "$common"/worktrees/*; do
+		[ -f "$record/locked" ] && gitdir=$(cat "$record/gitdir" 2>/dev/null) || continue
+		# Relative to the record where `worktree.useRelativePaths` made it.
+		case $gitdir in /*) ;; *) gitdir="$record/$gitdir" ;; esac
+		tree=$(dirname "$gitdir")
+		[ "$(physical "$(dirname "$tree")")/$(basename "$tree")" = "$want" ] || continue
+		cat "$record/locked"
+		return
+	done
+	return 1
+}
+
+# Claims lock directory `$1` for owner line `$3` while its owner file still
+# holds `$2`: the owner judged gone, or nothing (no file, or an empty one).
+# Not by removing the lock and making it again: two pushes that judged it
+# gone together would each remove the other's (#216). Under a token, the
+# directory `.taking` in the lock, which one push at a time makes, and the
+# owner file replaced by a rename, so that it is never missing or half
+# written while the lock is held. Fails with 2 when this push's owner cannot
+# be written, and with 3 when the lock is gone: let go since it was judged.
+claim_lock() {
+	made=0
+	until mkdir "$1/.taking" 2>/dev/null; do
+		[ -d "$1" ] || return 3
+		if [ -d "$1/.taking" ]; then
+			take_token "$1/.taking" || return 1
+			break
+		fi
+		# None there: let go since, or it could not be made, on a full disk
+		# as the owner.
+		made=$((made + 1))
+		[ "$made" -lt 3 ] || return 2
+	done
+	claimed=1
+	if [ "$(cat "$1/$CI_OWNER" 2>/dev/null)" = "$2" ]; then
+		claimed=2
+		if claim=$(mktemp "$1/.owner.XXXXXX" 2>/dev/null); then
+			# Readable as a file written under the usual umask, for `lock_held`.
+			if { printf '%s\n' "$3" >"$claim" && chmod 644 "$claim" &&
+				mv -f "$claim" "$1/$CI_OWNER"; } 2>/dev/null; then
+				claimed=0
+			fi
+			rm -f "$claim"
+		fi
+	fi
+	# A token taken over holds the one it took, so it is renamed aside whole
+	# before it is removed: a takeover then finds nothing at its path, or a
+	# new token, never a part of this one.
+	if ! rmdir "$1/.taking" 2>/dev/null; then
+		if aside=$(mktemp -d "$1/.taken.XXXXXX" 2>/dev/null); then
+			mv "$1/.taking" "$aside" 2>/dev/null || :
+			rm -rf "$aside"
+		else
+			rm -rf "$1/.taking"
+		fi
+	fi
+	return "$claimed"
+}
+
+# Takes over token `$1`, in a lock, that a killed push left. A token is held
+# for a read and a rename: one left alone for `LOCK_GRACE` is a killed
+# push's. It is taken over the way a token is taken, by making `.taking` in
+# it, which one push at a time does; not by removing it, which two pushes
+# that judged it together would each do, the later to the token the earlier
+# made after (#231). A push killed in a takeover leaves its own token in the
+# one it took, so the innermost is the one watched. Fails when another push
+# has it.
+take_token() {
+	token=$1
+	while [ -d "$token/.taking" ]; do token="$token/.taking"; done
+	left_alone "$token" && mkdir "$token/.taking" 2>/dev/null || return 1
+	# Still the one judged: not let go by a push that took it over since,
+	# and made again by another.
+	[ "$(ls -di "$token" 2>/dev/null)" = "$alone" ] && return 0
+	rmdir "$token/.taking" 2>/dev/null || :
+	return 1
+}
+
+# Says the warm worktree at `$1` is held by another push, naming its owner.
+lock_held() {
+	held=$(tr '\n' ' ' 2>/dev/null <"$1.lock/$CI_OWNER") || held=''
+	held=${held% }
+	err "Push blocked: the warm local CI worktree $1 (hooks.localCiWorktree) is in use${held:+ by the push $held (host, pid, pid namespace, start time)}; push again when it ends, or remove $1.lock if no push holds it."
+}
+
+# In this repository's git (stdin of nothing), the warm worktree at `$1`
+# (`hooks.localCiWorktree`, #183) made or reused, locked for this push and
+# checked out at commit `$2`; its lock directory, which holds the timings, is
+# `$1.lock`. Fails, having said why, when it cannot be had.
+warm_worktree() {
+	# The owner before the lock, so that a kill between the two finds the
+	# window narrow.
+	me=$(owner_line)
+	tries=0
+	while :; do
+		judged=''
+		if ! mkdir "$1.lock" 2>/dev/null; then
+			if owner_gone "$1.lock/$CI_OWNER"; then
+				judged=$owner_text
+			elif ! owner_unwritten "$1.lock"; then
+				lock_held "$1"
+				return 1
+			fi
+		fi
+		claim_lock "$1.lock" "$judged" "$me"
+		taken=$?
+		# A lock let go while it was judged is taken again from the start.
+		tries=$((tries + 1))
+		[ "$taken" = 3 ] && [ "$tries" -lt 3 ] || break
+	done
+	case $taken in
+	0) ;;
+	2)
+		# A lock left without its owner is taken over after `LOCK_GRACE`,
+		# so a push that cannot say it holds the lock gives it back (#196).
+		rmdir "$1.lock" 2>/dev/null || :
+		err "Push blocked: could not write this push's owner into $1.lock, the warm local CI worktree's lock (hooks.localCiWorktree); a full disk?"
+		return 1
+		;;
+	3)
+		err "Push blocked: the warm local CI worktree $1 (hooks.localCiWorktree) changed hands while this push took it; push again."
+		return 1
+		;;
+	*)
+		lock_held "$1"
+		return 1
+		;;
+	esac
+	unlock="$1.lock"
+	unlock_owner=$me
+	if [ ! -e "$1/.git" ]; then
+		if [ -e "$1" ] && [ -n "$(ls -A "$1" 2>/dev/null)" ]; then
+			err "Push blocked: $1, which hooks.localCiWorktree names, is not empty and is no worktree; remove it or name another place."
+			return 1
+		fi
+		rmdir "$1" 2>/dev/null || :
+		# `-f`: git may still record a worktree here whose directory was
+		# removed (to force a cold build, say), and refuses to add it again.
+		# A push killed in its `add` leaves that record locked as git's own
+		# `initializing`, which `-f` alone does not override, so that lock is
+		# taken off (#205). Any other lock was placed on purpose, and is left
+		# to whoever placed it (#214). The `add` runs in the C locale, so that
+		# the reason it leaves is in the word looked for.
+		if reason=$(worktree_lock "$1"); then
+			if [ "$reason" != initializing ]; then
+				err "Push blocked: git records the warm local CI worktree $1 (hooks.localCiWorktree) as locked${reason:+ (\"$reason\")}; \`git worktree unlock $1\` if it may be made again there, or name another place."
+				return 1
+			fi
+			git worktree unlock "$1" >/dev/null 2>&1 || :
+		fi
+		if ! added=$(export LC_ALL=C && git worktree add -f --detach "$1" "$2" 2>&1); then
+			err "$added"
+			err "Push blocked: could not create the warm local CI worktree $1."
+			return 1
+		fi
+		return
+	fi
+	ours=$(physical "$(git rev-parse --git-common-dir 2>/dev/null)")
+	theirs=$(cd "$1" && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE &&
+		physical "$(git rev-parse --git-common-dir 2>/dev/null)")
+	if [ -z "$ours" ] || [ "$ours" != "$theirs" ]; then
+		err "Push blocked: $1, which hooks.localCiWorktree names, is not a worktree of this repository; remove it or name another place."
+		return 1
+	fi
+	# A push killed in its checkout leaves git's locks in the worktree's own
+	# git directory, or any in a submodule's under it, and every later
+	# checkout fails on them (#198). Holding the lock, this push is the only
+	# one at work here, so they are stale.
+	admin=$(cd "$1" && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE &&
+		git rev-parse --absolute-git-dir 2>/dev/null) || admin=''
+	if [ -n "$admin" ]; then
+		rm -f "$admin/index.lock" "$admin/HEAD.lock"
+		[ ! -d "$admin/modules" ] ||
+			find "$admin/modules" -type f -name '*.lock' -exec rm -f {} + 2>/dev/null || :
+	fi
+	if ! out=$(cd "$1" && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE &&
+		git checkout -q --detach --force "$2" 2>&1 && git clean -ffdq 2>&1); then
+		err "$out"
+		err "Push blocked: could not check out $(printf '%.12s' "$2") in the warm local CI worktree $1."
+		return 1
+	fi
+}
+
+# Builds and tests commit `$1`.
+local_ci() {
+	sha=$1
+	git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || git_dir=''
+	if [ -z "$git_dir" ]; then
+		err "Push blocked: git could not locate this worktree's git directory for the local CI."
+		return 1
+	fi
+	top=$(git rev-parse --show-toplevel)
+	cache_home=''
+	case ${XDG_CACHE_HOME:-} in
+	/*) cache_home=$XDG_CACHE_HOME ;;
+	*) [ -z "${HOME:-}" ] || cache_home="$HOME/.cache" ;;
+	esac
+	# A warm worktree (#183), kept between pushes; expanded and placed as
+	# `hooks.localCiDir` is below.
+	warm=$(git config hooks.localCiWorktree 2>/dev/null) || warm=''
+	if [ -n "$warm" ]; then
+		src=$(git config --path hooks.localCiWorktree 2>/dev/null) || src=''
+		case $src in
+		/*) ;;
+		'')
+			err "Push blocked: git could not expand hooks.localCiWorktree ($warm) into a path; \`git config hooks.localCiWorktree\` names another place."
+			return 1
+			;;
+		*)
+			if [ -z "$cache_home" ]; then
+				err "Push blocked: hooks.localCiWorktree ($warm) is relative, and there is no cache directory (XDG_CACHE_HOME, HOME) to take it under; \`git config hooks.localCiWorktree\` takes an absolute path."
+				return 1
+			fi
+			src="$cache_home/$src"
+			;;
+		esac
+		src=${src%/}
+		if ! mkdir -p "$(dirname "$src")" 2>/dev/null; then
+			err "Push blocked: could not create the directory for $src, which hooks.localCiWorktree names."
+			return 1
+		fi
+		warm_worktree "$src" "$sha" || return 1
+		work="$src.lock"
+	else
+		# A place the clone chose is not second-guessed, but it is never under the
+		# checkout (#143): relative, it is taken under the cache directory. Read
+		# raw to know whether it is set, then with `--path`, which expands a
+		# leading `~` and fails when it cannot: the push then blocks rather than
+		# picking another place.
+		chosen=$(git config hooks.localCiDir 2>/dev/null) || chosen=''
+		ci_dir=''
+		if [ -n "$chosen" ]; then
+			ci_dir=$(git config --path hooks.localCiDir 2>/dev/null) || ci_dir=''
+			case $ci_dir in
+			/*) ;;
+			'')
+				err "Push blocked: git could not expand hooks.localCiDir ($chosen) into a path; \`git config hooks.localCiDir\` names another place."
+				return 1
+				;;
+			*)
+				if [ -z "$cache_home" ]; then
+					err "Push blocked: hooks.localCiDir ($chosen) is relative, and there is no cache directory (XDG_CACHE_HOME, HOME) to take it under; \`git config hooks.localCiDir\` takes an absolute path."
+					return 1
+				fi
+				ci_dir="$cache_home/$ci_dir"
+				;;
+			esac
+		elif [ -n "$cache_home" ]; then
+			ci_dir="$cache_home/local-ci"
+		fi
+		work=''
+		if [ -n "$ci_dir" ] && mkdir -p "$ci_dir" 2>/dev/null; then
+			prune_ci "$ci_dir"
+			work=$(mktemp -d "$ci_dir/$(basename "$top").XXXXXX" 2>/dev/null) || work=''
+		fi
+		# The default place may be missing or unwritable (`HOME=/` in a container).
+		if [ -z "$work" ] && [ -z "$chosen" ]; then
+			err "pre-push: no usable ${ci_dir:-cache directory} (HOME, XDG_CACHE_HOME), so the local CI runs under $git_dir, where a tool looking for its config in parent directories can reach this working copy; \`git config hooks.localCiDir\` names another place."
+			ci_dir=$git_dir
+			prune_ci "$ci_dir"
+			work=$(mktemp -d "$ci_dir/$(basename "$top").XXXXXX") || work=''
+		fi
+		cleanup=$work
+		src="$work/src"
+		if [ -z "$work" ]; then
+			if [ -n "$chosen" ]; then
+				err "Push blocked: could not create a directory for the local CI under $ci_dir, which hooks.localCiDir names; \`git config hooks.localCiDir\` names another place."
+			else
+				err "Push blocked: could not create a directory for the local CI under $ci_dir."
+			fi
+			return 1
+		fi
+		# Who owns it, so that the next push can tell it from a running one.
+		owner_line >"$work/$CI_OWNER" 2>/dev/null || :
+		add_worktree "$src" "$sha" || return 1
+	fi
+	# Submodules, which a new worktree leaves empty. By force, and cleaned as
+	# the warm worktree is: a push killed in their checkout leaves them half
+	# written, which a plain update refuses to overwrite (#198). A git lock
+	# file in the way is this clone's trouble, not the pushed commit's, and is
+	# said apart from a failed checkout: one a killed push left in the clone's
+	# config fails every first registration of a submodule after it (#205).
+	# In the C locale, where git says so in the words looked for: its two
+	# lock messages, not any `File exists`, which a path in the way of the
+	# checkout says too (#214).
+	if [ -f "$src/.gitmodules" ] && ! out=$(cd "$src" && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE &&
+		export LC_ALL=C &&
+		git submodule update --init --recursive --force --quiet 2>&1 &&
+		git submodule --quiet foreach --recursive git clean -ffdq 2>&1); then
+		err "$out"
+		case $out in
+		*"Unable to create '"*".lock': File exists"* | *'could not lock config file '*': File exists'*)
+			err "Push blocked: a git lock file stands in the way of the submodules in the local CI worktree: the \`.lock\` git names above, or, where git says it could not lock a file, that file's name with \`.lock\` added (\`config\` is held by \`config.lock\`). Remove the lock, never the file it locks, if no git is running in this clone."
+			;;
+		*) err "Push blocked: could not check out the submodules in the local CI worktree." ;;
+		esac
+		return 1
+	fi
+	# This checkout's pinned tools, on PATH rather than linked in: a block that
+	# syncs an environment (`uv run`) would otherwise rewrite this checkout's
+	# `.venv` to point into a worktree about to be deleted.
+	# From a linked worktree the main checkout's come next, as in
+	# `pre-commit`: the worktree's own `.venv` may be missing, or hold only what
+	# `uv run` installed there.
+	tools=''
+	if common=$(git rev-parse --git-common-dir 2>/dev/null) &&
+		common=$(CDPATH='' cd -- "$common" 2>/dev/null && pwd) &&
+		[ "${common%/.git}" != "$common" ] && [ -d "${common%/.git}/.venv/bin" ]; then
+		tools="${common%/.git}/.venv/bin:"
+	fi
+	[ ! -d "$top/.venv/bin" ] || tools="$top/.venv/bin:$tools"
+	CI_SRC=$(cd "$src" && pwd -P)
+	CI_LOGICAL_SRC=$src
+	CI_TIMINGS="$work/timings"
+	: >"$CI_TIMINGS"
+	# The lint runner's cache (`tidy_runner`): on unless `hooks.tidyCache` is
+	# false, in `hooks.tidyCacheDir` (a relative one under the cache
+	# directory) or the default.
+	CI_TIDY_CACHE=''
+	if [ "$(git config --bool hooks.tidyCache 2>/dev/null)" != false ]; then
+		CI_TIDY_CACHE=$(git config --path hooks.tidyCacheDir 2>/dev/null) || CI_TIDY_CACHE=''
+		case $CI_TIDY_CACHE in
+		/*) ;;
+		'') [ -z "$cache_home" ] || CI_TIDY_CACHE="$cache_home/local-ci-tidy" ;;
+		*) CI_TIDY_CACHE=${cache_home:+$cache_home/$CI_TIDY_CACHE} ;;
+		esac
+	fi
+	CI_TIDY_JOBS=$(git config hooks.localCiJobs 2>/dev/null) || CI_TIDY_JOBS=''
+	case $CI_TIDY_JOBS in *[!0-9]* | 0)
+		err "pre-push: hooks.localCiJobs ($CI_TIDY_JOBS) is not a positive number; the lint runs one per CPU."
+		CI_TIDY_JOBS=''
+		;;
+	esac
+	# The CPUs the local CI may use (`hooks.localCiCpus`, a `taskset -c` list),
+	# set on this process so every block inherits them: `nproc` in a block
+	# then counts them, and so does the lint runner.
+	cpus=$(git config hooks.localCiCpus 2>/dev/null) || cpus=''
+	if [ -n "$cpus" ]; then
+		if ! command -v taskset >/dev/null 2>&1; then
+			err "pre-push: hooks.localCiCpus is set, but taskset is not on PATH; the local CI runs on every CPU."
+		elif ! taskset -p -c "$cpus" $$ >/dev/null 2>&1; then
+			err "pre-push: taskset could not pin the local CI to hooks.localCiCpus ($cpus); it runs on every CPU."
+		else
+			err "=== Local CI: on CPUs $cpus (hooks.localCiCpus) ==="
+		fi
+	fi
+
+	claude=$(git show "$sha:CLAUDE.md" 2>/dev/null)
+	ok=1
+	begun=$(now)
+	# A `lint` block, when the project has one, is where the `clang_tidy:`
+	# tests run: the `test` block then runs as written, and the lint step runs
+	# only the tests the push reaches.
+	lint_block=$(printf '%s\n' "$claude" | extract_block lint)
+	# A trailing blank or CR would make a line silently match nothing.
+	CI_LINT_EVERY=$(printf '%s\n' "$claude" | extract_block lint-every | sed 's/[[:space:]]*$//')
+	for step in clean build test ${lint_block:+lint}; do
+		# A warm worktree is kept so that its build is not thrown away.
+		if [ "$step" = clean ] && [ -n "$warm" ]; then
+			err "=== Local CI: clean skipped in the warm worktree $src (hooks.localCiWorktree) ==="
+			continue
+		fi
+		block=$(printf '%s\n' "$claude" | extract_block "$step")
+		if [ -z "$block" ]; then
+			[ "$step" = clean ] && continue
+			err "pre-push: CLAUDE.md has no \`$step\` block under ## Build & Test."
+			ok=0
+			break
+		fi
+		err "=== Local CI ($src at $(printf '%.12s' "$sha")): $step ==="
+		started=$(now)
+		[ "$step" != build ] || cache_before=$(ccache_counts)
+		# git exports GIT_DIR and friends into the hook, and a build's nested
+		# `git clone` (FetchContent) would then treat this repository as the
+		# one it is cloning into. `set -e`, so a block of one command per line
+		# fails on any of them, not only the last; `set +u`, so the block is
+		# not held to this hook's own strictness.
+		(
+			set -e
+			set +u
+			# What the wrapper calls the run beside the lint: in a `lint`
+			# block, whatever else it selects (a format check, say) is lint.
+			ci_suite=tests
+			case $step in
+			test) [ -z "$lint_block" ] || unset -f ctest ;;
+			lint) ci_suite=lint ;;
+			*) unset -f ctest ;;
+			esac
+			PATH="$tools$PATH"
+			cd "$src"
+			unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+			eval "$block"
+		) </dev/null
+		# Not `( ... ) || ok=0`: on the left of `||`, as in a condition, `set -e`
+		# is off for everything the subshell runs.
+		[ $? = 0 ] || ok=0
+		if [ "$step" = build ]; then
+			# The cache's share of the build, from its counters either side.
+			cache=$(printf '%s %s\n' "$cache_before" "$(ccache_counts)" | awk 'NF == 4 {
+				h = $3 - $1; m = $4 - $2
+				if (h + m > 0) printf "; ccache %d hits, %d misses (%.0f%% hits)", h, m, 100 * h / (h + m) }')
+			timed build "$started" "$cache"
+		elif [ "$step" = lint ]; then
+			grep -q '^lint ' "$CI_TIMINGS" || timed lint "$started"
+		elif [ "$step" != test ]; then
+			timed "$step" "$started"
+		elif ! grep -q '^tests ' "$CI_TIMINGS"; then
+			# Timed inside, as tests and lint, when the block runs `ctest`.
+			timed test "$started"
+		else
+			# What else the block ran beside `ctest` (a second test runner).
+			inner=$(awk '$1 == "tests" || $1 == "lint" { s += $2 } END { print s + 0 }' "$CI_TIMINGS")
+			rest=$(($(now) - started - inner))
+			[ "$rest" -lt 1 ] || printf 'rest %s\n' "$rest" >>"$CI_TIMINGS"
+		fi
+		if [ "$ok" = 0 ]; then
+			err "The \`$step\` step failed."
+			break
+		fi
+	done
+	# One line: each step's time, in the order the steps ran.
+	summary=$(awk "$DURATION_AWK"'
+		{ t[$1] += $2; if (!seen[$1]++) order[++n] = $1 }
+		END { for (i = 1; i <= n; i++) printf "%s %s %s", (i > 1 ? "," : ""), order[i], d(t[order[i]]) }' "$CI_TIMINGS")
+	err "=== Local CI times:$summary; total $(duration $(($(now) - begun))) ==="
+	remove_ci
+	[ "$ok" = 1 ]
+}
+
+# What each branch update adds: `<sha> <path>` lines, `/unknown` for the path
+# when git cannot say. A new branch is compared with the trunk it would join.
+pushed=''
+while read -r local_ref local_sha remote_ref remote_sha extra; do
+	[ -n "${remote_sha:-}" ] || continue
+	[ -z "${extra:-}" ] || continue
+	case $remote_ref in refs/heads/*) ;; *) continue ;; esac
+	is_sha "$local_sha" && is_sha "$remote_sha" || continue
+	is_absent "$local_sha" && continue
+	[ "$local_sha" = "$remote_sha" ] && continue
+	base=''
+	if is_absent "$remote_sha"; then
+		for trunk in $TRUNKS; do
+			if git rev-parse -q --verify "refs/remotes/$remote_name/$trunk^{commit}" >/dev/null 2>&1; then
+				base=$(git merge-base "refs/remotes/$remote_name/$trunk" "$local_sha" 2>/dev/null) || base=''
+				break
+			fi
+		done
+	else
+		base=$remote_sha
+	fi
+	if [ -z "$base" ] || ! files=$(git -c core.quotePath=false diff --no-renames --name-only "$base" "$local_sha" -- 2>/dev/null); then
+		files='/unknown'
+	fi
+	pushed=$(printf '%s\n%s' "$pushed" "$(printf '%s\n' "$files" | sed "s|^|$local_sha |")")
+done <<EOF
+$refs
+EOF
+
+# A git boolean: off, false, no and 0 all turn it off.
+mode=$(git config --bool hooks.localCi 2>/dev/null) || mode=''
+
+for sha in $(printf '%s\n' "$pushed" | awk 'NF { print $1 }' | awk '!seen[$0]++'); do
+	git show "$sha:CLAUDE.md" 2>/dev/null | extract_block build | grep -q . || continue
+	if [ "$mode" = false ]; then
+		err "pre-push: the local CI is off in this clone (hooks.localCi is false)."
+		break
+	fi
+	CI_CHANGED=$(printf '%s\n' "$pushed" | awk -v sha="$sha" '$1 == sha { print substr($0, length(sha) + 2) }')
+	code=$(printf '%s\n' "$CI_CHANGED" |
+		awk '$0 == "CLAUDE.md" || !($0 == "" || /\.md$/ || $0 == "LICENSE" || $0 == ".gitignore")')
+	if [ -z "$code" ]; then
+		err "=== Local CI: skipped for $(printf '%.12s' "$sha"), which changes only documentation ==="
+		continue
+	fi
+	# Called on its own, never as a condition: in one, `set -e` would be off
+	# for everything the blocks run.
+	local_ci "$sha"
+	if [ $? != 0 ]; then
+		err "Push blocked by the local CI. Fix it; the review receipt stays until you commit again."
+		exit 1
+	fi
+done
 
 exit 0

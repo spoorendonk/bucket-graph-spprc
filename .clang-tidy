@@ -1,3 +1,4 @@
+# wcp: config/.clang-tidy base=8fde61052c61
 ---
 # NOTE: `Checks:` below is a YAML folded scalar. A '#' inside it is NOT a
 # comment — it gets folded into the check string and silently corrupts the
