@@ -172,8 +172,10 @@ while read -r local_ref local_sha remote_ref remote_sha extra; do
 	is_trunk_ref "$remote_ref" || continue
 	is_sha "$local_sha" && is_sha "$remote_sha" || continue
 	is_absent "$local_sha" && continue
-	is_absent "$remote_sha" && continue
-	if ! found=$(git log --format='%h %s' "$remote_sha..$local_sha" -- 2>/dev/null); then
+	# A trunk the remote does not have yet: all of its history lands.
+	range="$remote_sha..$local_sha"
+	is_absent "$remote_sha" && range=$local_sha
+	if ! found=$(git log --format='%h %s' "$range" -- 2>/dev/null); then
 		err "warning: $remote_ref: git could not resolve $(printf '%.12s' "$remote_sha")..$(printf '%.12s' "$local_sha"), so this push was not checked for fixup! commits. \`git fetch\` and push again to have it checked."
 		continue
 	fi
@@ -182,7 +184,14 @@ while read -r local_ref local_sha remote_ref remote_sha extra; do
 	err "This push adds commits to $remote_ref that were meant to be folded away:"
 	err "$(printf '%s\n' "$found" | sed 's/^/      /')"
 	err "Fold them in and push the result:"
-	err "      GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash $(printf '%.12s' "$remote_sha")"
+	# Named branch, as the merge check's remedy does: `feature:main` pushed
+	# from `main` must not rebase `main`.
+	case $local_ref in refs/heads/*) branch=" ${local_ref#refs/heads/}" ;; *) branch='' ;; esac
+	if is_absent "$remote_sha"; then
+		err "      GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash --root$branch"
+	else
+		err "      GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash $(printf '%.12s' "$remote_sha")$branch"
+	fi
 	err "Push blocked: fixup!, squash! and amend! commits do not land on the trunk."
 	exit 1
 done <<EOF

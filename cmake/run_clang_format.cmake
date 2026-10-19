@@ -5,7 +5,8 @@
 # Usage: cmake -DCLANG_FORMAT=<exe> -DSOURCE_DIR=<root> -P run_clang_format.cmake
 
 execute_process(
-    COMMAND git -c core.quotePath=false ls-files -- *.h *.cpp
+    COMMAND git -c core.quotePath=false ls-files --
+            *.c *.cc *.cpp *.cxx *.h *.hh *.hpp *.hxx
     WORKING_DIRECTORY "${SOURCE_DIR}"
     OUTPUT_VARIABLE files
     OUTPUT_STRIP_TRAILING_WHITESPACE

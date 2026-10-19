@@ -37,9 +37,19 @@ jobs:
         env:
           BEFORE: ${{ github.event.before }}
         run: |
-          case $BEFORE in *[!0]*) range="$BEFORE..$GITHUB_SHA" ;; *) range="$GITHUB_SHA" ;; esac
-          # Separately, so a range git cannot resolve (a force-push whose
-          # old tip is gone) fails the step instead of passing it unchecked.
+          range="$GITHUB_SHA"
+          case $BEFORE in *[!0]*)
+            # A force-push leaves the old tip on no ref, so it is not fetched:
+            # check the whole history then, rather than a range that can
+            # never resolve.
+            if git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+              range="$BEFORE..$GITHUB_SHA"
+            else
+              echo "::warning::$BEFORE is not fetched (a force-push?); checking all of $GITHUB_SHA's history."
+            fi ;;
+          esac
+          # Separately, so a git failure fails the step instead of passing it
+          # unchecked.
           if ! log=$(git log --format='%h %s' "$range"); then
             echo "::error::git could not list $range, so this push was not checked for fixup commits."
             exit 1

@@ -224,7 +224,9 @@ if(BGSPPRC_BUILD_TESTS)
     find_program(BGSPPRC_PYTHON NAMES python3 python
         HINTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin" NAMES_PER_DIR NO_CACHE)
     if(BGSPPRC_PYTHON)
-        execute_process(COMMAND ${BGSPPRC_PYTHON} -c "import pytest"
+        # 3.10+: the tooling uses `X | None` annotations.
+        execute_process(COMMAND ${BGSPPRC_PYTHON} -c
+            "import sys, pytest; sys.exit(sys.version_info < (3, 10))"
             RESULT_VARIABLE BGSPPRC_HAS_PYTEST OUTPUT_QUIET ERROR_QUIET)
     endif()
     if(BGSPPRC_PYTHON AND BGSPPRC_HAS_PYTEST EQUAL 0)
