@@ -38,7 +38,13 @@ jobs:
           BEFORE: ${{ github.event.before }}
         run: |
           case $BEFORE in *[!0]*) range="$BEFORE..$GITHUB_SHA" ;; *) range="$GITHUB_SHA" ;; esac
-          if found=$(git log --format='%h %s' "$range" | grep -E '^[0-9a-f]+ (fixup|squash|amend)! '); then
+          # Separately, so a range git cannot resolve (a force-push whose
+          # old tip is gone) fails the step instead of passing it unchecked.
+          if ! log=$(git log --format='%h %s' "$range"); then
+            echo "::error::git could not list $range, so this push was not checked for fixup commits."
+            exit 1
+          fi
+          if found=$(printf '%s\n' "$log" | grep -E '^[0-9a-f]+ (fixup|squash|amend)! '); then
             echo "::error::unsquashed fixup commits reached main:"
             printf '%s\n' "$found"
             exit 1

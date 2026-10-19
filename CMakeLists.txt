@@ -220,8 +220,9 @@ if(BGSPPRC_BUILD_TESTS)
     # The benchmark tooling's pytest suite, when an interpreter with pytest is
     # found (`.venv/bin/python` first). Skipped with a warning otherwise: the
     # C++ build must not depend on a Python setup.
+    # NO_CACHE, so a .venv made after a first configure is picked up.
     find_program(BGSPPRC_PYTHON NAMES python3 python
-        HINTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin" NAMES_PER_DIR)
+        HINTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin" NAMES_PER_DIR NO_CACHE)
     if(BGSPPRC_PYTHON)
         execute_process(COMMAND ${BGSPPRC_PYTHON} -c "import pytest"
             RESULT_VARIABLE BGSPPRC_HAS_PYTEST OUTPUT_QUIET ERROR_QUIET)
@@ -245,7 +246,9 @@ if(BGSPPRC_BUILD_EXAMPLES)
 endif()
 
 # Lint gates, last so every option above is defined (BGSPPRC_BUILD_EXAMPLES).
-if(BGSPPRC_BUILD_TESTS)
+# Top level only: they read our compile_commands.json, which only a top-level
+# build writes, and a consumer's ctest is not ours to lint.
+if(BGSPPRC_BUILD_TESTS AND PROJECT_IS_TOP_LEVEL)
     # Every translation unit the build compiles; tidying them reaches every
     # header. See cmake/Lint.cmake.
     set(BGSPPRC_LINT_UNITS ${BGSPPRC_TEST_SOURCES} tests/test_benchmarks.cpp)

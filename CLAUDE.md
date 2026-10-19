@@ -30,7 +30,7 @@ rm -rf build
 ```
 
 ```build
-cmake -B build -G Ninja && cmake --build build -j"$(nproc)"
+cmake -B build $(command -v ninja >/dev/null && echo -G Ninja) && cmake --build build -j"$(nproc)"
 ```
 
 ```test
@@ -160,7 +160,7 @@ only `wcp init`; the CMake route gates a clone just as well.
 - **pre-commit** — `clang-format --dry-run -Werror` over every tracked C++ file. It checks, it does not reformat: run `clang-format -i` and commit again. No tests at commit.
 - **commit-msg** — Conventional Commits, subject ≤72 chars. `fixup!`/`squash!`/`amend!` pass through so `git rebase --autosquash` works, and `type!:` marks a breaking change (both local edits to wcp's hook).
 - **pre-push** — refuses merge commits and unsquashed `fixup!`/`squash!`/`amend!` commits on the trunk (the latter a local edit to wcp's hook) and a HEAD without a review receipt (`## Self-Review`), then runs the clean/build/test fences above in a fresh worktree of the pushed commit. Docs-only pushes skip the build.
-- **Lint as ctest tests** (`cmake/Lint.cmake`, label `lint`) — `clang_format` checks every tracked C++ file, and `clang_tidy:<path>` tidies one translation unit with warnings as errors, one test per unit in `BGSPPRC_LINT_UNITS` (every test, CLI and example source; headers are reached through them, all but the umbrella `bgspprc.h`, which only includes the others). pre-push runs the suite without them, then only the `clang_tidy:` tests the push reaches, through its cached runner; the build fence's `-G Ninja` gives it the dependency log it needs for that. A missing clang tool is a configure warning and drops its tests. `ctest -LE lint` skips them while iterating.
+- **Lint as ctest tests** (`cmake/Lint.cmake`, label `lint`) — `clang_format` checks every tracked C++ file, and `clang_tidy:<path>` tidies one translation unit with warnings as errors, one test per unit in `BGSPPRC_LINT_UNITS` (every test, CLI and example source; headers are reached through them, all but the umbrella `bgspprc.h`, which only includes the others). pre-push runs the suite without them, then only the `clang_tidy:` tests the push reaches, through its cached runner; the build fence uses Ninja when it is installed (`ninja-build`; stock Ubuntu lacks it, and then the gate falls back to running every `clang_tidy:` test uncached), which gives it the dependency log it needs for that. A missing clang tool is a configure warning and drops its tests. `ctest -LE lint` skips them while iterating. A changed header is tidied at push only through a one-line stub unit, not through its includers, and there is no scheduled full lint: **after a header change, run the whole lint yourself** (`ctest --test-dir build -L lint -j4`), since a finding that shows only when a template is instantiated surfaces there and nowhere else. PR CI (`ci.yml`) excludes the lint tests.
 - **CI** — `.github/workflows/receipt.yml` checks every push to main for its review receipt and for unsquashed fixups, so a `--no-verify` push is caught there. `ci.yml` builds and tests pull requests only.
 
 The old hooks also auto-formatted and re-staged (with shfmt and ruff too),
