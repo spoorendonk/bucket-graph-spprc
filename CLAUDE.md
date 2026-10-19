@@ -30,7 +30,7 @@ rm -rf build
 ```
 
 ```build
-cmake -B build && cmake --build build -j"$(nproc)"
+cmake -B build -G Ninja && cmake --build build -j"$(nproc)"
 ```
 
 ```test
@@ -142,7 +142,10 @@ project — there is no `pyproject.toml` and no venv by default.
 - Full type annotations on all functions; check with `mypy --strict`.
 - Built-in generics (`list[int]`, `dict[str, Any]`) and `|` unions.
 - `ruff` for format and lint; `test_<module>.py` for tests, run with pytest.
-- No hook runs `ruff`, `mypy` or `pytest`; run them yourself on Python changes.
+- ctest runs the pytest suite as `python_tests` when it finds a Python with
+  pytest (`.venv/bin` first: `uv venv && uv pip install pytest`); without one
+  configure warns and the gate skips it. No hook runs `ruff` or `mypy`; run
+  them yourself on Python changes.
 
 ## Tooling and Gates
 
@@ -156,14 +159,13 @@ only `wcp init`; the CMake route gates a clone just as well.
 
 - **pre-commit** — `clang-format --dry-run -Werror` over every tracked C++ file. It checks, it does not reformat: run `clang-format -i` and commit again. No tests at commit.
 - **commit-msg** — Conventional Commits, subject ≤72 chars. `fixup!`/`squash!`/`amend!` pass through so `git rebase --autosquash` works, and `type!:` marks a breaking change (both local edits to wcp's hook).
-- **pre-push** — refuses merge commits on the trunk and a HEAD without a review receipt (`## Self-Review`), then runs the clean/build/test fences above in a fresh worktree of the pushed commit. Docs-only pushes skip the build.
+- **pre-push** — refuses merge commits and unsquashed `fixup!`/`squash!`/`amend!` commits on the trunk (the latter a local edit to wcp's hook) and a HEAD without a review receipt (`## Self-Review`), then runs the clean/build/test fences above in a fresh worktree of the pushed commit. Docs-only pushes skip the build.
+- **Lint as ctest tests** (`cmake/Lint.cmake`, label `lint`) — `clang_format` checks every tracked C++ file, and `clang_tidy:<path>` tidies one translation unit with warnings as errors, one test per unit in `BGSPPRC_LINT_UNITS` (every test, CLI and example source; headers are reached through them, all but the umbrella `bgspprc.h`, which only includes the others). pre-push runs the suite without them, then only the `clang_tidy:` tests the push reaches, through its cached runner; the build fence's `-G Ninja` gives it the dependency log it needs for that. A missing clang tool is a configure warning and drops its tests. `ctest -LE lint` skips them while iterating.
+- **CI** — `.github/workflows/receipt.yml` checks every push to main for its review receipt and for unsquashed fixups, so a `--no-verify` push is caught there. `ci.yml` builds and tests pull requests only.
 
 The old hooks also auto-formatted and re-staged (with shfmt and ruff too),
-applied safe clang-tidy fixes, ran the suite at commit, and ran clang-tidy,
-shellcheck, ruff complexity and mypy as push warnings. wcp's pre-push lints
-only through ctest tests named `clang_tidy:<path>`, which this repo does not
-register yet, so **run clang-tidy yourself on C++ changes**. The tree is
-clang-tidy clean; keep it that way.
+applied safe clang-tidy fixes and ran the suite at commit, and ran
+shellcheck, ruff complexity and mypy as push warnings; those are gone.
 
 On a shared machine, pin the local CI to the job budget: `git config
 hooks.localCiCpus 0-3` makes the fences' `-j"$(nproc)"` see four CPUs.

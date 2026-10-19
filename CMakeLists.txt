@@ -216,6 +216,25 @@ if(BGSPPRC_BUILD_TESTS)
     target_include_directories(bench_runner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cli)
     target_compile_definitions(bench_runner PRIVATE
         DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/instances")
+
+    # The benchmark tooling's pytest suite, when an interpreter with pytest is
+    # found (`.venv/bin/python` first). Skipped with a warning otherwise: the
+    # C++ build must not depend on a Python setup.
+    find_program(BGSPPRC_PYTHON NAMES python3 python
+        HINTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin" NAMES_PER_DIR)
+    if(BGSPPRC_PYTHON)
+        execute_process(COMMAND ${BGSPPRC_PYTHON} -c "import pytest"
+            RESULT_VARIABLE BGSPPRC_HAS_PYTEST OUTPUT_QUIET ERROR_QUIET)
+    endif()
+    if(BGSPPRC_PYTHON AND BGSPPRC_HAS_PYTEST EQUAL 0)
+        add_test(NAME python_tests
+            COMMAND ${BGSPPRC_PYTHON} -m pytest -q -p no:cacheprovider
+                    ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks)
+    else()
+        message(WARNING "No Python with pytest found: python_tests is not "
+                        "registered, so the gate skips the benchmark tooling's "
+                        "tests. Install with: uv venv && uv pip install pytest")
+    endif()
 endif()
 
 # Examples (opt-in, off by default when consumed as submodule)
@@ -223,4 +242,19 @@ option(BGSPPRC_BUILD_EXAMPLES "Build examples" ${PROJECT_IS_TOP_LEVEL})
 
 if(BGSPPRC_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+# Lint gates, last so every option above is defined (BGSPPRC_BUILD_EXAMPLES).
+if(BGSPPRC_BUILD_TESTS)
+    # Every translation unit the build compiles; tidying them reaches every
+    # header. See cmake/Lint.cmake.
+    set(BGSPPRC_LINT_UNITS ${BGSPPRC_TEST_SOURCES} tests/test_benchmarks.cpp)
+    if(BGSPPRC_BUILD_CLI)
+        list(APPEND BGSPPRC_LINT_UNITS cli/main.cpp tests/test_instance_io.cpp)
+    endif()
+    if(BGSPPRC_BUILD_EXAMPLES)
+        list(APPEND BGSPPRC_LINT_UNITS
+            examples/basic_spprc.cpp examples/custom_resource.cpp)
+    endif()
+    include(cmake/Lint.cmake)
 endif()

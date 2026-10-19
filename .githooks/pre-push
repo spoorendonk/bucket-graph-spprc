@@ -163,6 +163,32 @@ if [ -n "$blocked" ]; then
 	exit 1
 fi
 
+# This project's own: commit-msg lets `fixup!`/`squash!`/`amend!` subjects
+# through so `git rebase --autosquash` works, so this is where they stop. Same
+# range and the same open-but-not-silent rule as the merge check above.
+while read -r local_ref local_sha remote_ref remote_sha extra; do
+	[ -n "${remote_sha:-}" ] || continue
+	[ -z "${extra:-}" ] || continue
+	is_trunk_ref "$remote_ref" || continue
+	is_sha "$local_sha" && is_sha "$remote_sha" || continue
+	is_absent "$local_sha" && continue
+	is_absent "$remote_sha" && continue
+	if ! found=$(git log --format='%h %s' "$remote_sha..$local_sha" -- 2>/dev/null); then
+		err "warning: $remote_ref: git could not resolve $(printf '%.12s' "$remote_sha")..$(printf '%.12s' "$local_sha"), so this push was not checked for fixup! commits. \`git fetch\` and push again to have it checked."
+		continue
+	fi
+	found=$(printf '%s\n' "$found" | grep -E '^[0-9a-f]+ (fixup|squash|amend)! ') || continue
+	err "=== Unsquashed fixups ==="
+	err "This push adds commits to $remote_ref that were meant to be folded away:"
+	err "$(printf '%s\n' "$found" | sed 's/^/      /')"
+	err "Fold them in and push the result:"
+	err "      GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash $(printf '%.12s' "$remote_sha")"
+	err "Push blocked: fixup!, squash! and amend! commits do not land on the trunk."
+	exit 1
+done <<EOF
+$refs
+EOF
+
 # ------------------------------------------------------------------ receipts
 #
 # A receipt is `refs/reviews/<sha>` pointing at `<sha>`. Self-reported, like
