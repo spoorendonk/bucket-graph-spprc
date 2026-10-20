@@ -14,6 +14,7 @@
 ///   --ng-metric M   distance|cost — metric for ng neighborhoods
 ///                   (default: distance for sppcc/vrp, cost for graph)
 ///   --steps S1,S2   Bucket step sizes (default: per-type)
+///   --xi X          Derive steps from ξ = X buckets per vertex (BG2021 §6.3)
 ///   --no-jump-arcs  Disable jump arcs (for ablation studies)
 ///   --max-paths N   Number of paths to return (0=all, 1=best; default: 1)
 ///   --theta T       Pricing threshold θ (default: -1e-6 for CG)
@@ -51,6 +52,7 @@ struct Options {
     int ng_metric = -1;           // -1 = auto: cost everywhere (parity with Pathwyse)
                                   //  0 = cost, 1 = distance
     double step1 = 0, step2 = 0;  // 0 = per-type default
+    double xi = 0;                // > 0: library ξ rule instead of steps
     bool auto_steps = false;      // use per-vertex auto-computed steps
     bool no_jump_arcs = false;    // disable jump arcs (for ablation studies)
     double theta = NAN;           // NAN = use Solver default (-1e-6)
@@ -103,6 +105,10 @@ typename Solver<Pack, Exec>::Options make_solver_opts(double s1, double s2, cons
     };
     if (!std::isnan(opts.theta)) {
         so.theta = opts.theta;
+    }
+    if (opts.xi > 0) {
+        so.bucket_steps = {0.0, 0.0};
+        so.xi = opts.xi;
     }
     return so;
 }
@@ -283,7 +289,7 @@ static Result run_graph(const std::string& path, const Options& opts, Exec execu
     // Default steps used as fallback; auto-compute overrides when no --steps
     double s1 = opts.step1 > 0 ? opts.step1 : 20.0;
     double s2 = opts.step2 > 0 ? opts.step2 : 50.0;
-    bool use_auto = (opts.step1 == 0 && opts.step2 == 0);
+    bool use_auto = (opts.step1 == 0 && opts.step2 == 0 && opts.xi == 0);
 
     Result r;
     r.name = inst.name.empty() ? fs::path(path).stem().string() : inst.name;
@@ -525,6 +531,13 @@ int main(int argc, char** argv) {
             }
         } else if (std::strcmp(argv[i], "--steps") == 0 && i + 1 < argc) {
             parse_steps(argv[++i], opts.step1, opts.step2);
+        } else if (std::strcmp(argv[i], "--xi") == 0 && i + 1 < argc) {
+            char* end = nullptr;
+            opts.xi = std::strtod(argv[++i], &end);
+            if (end == argv[i] || *end != '\0' || !(opts.xi > 0)) {
+                std::fprintf(stderr, "Invalid xi: %s (expected a positive number)\n", argv[i]);
+                return 1;
+            }
         } else if (std::strcmp(argv[i], "--auto-steps") == 0) {
             opts.auto_steps = true;
         } else if (std::strcmp(argv[i], "--no-jump-arcs") == 0) {
@@ -553,6 +566,11 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (opts.xi > 0 && (opts.step1 > 0 || opts.step2 > 0 || opts.auto_steps)) {
+        std::fprintf(stderr, "--xi derives the steps: drop --steps and --auto-steps\n");
+        return 1;
+    }
+
     if (paths.empty()) {
         std::fprintf(stderr,
                      "Usage: bgspprc-solve [OPTIONS] <path>...\n"
@@ -565,6 +583,7 @@ int main(int argc, char** argv) {
                      "  --ng-metric M   distance|cost — ng neighbor metric\n"
                      "                  (default: cost — parity with Pathwyse buildNG)\n"
                      "  --steps S1,S2   Bucket step sizes\n"
+                     "  --xi X          Derive steps from xi = X buckets per vertex (BG2021)\n"
                      "  --no-jump-arcs  Disable jump arcs (for ablation studies)\n"
                      "  --max-paths N   Number of paths to return (0=all, 1=best; default: 1)\n"
                      "  --theta T       Pricing threshold θ (default: -1e-6)\n"

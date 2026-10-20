@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <functional>
 #include <limits>
+#include <numbers>
 #include <numeric>
 #include <span>
 #include <stack>
@@ -123,7 +124,9 @@ template <typename Pack, Executor Exec = SequentialExecutor>
 class BucketGraph {
 public:
     struct Options {
-        std::array<double, 2> bucket_steps = {1.0, 1.0};
+        // A step <= 0 is derived from xi by the BG2021 §6.3 rule (derive_bucket_steps).
+        std::array<double, 2> bucket_steps = {0.0, 0.0};
+        double xi = 25.0;   // BG2021 §6.3: initial maximum number of buckets per vertex
         int max_paths = 0;  // 0 = unlimited
         double theta = -1e-6;
         bool bidirectional = false;
@@ -145,6 +148,11 @@ public:
         }
         adj_.build(pv_);
         n_main_ = std::min(pv_.n_main_resources, 2);
+        xi_ = opts_.xi;
+        for (int r = 0; r < 2; ++r) {
+            derived_step_[r] = !(opts_.bucket_steps[r] > 0.0);
+        }
+        derive_bucket_steps();
         if constexpr (Pack::size > 0) {
             min_dom_cost_ = pack_.min_domination_cost();
             if constexpr (has_r1c_) {
@@ -276,6 +284,7 @@ public:
                 }
                 if (max_ratio > threshold) {
                     opts_.bucket_steps[r] *= 0.5;
+                    derived_step_[r] = false;
                     changed = true;
                 }
             }
@@ -323,14 +332,34 @@ public:
         return count;
     }
 
-    /// BG2021 §6.3 A+: halve all bucket steps (doubles ξ).
-    void halve_bucket_steps() {
+    /// Current ξ (BG2021 §6.3): the initial value times 2 per A+ doubling.
+    /// It bounds the buckets per vertex only for steps derived from it.
+    double xi() const { return xi_; }
+
+    /// BG2021 §6.3 A+: multiply ξ by 2. Derived steps are recomputed from ξ;
+    /// explicit and per-vertex steps shrink by the same factor, 2^(1/n_main)
+    /// per main resource, so one main resource halves and two divide by √2.
+    /// Every step strictly shrinks, so the rebuild that follows refines.
+    void double_xi() {
+        xi_ *= 2.0;
+        const double f = xi_step_factor();
+        const std::array<double, 2> before = opts_.bucket_steps;
         for (int r = 0; r < n_main_; ++r) {
-            opts_.bucket_steps[r] *= 0.5;
+            if (!derived_step_[r]) {
+                opts_.bucket_steps[r] /= f;
+            }
         }
         for (auto& vs : vertex_bucket_steps_) {
             for (int r = 0; r < n_main_; ++r) {
-                vs[r] *= 0.5;
+                vs[r] /= f;
+            }
+        }
+        derive_bucket_steps();
+        // Rounding to one decimal maps a band of ξ to the same step (0.12 and
+        // 0.06 both give 0.1); shrink by the doubling's factor instead.
+        for (int r = 0; r < n_main_; ++r) {
+            if (derived_step_[r] && opts_.bucket_steps[r] >= before[r]) {
+                opts_.bucket_steps[r] = before[r] / f;
             }
         }
     }
@@ -612,6 +641,40 @@ private:
     };
 
     // ── Bucket construction ──
+
+    /// BG2021 §6.3: with ξ the maximum number of buckets per vertex, one main
+    /// resource gets d̃ = (u0 − l0)/ξ and two get W/√ξ and (u0 − l0)/√ξ, i.e.
+    /// range_r/ξ^(1/n_main) each, rounded off to one decimal place. The depot's
+    /// window [l0, u0] and [0, W] contain every vertex's, so the widest vertex
+    /// range stands in for them. Only steps the caller left <= 0 are derived,
+    /// from the ProblemView's bounds at construction and at each double_xi().
+    void derive_bucket_steps() {
+        const double per_dim = (n_main_ == 2) ? std::sqrt(xi_) : xi_;
+        for (int r = 0; r < 2; ++r) {
+            if (!derived_step_[r]) {
+                continue;
+            }
+            double range = 0.0;
+            if (r < n_main_) {
+                for (int v = 0; v < pv_.n_vertices; ++v) {
+                    range = std::max(range, pv_.vertex_ub[r][v] - pv_.vertex_lb[r][v]);
+                }
+            }
+            const double d = range / per_dim;
+            const double rounded = std::round(d * 10.0) / 10.0;
+            // The rounding would make a step under 0.05 zero, which the paper's
+            // integer data never meets: keep it unrounded. A resource without
+            // range (or no main resource r) needs one bucket of any width.
+            if (rounded > 0.0) {
+                opts_.bucket_steps[r] = rounded;
+            } else {
+                opts_.bucket_steps[r] = (d > 0.0) ? d : 1.0;
+            }
+        }
+    }
+
+    /// Each step shrinks by this factor when ξ doubles: ξ^(1/n_main).
+    double xi_step_factor() const { return (n_main_ == 2) ? std::numbers::sqrt2 : 2.0; }
 
     const std::array<double, 2>& step_for_vertex(int v) const {
         if (!vertex_bucket_steps_.empty()) {
@@ -3888,6 +3951,8 @@ private:
     [[no_unique_address]] Exec executor_;
     Adjacency adj_;
     int n_main_ = 1;
+    double xi_ = 25.0;                                   // current ξ (BG2021 §6.3)
+    std::array<bool, 2> derived_step_ = {false, false};  // step r follows ξ
     std::array<bool, 2> main_nondisposable_ = {false, false};
 
     const double* reduced_costs_ = nullptr;

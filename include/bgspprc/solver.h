@@ -19,7 +19,9 @@ public:
     using Path = typename BucketGraph<Pack, Exec>::Path;
 
     struct Options {
-        std::array<double, 2> bucket_steps = {1.0, 1.0};
+        // A step <= 0 is derived from xi (BG2021 §6.3); see BucketGraph::Options.
+        std::array<double, 2> bucket_steps = {0.0, 0.0};
+        double xi = 25.0;  // BG2021 §6.3: initial maximum number of buckets per vertex
         bool bidirectional = true;
         bool symmetric = false;
         bool no_jump_arcs = false;   // disable jump arcs (for ablation studies)
@@ -36,6 +38,7 @@ public:
           bg_(pv_, pack_,
               typename BucketGraph<Pack, Exec>::Options{
                   .bucket_steps = opts_.bucket_steps,
+                  .xi = opts_.xi,
                   .max_paths = opts_.max_paths,
                   .theta = opts_.theta,
                   .bidirectional = opts_.bidirectional,
@@ -174,6 +177,9 @@ public:
     /// Get current bucket steps.
     [[nodiscard]] const std::array<double, 2>& bucket_steps() const { return bg_.bucket_steps(); }
 
+    /// Current ξ, the maximum number of buckets per vertex (BG2021 §6.3).
+    [[nodiscard]] double xi() const { return bg_.xi(); }
+
     /// Set per-vertex bucket step sizes.
     void set_vertex_bucket_steps(std::vector<std::array<double, 2>> steps) {
         bg_.set_vertex_bucket_steps(std::move(steps));
@@ -186,7 +192,7 @@ public:
     }
 
 private:
-    /// BG2021 §6.3 A+: check if bucket steps should be halved.
+    /// BG2021 §6.3 A+: check if ξ should be doubled.
     /// Returns true if bucket graph was rebuilt with finer steps.
     bool try_refine_buckets() {
         if (exact_pricing_calls_ == 0) {
@@ -203,7 +209,7 @@ private:
         exact_pricing_calls_ = 0;
 
         if (avg_ratio > 500.0 && arcs_per_vertex < 10000.0) {
-            bg_.halve_bucket_steps();
+            bg_.double_xi();
             bg_.build();
             return true;
         }

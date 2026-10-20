@@ -4,8 +4,10 @@
 #include <bgspprc/resource.h>
 #include <bgspprc/resources/ng_path.h>
 #include <bgspprc/solver.h>
+#include <cmath>
 #include <cstdio>
 #include <doctest/doctest.h>
+#include <numbers>
 #include <type_traits>
 #include <vector>
 #ifndef _WIN32
@@ -2600,7 +2602,107 @@ TEST_CASE("Non-fixed arc count") {
     CHECK(count_after <= count_before);
 }
 
-TEST_CASE("Halve bucket steps") {
+// BG2021 §6.3: steps the caller leaves at 0 come from ξ, the maximum number
+// of buckets per vertex: range/ξ for one main resource, range_r/√ξ for two,
+// rounded off to one decimal place.
+TEST_CASE("Default 1D bucket step is the horizon over xi") {
+    LargerGraph g;  // horizon [0, 20]
+    BucketGraph<EmptyPack> bg(g.pv, EmptyPack{}, {.theta = 1e9});
+    CHECK(bg.xi() == doctest::Approx(25.0));
+    CHECK(bg.bucket_steps()[0] == doctest::Approx(0.8));
+    bg.build();
+    CHECK(bg.n_buckets() == 6 * 25);
+
+    bg.double_xi();
+    CHECK(bg.xi() == doctest::Approx(50.0));
+    CHECK(bg.bucket_steps()[0] == doctest::Approx(0.4));
+}
+
+TEST_CASE("Default bucket step below 0.05 is kept unrounded") {
+    SimpleGraph g;  // horizon [0, 10]
+    BucketGraph<EmptyPack> bg(g.pv, EmptyPack{}, {.xi = 1000.0, .theta = 1e9});
+    CHECK(bg.bucket_steps()[0] == doctest::Approx(0.01));
+}
+
+TEST_CASE("Doubling xi shrinks a derived step that rounding would keep") {
+    // Horizon 3: ξ = 25 gives 0.12 → 0.1, ξ = 50 gives 0.06 → 0.1 again.
+    double tw_ub[4] = {3.0, 3.0, 3.0, 3.0};
+    SimpleGraph g;
+    const double* v_ub[1] = {tw_ub};
+    g.pv.vertex_ub = v_ub;
+    BucketGraph<EmptyPack> bg(g.pv, EmptyPack{}, {.theta = 1e9});
+    CHECK(bg.bucket_steps()[0] == doctest::Approx(0.1));
+    bg.double_xi();
+    CHECK(bg.bucket_steps()[0] == doctest::Approx(0.05));
+}
+
+namespace {
+// SimpleGraph with a capacity resource [0, 200] as main resource 0 and a time
+// horizon [0, 1109] as main resource 1, the order the .graph loader uses.
+struct TwoResourceGraph {
+    int from[4] = {0, 0, 1, 2};
+    int to[4] = {1, 2, 3, 3};
+    double cost[4] = {1.0, 2.0, 3.0, 1.0};
+    double demand[4] = {10.0, 20.0, 0.0, 0.0};
+    double time_d[4] = {100.0, 200.0, 100.0, 100.0};
+    double cap_lb[4] = {0.0, 0.0, 0.0, 0.0};
+    double cap_ub[4] = {200.0, 200.0, 200.0, 200.0};
+    double tw_lb[4] = {0.0, 300.0, 0.0, 0.0};
+    double tw_ub[4] = {1109.0, 600.0, 900.0, 1109.0};
+    const double* arc_res[2] = {demand, time_d};
+    const double* v_lb[2] = {cap_lb, tw_lb};
+    const double* v_ub[2] = {cap_ub, tw_ub};
+    ProblemView pv;
+
+    TwoResourceGraph() {
+        pv.n_vertices = 4;
+        pv.source = 0;
+        pv.sink = 3;
+        pv.n_arcs = 4;
+        pv.arc_from = from;
+        pv.arc_to = to;
+        pv.arc_base_cost = cost;
+        pv.n_resources = 2;
+        pv.arc_resource = arc_res;
+        pv.vertex_lb = v_lb;
+        pv.vertex_ub = v_ub;
+        pv.n_main_resources = 2;
+    }
+};
+}  // namespace
+
+TEST_CASE("Default 2D bucket steps are W and the horizon over sqrt(xi)") {
+    TwoResourceGraph g;
+    BucketGraph<EmptyPack> bg(g.pv, EmptyPack{}, {.theta = 1e9});
+    CHECK(bg.bucket_steps()[0] == doctest::Approx(40.0));   // 200 / 5
+    CHECK(bg.bucket_steps()[1] == doctest::Approx(221.8));  // 1109 / 5
+
+    bg.double_xi();                                         // ξ = 50
+    CHECK(bg.bucket_steps()[0] == doctest::Approx(28.3));   // 200 / √50
+    CHECK(bg.bucket_steps()[1] == doctest::Approx(156.8));  // 1109 / √50
+
+    bg.build();
+    auto paths = bg.solve();
+    REQUIRE(!paths.empty());
+    double best = paths[0].reduced_cost;
+    for (const auto& p : paths) {
+        best = std::min(best, p.reduced_cost);
+    }
+    CHECK(best == doctest::Approx(3.0));  // 0 → 2 → 3
+}
+
+TEST_CASE("Doubling xi divides explicit 2D steps by sqrt(2)") {
+    TwoResourceGraph g;
+    BucketGraph<EmptyPack> bg(g.pv, EmptyPack{}, {.bucket_steps = {10.0, 0.0}, .theta = 1e9});
+    CHECK(bg.bucket_steps()[0] == doctest::Approx(10.0));   // explicit, kept
+    CHECK(bg.bucket_steps()[1] == doctest::Approx(221.8));  // derived
+
+    bg.double_xi();
+    CHECK(bg.bucket_steps()[0] == doctest::Approx(10.0 / std::numbers::sqrt2));
+    CHECK(bg.bucket_steps()[1] == doctest::Approx(156.8));
+}
+
+TEST_CASE("Doubling xi halves an explicit 1D step") {
     LargerGraph g;
     BucketGraph<EmptyPack> bg(g.pv, EmptyPack{},
                               {.bucket_steps = {10.0, 1.0}, .theta = 1e9, .stage = Stage::Exact});
@@ -2608,7 +2710,7 @@ TEST_CASE("Halve bucket steps") {
     auto steps_before = bg.bucket_steps();
     CHECK(steps_before[0] == doctest::Approx(10.0));
 
-    bg.halve_bucket_steps();
+    bg.double_xi();
     auto steps_after = bg.bucket_steps();
     CHECK(steps_after[0] == doctest::Approx(5.0));
 

@@ -150,9 +150,10 @@ pv.arc_resource = &arc_resource_ptr;
 pv.vertex_lb = &vertex_lb_ptr;
 pv.vertex_ub = &vertex_ub_ptr;
 
-// Create solver with no extra resources
-Solver<EmptyPack> solver(pv, EmptyPack{},
-    {.bucket_steps = {10.0, 1.0}});
+// Create solver with no extra resources. Bucket steps default to the
+// BG2021 §6.3 rule (horizon / ξ, ξ = 25 buckets per vertex, doubled when
+// dominance gets expensive); pass .bucket_steps = {10.0, 1.0} to fix them.
+Solver<EmptyPack> solver(pv, EmptyPack{});
 solver.set_stage(Stage::Exact);
 solver.build();
 
@@ -212,6 +213,7 @@ Options:
   --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;
                   from file or 8 for graph; 0 disables)
   --steps S1,S2   Bucket step sizes (default: per-type)
+  --xi X          Derive steps from ξ = X buckets per vertex (BG2021 §6.3)
   --max-paths N   Number of paths to return (0=all, 1=best; default: 1)
   --theta T       Pricing threshold θ (default: -1e-6 for CG)
   --auto-steps    Use per-vertex auto-computed steps

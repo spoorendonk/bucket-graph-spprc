@@ -94,7 +94,8 @@ Built-in resources:
 - **fw_completion / bw_completion**: Cost-to-go DP lower bounds computed in reverse topo order on bucket arc graph. Used for arc elimination and bucket fixing.
 - **Bucket fixing** (BG2021 §4.2): A bucket b is fixed when all paths through it are non-improving. Mono: `c_best(b) + fw_completion(b) > θ`. Bidir: additionally requires `bw_c_best(b) + bw_completion(b) > θ` AND `c_best(b) + bw_c_best(b) > θ` (all three must hold). θ = UB − LB + min{0, z} per eq (16).
 - **2D bucketing**: `n_main_resources=2` activates 2D grid with `nb[0]*nb[1]` buckets per vertex.
-- **A+ ξ-doubling**: Auto-triggers on CG convergence (avg ratio > 500 AND arcs/vertex < 10000) — halves bucket steps and rebuilds.
+- **Bucket steps from ξ** (BG2021 §6.3): ξ = max buckets per vertex, default 25. A step left at its default 0 is range_r/ξ^(1/n_main) rounded to 0.1 (1D: horizon/ξ; 2D: W/√ξ and horizon/√ξ). Explicit steps are kept.
+- **A+ ξ-doubling**: Auto-triggers on CG convergence (avg ratio > 500 AND arcs/vertex < 10000) — doubles ξ (`double_xi`: steps ÷2 in 1D, ÷√2 in 2D) and rebuilds.
 - **Concatenation**: Across-arc only (Meta-Solver style). For arc (i,j): extend fw@i through arc, check concatenation_cost at j with bw@j.
 
 ### Tests (tests/)
