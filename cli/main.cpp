@@ -534,7 +534,7 @@ int main(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--xi") == 0 && i + 1 < argc) {
             char* end = nullptr;
             opts.xi = std::strtod(argv[++i], &end);
-            if (end == argv[i] || *end != '\0' || !(opts.xi > 0)) {
+            if (end == argv[i] || *end != '\0' || !(opts.xi > 0) || !std::isfinite(opts.xi)) {
                 std::fprintf(stderr, "Invalid xi: %s (expected a positive number)\n", argv[i]);
                 return 1;
             }

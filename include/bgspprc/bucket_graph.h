@@ -148,6 +148,7 @@ public:
         }
         adj_.build(pv_);
         n_main_ = std::min(pv_.n_main_resources, 2);
+        assert(opts_.xi > 0.0 && std::isfinite(opts_.xi) && "xi must be positive and finite");
         xi_ = opts_.xi;
         for (int r = 0; r < 2; ++r) {
             derived_step_[r] = !(opts_.bucket_steps[r] > 0.0);
@@ -332,8 +333,9 @@ public:
         return count;
     }
 
-    /// Current ξ (BG2021 §6.3): the initial value times 2 per A+ doubling.
-    /// It bounds the buckets per vertex only for steps derived from it.
+    /// Current ξ (BG2021 §6.3): the initial value times 2 per A+ doubling. It
+    /// is the nominal bucket count per vertex of derived steps; rounding and
+    /// the shrink in double_xi() can make the actual count differ.
     double xi() const { return xi_; }
 
     /// BG2021 §6.3 A+: multiply ξ by 2. Derived steps are recomputed from ξ;
@@ -741,9 +743,15 @@ private:
 
         std::array<int, 2> k = {0, 0};
         for (int r = 0; r < n_main_; ++r) {
-            double offset = q[r] - pv_.vertex_lb[r][vertex];
-            k[r] = std::min(static_cast<int>(offset / vstep[r]), nb[r] - 1);
+            const double lb = pv_.vertex_lb[r][vertex];
+            k[r] = std::min(static_cast<int>((q[r] - lb) / vstep[r]), nb[r] - 1);
             k[r] = std::max(k[r], 0);
+            // offset / step can round up across a bucket edge (187 / 1.1 gives
+            // 170, yet 170 · 1.1 > 187): keep q at or above the lb that
+            // build_buckets computes, which the bucket arc tests start from.
+            if (k[r] > 0 && lb + k[r] * vstep[r] > q[r]) {
+                --k[r];
+            }
         }
 
         return start + k[0] * nb[1] + k[1];

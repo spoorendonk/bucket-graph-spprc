@@ -2636,6 +2636,40 @@ TEST_CASE("Doubling xi shrinks a derived step that rounding would keep") {
     CHECK(bg.bucket_steps()[0] == doctest::Approx(0.05));
 }
 
+// 187 / 1.1 rounds up to 170, but 170 · 1.1 = 187.00000000000003 > 187: the
+// label at q = 187 must not land in a bucket whose lb is above it, or the
+// bucket arc reaching the sink at exactly its ub = 200 is judged infeasible.
+TEST_CASE("Label bucket keeps lb <= q when q / step rounds up") {
+    int from[2] = {0, 1};
+    int to[2] = {1, 2};
+    double cost[2] = {-5.0, 1.0};
+    double time_d[2] = {187.0, 13.0};
+    double tw_lb[3] = {0.0, 0.0, 0.0};
+    double tw_ub[3] = {200.0, 200.0, 200.0};
+    const double* arc_res[1] = {time_d};
+    const double* v_lb[1] = {tw_lb};
+    const double* v_ub[1] = {tw_ub};
+    ProblemView pv;
+    pv.n_vertices = 3;
+    pv.source = 0;
+    pv.sink = 2;
+    pv.n_arcs = 2;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    BucketGraph<EmptyPack> bg(pv, EmptyPack{}, {.bucket_steps = {1.1, 0.0}, .theta = 1e9});
+    bg.build();
+    auto paths = bg.solve();
+    REQUIRE(paths.size() == 1);
+    CHECK(paths[0].reduced_cost == doctest::Approx(-4.0));
+}
+
 namespace {
 // SimpleGraph with a capacity resource [0, 200] as main resource 0 and a time
 // horizon [0, 1109] as main resource 1, the order the .graph loader uses.

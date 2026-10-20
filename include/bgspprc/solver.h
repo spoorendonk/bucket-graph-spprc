@@ -177,7 +177,7 @@ public:
     /// Get current bucket steps.
     [[nodiscard]] const std::array<double, 2>& bucket_steps() const { return bg_.bucket_steps(); }
 
-    /// Current ξ, the maximum number of buckets per vertex (BG2021 §6.3).
+    /// Current ξ (BG2021 §6.3), the nominal bucket count per vertex; see BucketGraph::xi().
     [[nodiscard]] double xi() const { return bg_.xi(); }
 
     /// Set per-vertex bucket step sizes.
