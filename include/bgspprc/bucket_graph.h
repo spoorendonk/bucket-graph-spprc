@@ -3485,8 +3485,6 @@ private:
         }
         timings_.completion_bounds = Clock_::now() - t_comp_start;
 
-        // The midpoint the labeling ran with, before it moves for the next solve.
-        const double labeling_mid = midpoint_.load(std::memory_order_relaxed);
         if (opts_.stage == Stage::Exact && !opts_.symmetric) {
             adjust_midpoint();
         }
@@ -3495,7 +3493,7 @@ private:
         std::vector<PathCandidate> candidates;
         candidates.reserve(1024);
         auto t_concat_start = Clock_::now();
-        collect_concat_candidates(candidates, labeling_mid);
+        collect_concat_candidates(candidates);
         timings_.concatenation = Clock_::now() - t_concat_start;
 
         // Path extraction (sink candidates + sorting + realization)
@@ -3533,27 +3531,30 @@ private:
         }
     }
 
-    /// True when every label on L's parent chain is at v: the start label at
-    /// v, possibly jump-boosted, rather than a path that left v and came back.
+    /// True when every label on L's parent chain is at v and the chain starts
+    /// at a start label (parent_arc -1): the start label at v, possibly
+    /// jump-boosted, rather than a path that left v and came back. A warm
+    /// label has no parent but keeps its last arc, so it never counts.
     static bool never_left(const Label<Pack>* L, int v) {
         for (; L != nullptr; L = L->parent) {
-            if (L->vertex != v) {
+            if (L->vertex != v || (L->parent == nullptr && L->parent_arc != -1)) {
                 return false;
             }
         }
         return true;
     }
 
-    void collect_concat_candidates(std::vector<PathCandidate>& candidates, double labeling_mid) {
+    void collect_concat_candidates(std::vector<PathCandidate>& candidates) {
         Symmetry sym = opts_.symmetric ? Symmetry::Symmetric : Symmetry::Asymmetric;
 
         // Across-arc concatenation: for each arc a = (i,j), join fw labels at i
         // with bw labels at j using on-the-fly extend through arc a.
-        // Each path is joined once, at the arc out of its first fw label past
-        // the midpoint the labeling ran with: that label is stored but never
-        // extended, so it is the only one on the path's fw chain that is past
-        // it. A path whose fw labels all stay at or below the midpoint, or
-        // first pass it at the sink, is a fw sink label instead.
+        // Each path is joined once, at the arc out of the one fw label on its
+        // chain that was stored but never extended: normally its first label
+        // past the midpoint, or one left over when a
+        // label cap stopped the labeling. A path whose fw labels all stay at or
+        // below the midpoint, or first pass it at the sink, is a fw sink label
+        // instead.
         // Parallelized over arc chunks via executor. Each thread accumulates
         // into a stack-local vector, then moves it into a per-chunk slot at
         // the end. This avoids false sharing on shared vector headers during
@@ -3605,9 +3606,9 @@ private:
                             break;
                         }
                         const auto* fw = fw_labels_.labels[fbi][fi];
-                        // At or below the midpoint, fw was extended along a and
-                        // the path is joined further on, or is a sink label.
-                        if (fw->dominated || fw->q[0] <= labeling_mid ||
+                        // An extended fw went on along a: the path is joined
+                        // further on, or is a sink label.
+                        if (fw->dominated || fw->extended ||
                             (from_source && !never_left(fw, pv_.source))) {
                             continue;
                         }

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <bgspprc/bucket_graph.h>
 #include <bgspprc/executor_thread.h>
 #include <bgspprc/r1c.h>
@@ -1789,6 +1790,45 @@ TEST_CASE("Symmetric: matches bidir on larger graph") {
     REQUIRE(!bidir_paths.empty());
     REQUIRE(!sym_paths.empty());
     CHECK(sym_paths[0].reduced_cost == doctest::Approx(bidir_paths[0].reduced_cost));
+}
+
+// Paths with distinct arc sequences: each path is returned once (#109).
+template <typename Paths>
+static bool each_path_once(const Paths& paths) {
+    std::vector<std::vector<int>> arcs;
+    arcs.reserve(paths.size());
+    for (const auto& p : paths) {
+        arcs.push_back(p.arcs);
+    }
+    std::ranges::sort(arcs);
+    return std::ranges::adjacent_find(arcs) == arcs.end();
+}
+
+TEST_CASE("Symmetric: depot tours come back once, bidir and symmetric") {
+    // Tours of up to ten arcs cross the midpoint 5 anywhere, including on
+    // the arc into the depot.
+    auto check = [](const ProblemView& pv) {
+        BucketGraph<EmptyPack> mono(pv, EmptyPack{}, {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
+        mono.build();
+        auto mono_paths = mono.solve();
+        for (bool sym : {false, true}) {
+            CAPTURE(sym);
+            BucketGraph<EmptyPack> bg(pv, EmptyPack{},
+                                      {.bucket_steps = {5.0, 1.0},
+                                       .theta = 1e9,
+                                       .bidirectional = !sym,
+                                       .symmetric = sym});
+            bg.build();
+            auto paths = bg.solve();
+            REQUIRE(!paths.empty());
+            CHECK(each_path_once(paths));
+            CHECK(paths[0].reduced_cost == doctest::Approx(mono_paths[0].reduced_cost));
+        }
+    };
+    SymmetricGraph g;
+    check(g.pv);
+    LargerSymmetricGraph lg;
+    check(lg.pv);
 }
 
 TEST_CASE("Symmetric: no backward labels generated") {

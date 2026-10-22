@@ -96,7 +96,7 @@ Built-in resources:
 - **2D bucketing**: `n_main_resources=2` activates 2D grid with `nb[0]*nb[1]` buckets per vertex.
 - **Bucket steps from ξ** (BG2021 §6.3): ξ = max buckets per vertex, default 25. A step left at its default 0 is range_r/ξ^(1/n_main) rounded to 0.1 (1D: horizon/ξ; 2D: W/√ξ and horizon/√ξ). Explicit steps are kept.
 - **A+ ξ-doubling**: Auto-triggers on CG convergence (avg ratio > 500 AND arcs/vertex < 10000) — doubles ξ (`double_xi`: steps ÷2 in 1D, ÷√2 in 2D) and rebuilds.
-- **Concatenation**: Across-arc only (Meta-Solver style). For arc (i,j): extend fw@i through arc, check concatenation_cost at j with bw@j.
+- **Concatenation**: Across-arc only (Meta-Solver style). For arc (i,j): extend fw@i through arc, check concatenation_cost at j with bw@j. Only fw labels never extended (past the midpoint, or left by a label cap) are joined, so each path is joined once; arcs into the sink join with the bw start label only, and fw sink labels cover paths that never pass the midpoint before the sink.
 
 ### Tests (tests/)
 
