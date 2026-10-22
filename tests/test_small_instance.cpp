@@ -390,3 +390,97 @@ TEST_CASE("Bidirectional: finds a path whose arc into the sink crosses the midpo
         check_chain<StdThreadExecutor>({1.0, 1.0, t});
     }
 }
+
+// Exact-stage paths for one ProblemView, mono then bidirectional.
+template <typename Exec>
+static auto solve_mono_bidir(const ProblemView& pv) {
+    auto solve = [&](bool bidir) {
+        Solver<EmptyPack, Exec> s(pv, EmptyPack{}, {.bidirectional = bidir});
+        s.set_stage(Stage::Exact);
+        s.build();
+        return s.solve();
+    };
+    return std::pair{solve(false), solve(true)};
+}
+
+TEST_CASE("Bidirectional: finds a depot tour whose first arc crosses the midpoint") {
+    // source == sink == 0: 0 → 1 → 0, first arc past the midpoint 5.
+    int from[] = {0, 1};
+    int to[] = {1, 0};
+    double cost[] = {-5.0, 1.0};
+    double time_d[] = {6.0, 1.0};
+    double tw_lb[] = {0.0, 0.0};
+    double tw_ub[] = {10.0, 10.0};
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 2;
+    pv.source = 0;
+    pv.sink = 0;
+    pv.n_arcs = 2;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    auto check = [](const auto& paths) {
+        REQUIRE(paths.size() == 1);
+        CHECK(paths[0].reduced_cost == doctest::Approx(-4.0));
+        CHECK(paths[0].vertices == std::vector<int>{0, 1, 0});
+    };
+    auto [mono, bidir] = solve_mono_bidir<SequentialExecutor>(pv);
+    check(mono);
+    check(bidir);
+    auto [par_mono, par_bidir] = solve_mono_bidir<StdThreadExecutor>(pv);
+    check(par_mono);
+    check(par_bidir);
+}
+
+TEST_CASE("Bidirectional: source-arc join keeps a one-arc and a longer suffix apart") {
+    // 0 → 1 → 3 and 0 → 1 → 2 → 3, both negative, first arc past the
+    // midpoint 5: bw@1 holds a one-arc and a two-arc label, and each path
+    // must come back exactly once.
+    int from[] = {0, 1, 1, 2};
+    int to[] = {1, 3, 2, 3};
+    double cost[] = {-5.0, 2.0, 1.0, 0.0};
+    double time_d[] = {6.0, 1.0, 1.0, 1.0};
+    double tw_lb[] = {0.0, 0.0, 0.0, 0.0};
+    double tw_ub[] = {10.0, 10.0, 10.0, 10.0};
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 4;
+    pv.source = 0;
+    pv.sink = 3;
+    pv.n_arcs = 4;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    auto check = [](const auto& paths) {
+        REQUIRE(paths.size() == 2);
+        CHECK(paths[0].reduced_cost == doctest::Approx(-4.0));
+        CHECK(paths[0].vertices == std::vector<int>{0, 1, 2, 3});
+        CHECK(paths[1].reduced_cost == doctest::Approx(-3.0));
+        CHECK(paths[1].vertices == std::vector<int>{0, 1, 3});
+    };
+    auto [mono, bidir] = solve_mono_bidir<SequentialExecutor>(pv);
+    check(mono);
+    check(bidir);
+    auto [par_mono, par_bidir] = solve_mono_bidir<StdThreadExecutor>(pv);
+    check(par_mono);
+    check(par_bidir);
+}

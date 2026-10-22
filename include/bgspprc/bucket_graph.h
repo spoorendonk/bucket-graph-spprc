@@ -3533,6 +3533,17 @@ private:
         }
     }
 
+    /// True when every label on L's parent chain is at v: the start label at
+    /// v, possibly jump-boosted, rather than a path that left v and came back.
+    static bool never_left(const Label<Pack>* L, int v) {
+        for (; L != nullptr; L = L->parent) {
+            if (L->vertex != v) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void collect_concat_candidates(std::vector<PathCandidate>& candidates, double labeling_mid) {
         Symmetry sym = opts_.symmetric ? Symmetry::Symmetric : Symmetry::Asymmetric;
 
@@ -3560,7 +3571,9 @@ private:
                 // Symmetric mode keeps them out: its mirrored bw labels are
                 // reversed fw paths ending at the source, and it takes
                 // source == sink, where a tour's reverse covers this case.
-                if (i == pv_.sink || j == pv_.source || j == pv_.sink ||
+                // With source == sink, the depot's labels also hold finished
+                // tours; the guards below keep only the ones that never left it.
+                if ((i == pv_.sink && i != pv_.source) || j == pv_.source || j == pv_.sink ||
                     (opts_.symmetric && i == pv_.source)) {
                     continue;
                 }
@@ -3630,7 +3643,8 @@ private:
                         // landing at or below it was extended on, and the path is
                         // found from there.
                         const bool from_source = i == pv_.source;
-                        if (from_source && q_thr_forward[0] <= labeling_mid) {
+                        if (from_source &&
+                            (q_thr_forward[0] <= labeling_mid || !never_left(fw, pv_.source))) {
                             continue;
                         }
                         const double break_thr = opts_.theta - fw_arc - min_dom_cost_;
@@ -3643,7 +3657,7 @@ private:
                             // a longer bw path is joined at its next arc to the stored
                             // fw@j already.
                             if (from_source &&
-                                (bw->parent == nullptr || bw->parent->vertex != pv_.sink)) {
+                                (bw->parent == nullptr || !never_left(bw->parent, pv_.sink))) {
                                 return;
                             }
                             double total_cost = fw_arc + bw_cost;
