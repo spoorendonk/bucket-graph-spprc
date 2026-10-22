@@ -3485,6 +3485,8 @@ private:
         }
         timings_.completion_bounds = Clock_::now() - t_comp_start;
 
+        // The midpoint the labeling ran with, before it moves for the next solve.
+        const double labeling_mid = midpoint_.load(std::memory_order_relaxed);
         if (opts_.stage == Stage::Exact && !opts_.symmetric) {
             adjust_midpoint();
         }
@@ -3493,7 +3495,7 @@ private:
         std::vector<PathCandidate> candidates;
         candidates.reserve(1024);
         auto t_concat_start = Clock_::now();
-        collect_concat_candidates(candidates);
+        collect_concat_candidates(candidates, labeling_mid);
         timings_.concatenation = Clock_::now() - t_concat_start;
 
         // Path extraction (sink candidates + sorting + realization)
@@ -3531,7 +3533,7 @@ private:
         }
     }
 
-    void collect_concat_candidates(std::vector<PathCandidate>& candidates) {
+    void collect_concat_candidates(std::vector<PathCandidate>& candidates, double labeling_mid) {
         Symmetry sym = opts_.symmetric ? Symmetry::Symmetric : Symmetry::Asymmetric;
 
         // Across-arc concatenation: for each arc a = (i,j), join fw labels at i
@@ -3550,10 +3552,16 @@ private:
             for (int a = c_begin; a < c_end; ++a) {
                 int i = pv_.arc_from[a];
                 int j = pv_.arc_to[a];
-                if (i == pv_.source || i == pv_.sink) {
-                    continue;
-                }
-                if (j == pv_.source || j == pv_.sink) {
+                // Arcs out of the source stay in for one path shape: s → j → t
+                // with fw@j past the midpoint. fw@j is never extended, and both
+                // its arcs touch an endpoint, so this is the only place it can be
+                // joined (see the guards below). Every other path is a fw sink
+                // label or joined across an arc between two inner vertices.
+                // Symmetric mode keeps them out: its mirrored bw labels are
+                // reversed fw paths ending at the source, and it takes
+                // source == sink, where a tour's reverse covers this case.
+                if (i == pv_.sink || j == pv_.source || j == pv_.sink ||
+                    (opts_.symmetric && i == pv_.source)) {
                     continue;
                 }
 
@@ -3618,12 +3626,26 @@ private:
                                 pv_.vertex_lb[r][j] + pv_.vertex_ub[r][j] - fw_after_arc;
 #endif
                         }
+                        // Out of the source, join only past the midpoint: a fw label
+                        // landing at or below it was extended on, and the path is
+                        // found from there.
+                        const bool from_source = i == pv_.source;
+                        if (from_source && q_thr_forward[0] <= labeling_mid) {
+                            continue;
+                        }
                         const double break_thr = opts_.theta - fw_arc - min_dom_cost_;
 
                         // Unified emission path for any (bw, bw_cost) pair that has
                         // already passed feasibility. Keeps the SIMD per-lane loop
                         // and the scalar tail from drifting.
                         auto try_emit_concat = [&](const Label<Pack>* bw, double bw_cost) {
+                            // Out of the source, only bw labels one arc from the sink:
+                            // a longer bw path is joined at its next arc to the stored
+                            // fw@j already.
+                            if (from_source &&
+                                (bw->parent == nullptr || bw->parent->vertex != pv_.sink)) {
+                                return;
+                            }
                             double total_cost = fw_arc + bw_cost;
                             double total_real_cost = fw->real_cost + bw->real_cost + arc_real_cost;
                             if constexpr (Pack::size > 0) {

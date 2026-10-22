@@ -1,6 +1,9 @@
+#include <bgspprc/executor_thread.h>
 #include <bgspprc/resource.h>
 #include <bgspprc/solver.h>
 #include <doctest/doctest.h>
+#include <utility>
+#include <vector>
 
 using namespace bgspprc;
 
@@ -292,4 +295,98 @@ TEST_CASE("Bidirectional: tight time windows") {
     // Same best: 0→1→3→4, cost=17 (only feasible path with sink tw [0, 6.5])
     CHECK(bidir_paths[0].reduced_cost == doctest::Approx(mono_paths[0].reduced_cost));
     CHECK(bidir_paths[0].reduced_cost == doctest::Approx(17.0));
+}
+
+// Chain 0 → 1 → … → n, windows [0, 10] (midpoint 5), first arc cost -5 and
+// the rest +1: one path, rc -4 for two arcs. Returns {mono, bidir} best
+// reduced costs, INF when no path is found, and checks the path is found once
+// where bidirectional labelling is already exact about it: two arcs, or a
+// first arc past the midpoint. Other chains get the inner-arc duplicates of
+// #109.
+template <typename Exec>
+static std::pair<double, double> chain_best(std::vector<double> time_d) {
+    const int n_arcs = static_cast<int>(time_d.size());
+    const int n = n_arcs + 1;
+    std::vector<int> from(n_arcs);
+    std::vector<int> to(n_arcs);
+    std::vector<double> cost(n_arcs, 1.0);
+    for (int a = 0; a < n_arcs; ++a) {
+        from[a] = a;
+        to[a] = a + 1;
+    }
+    cost[0] = -5.0;
+    std::vector<double> tw_lb(n, 0.0);
+    std::vector<double> tw_ub(n, 10.0);
+
+    const double* arc_res[] = {time_d.data()};
+    const double* v_lb[] = {tw_lb.data()};
+    const double* v_ub[] = {tw_ub.data()};
+
+    ProblemView pv;
+    pv.n_vertices = n;
+    pv.source = 0;
+    pv.sink = n - 1;
+    pv.n_arcs = n_arcs;
+    pv.arc_from = from.data();
+    pv.arc_to = to.data();
+    pv.arc_base_cost = cost.data();
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    const bool once = n_arcs == 2 || time_d[0] > 5.0;
+    double best[2] = {INF, INF};
+    for (bool bidir : {false, true}) {
+        Solver<EmptyPack, Exec> s(pv, EmptyPack{}, {.bidirectional = bidir});
+        s.set_stage(Stage::Exact);
+        s.build();
+        auto paths = s.solve();
+        if (!bidir || once) {
+            CHECK(paths.size() <= 1);
+        }
+        if (!paths.empty()) {
+            best[bidir ? 1 : 0] = paths[0].reduced_cost;
+        }
+    }
+    return {best[0], best[1]};
+}
+
+template <typename Exec>
+static void check_chain(std::vector<double> time_d) {
+    const double rc = -5.0 + static_cast<double>(time_d.size() - 1);
+    auto [mono, bidir] = chain_best<Exec>(std::move(time_d));
+    CHECK(mono == doctest::Approx(rc));
+    CHECK(bidir == doctest::Approx(rc));
+}
+
+TEST_CASE("Bidirectional: finds a path whose arc out of the source crosses the midpoint") {
+    // The fw label at 1 lands past the midpoint and is never extended. With
+    // two arcs the path can only be joined across the arc out of the source;
+    // with more it is joined at the next arc and must not come back twice.
+    for (double t0 : {1.0, 5.0, 6.0, 9.0}) {
+        CAPTURE(t0);
+        check_chain<SequentialExecutor>({t0, 1.0});
+        check_chain<StdThreadExecutor>({t0, 1.0});
+    }
+    for (double t0 : {1.0, 5.0, 6.0, 8.0}) {
+        CAPTURE(t0);
+        check_chain<SequentialExecutor>({t0, 1.0, 1.0});
+        check_chain<StdThreadExecutor>({t0, 1.0, 1.0});
+        check_chain<SequentialExecutor>({t0 - 1.0, 1.0, 1.0, 1.0});
+        check_chain<StdThreadExecutor>({t0 - 1.0, 1.0, 1.0, 1.0});
+    }
+}
+
+TEST_CASE("Bidirectional: finds a path whose arc into the sink crosses the midpoint") {
+    // The bw label at the last inner vertex lands below the midpoint and is
+    // never extended.
+    for (double t : {1.0, 5.0, 6.0, 8.0}) {
+        CAPTURE(t);
+        check_chain<SequentialExecutor>({1.0, t});
+        check_chain<StdThreadExecutor>({1.0, t});
+        check_chain<SequentialExecutor>({1.0, 1.0, t});
+        check_chain<StdThreadExecutor>({1.0, 1.0, t});
+    }
 }
