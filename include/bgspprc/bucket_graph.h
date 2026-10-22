@@ -3549,7 +3549,11 @@ private:
 
         // Across-arc concatenation: for each arc a = (i,j), join fw labels at i
         // with bw labels at j using on-the-fly extend through arc a.
-        // This finds paths crossing the bidir midpoint on a single arc.
+        // Each path is joined once, at the arc out of its first fw label past
+        // the midpoint the labeling ran with: that label is stored but never
+        // extended, so it is the only one on the path's fw chain that is past
+        // it. A path whose fw labels all stay at or below the midpoint, or
+        // first pass it at the sink, is a fw sink label instead.
         // Parallelized over arc chunks via executor. Each thread accumulates
         // into a stack-local vector, then moves it into a per-chunk slot at
         // the end. This avoids false sharing on shared vector headers during
@@ -3563,20 +3567,15 @@ private:
             for (int a = c_begin; a < c_end; ++a) {
                 int i = pv_.arc_from[a];
                 int j = pv_.arc_to[a];
-                // Arcs out of the source stay in for one path shape: s → j → t
-                // with fw@j past the midpoint. fw@j is never extended, and both
-                // its arcs touch an endpoint, so this is the only place it can be
-                // joined (see the guards below). Every other path is a fw sink
-                // label or joined across an arc between two inner vertices.
-                // Symmetric mode keeps them out: its mirrored bw labels are
-                // reversed fw paths ending at the source, and it takes
-                // source == sink, where a tour's reverse covers this case.
-                // With source == sink, the depot's labels also hold finished
-                // tours; the guards below keep only the ones that never left it.
-                if ((i == pv_.sink && i != pv_.source) || j == pv_.source || j == pv_.sink ||
-                    (opts_.symmetric && i == pv_.source)) {
+                // fw labels at the sink are finished paths, and no path enters
+                // the source. With source == sink the depot holds both start
+                // labels and finished tours; the guards below join only labels
+                // whose whole chain stayed at the depot.
+                if ((i == pv_.sink && i != pv_.source) || (j == pv_.source && j != pv_.sink)) {
                     continue;
                 }
+                const bool from_source = i == pv_.source;
+                const bool to_sink = j == pv_.sink;
 
                 double arc_cost = reduced_costs_ ? reduced_costs_[a] : pv_.arc_base_cost[a];
                 double arc_real_cost = pv_.arc_base_cost[a];
@@ -3606,7 +3605,10 @@ private:
                             break;
                         }
                         const auto* fw = fw_labels_.labels[fbi][fi];
-                        if (fw->dominated) {
+                        // At or below the midpoint, fw was extended along a and
+                        // the path is joined further on, or is a sink label.
+                        if (fw->dominated || fw->q[0] <= labeling_mid ||
+                            (from_source && !never_left(fw, pv_.source))) {
                             continue;
                         }
 
@@ -3639,25 +3641,13 @@ private:
                                 pv_.vertex_lb[r][j] + pv_.vertex_ub[r][j] - fw_after_arc;
 #endif
                         }
-                        // Out of the source, join only past the midpoint: a fw label
-                        // landing at or below it was extended on, and the path is
-                        // found from there.
-                        const bool from_source = i == pv_.source;
-                        if (from_source &&
-                            (q_thr_forward[0] <= labeling_mid || !never_left(fw, pv_.source))) {
-                            continue;
-                        }
                         const double break_thr = opts_.theta - fw_arc - min_dom_cost_;
 
                         // Unified emission path for any (bw, bw_cost) pair that has
                         // already passed feasibility. Keeps the SIMD per-lane loop
                         // and the scalar tail from drifting.
                         auto try_emit_concat = [&](const Label<Pack>* bw, double bw_cost) {
-                            // Out of the source, only bw labels one arc from the sink:
-                            // a longer bw path is joined at its next arc to the stored
-                            // fw@j already.
-                            if (from_source &&
-                                (bw->parent == nullptr || !never_left(bw->parent, pv_.sink))) {
+                            if (to_sink && !never_left(bw, pv_.sink)) {
                                 return;
                             }
                             double total_cost = fw_arc + bw_cost;

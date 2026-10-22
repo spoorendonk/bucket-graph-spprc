@@ -298,13 +298,11 @@ TEST_CASE("Bidirectional: tight time windows") {
 }
 
 // Chain 0 → 1 → … → n, windows [0, 10] (midpoint 5), first arc cost -5 and
-// the rest +1: one path, rc -4 for two arcs. Returns {mono, bidir} best
-// reduced costs, INF when no path is found, and checks the path is found once
-// where bidirectional labelling is already exact about it: two arcs, or a
-// first arc past the midpoint. Other chains get the inner-arc duplicates of
-// #109.
+// the rest +1: one path, rc -4 for two arcs. The source window starts at
+// source_lb. Returns {mono, bidir} best reduced costs, INF when no path is
+// found, and checks the path is found at most once (#109).
 template <typename Exec>
-static std::pair<double, double> chain_best(std::vector<double> time_d) {
+static std::pair<double, double> chain_best(std::vector<double> time_d, double source_lb = 0.0) {
     const int n_arcs = static_cast<int>(time_d.size());
     const int n = n_arcs + 1;
     std::vector<int> from(n_arcs);
@@ -317,6 +315,7 @@ static std::pair<double, double> chain_best(std::vector<double> time_d) {
     cost[0] = -5.0;
     std::vector<double> tw_lb(n, 0.0);
     std::vector<double> tw_ub(n, 10.0);
+    tw_lb[0] = source_lb;
 
     const double* arc_res[] = {time_d.data()};
     const double* v_lb[] = {tw_lb.data()};
@@ -336,16 +335,13 @@ static std::pair<double, double> chain_best(std::vector<double> time_d) {
     pv.vertex_ub = v_ub;
     pv.n_main_resources = 1;
 
-    const bool once = n_arcs == 2 || time_d[0] > 5.0;
     double best[2] = {INF, INF};
     for (bool bidir : {false, true}) {
         Solver<EmptyPack, Exec> s(pv, EmptyPack{}, {.bidirectional = bidir});
         s.set_stage(Stage::Exact);
         s.build();
         auto paths = s.solve();
-        if (!bidir || once) {
-            CHECK(paths.size() <= 1);
-        }
+        CHECK(paths.size() <= 1);
         if (!paths.empty()) {
             best[bidir ? 1 : 0] = paths[0].reduced_cost;
         }
@@ -354,17 +350,17 @@ static std::pair<double, double> chain_best(std::vector<double> time_d) {
 }
 
 template <typename Exec>
-static void check_chain(std::vector<double> time_d) {
+static void check_chain(std::vector<double> time_d, double source_lb = 0.0) {
     const double rc = -5.0 + static_cast<double>(time_d.size() - 1);
-    auto [mono, bidir] = chain_best<Exec>(std::move(time_d));
+    auto [mono, bidir] = chain_best<Exec>(std::move(time_d), source_lb);
     CHECK(mono == doctest::Approx(rc));
     CHECK(bidir == doctest::Approx(rc));
 }
 
 TEST_CASE("Bidirectional: finds a path whose arc out of the source crosses the midpoint") {
-    // The fw label at 1 lands past the midpoint and is never extended. With
-    // two arcs the path can only be joined across the arc out of the source;
-    // with more it is joined at the next arc and must not come back twice.
+    // The fw label at 1 lands past the midpoint and is never extended: the
+    // path is joined across the arc out of 1, into the sink or not, and
+    // must come back once.
     for (double t0 : {1.0, 5.0, 6.0, 9.0}) {
         CAPTURE(t0);
         check_chain<SequentialExecutor>({t0, 1.0});
@@ -376,6 +372,17 @@ TEST_CASE("Bidirectional: finds a path whose arc out of the source crosses the m
         check_chain<StdThreadExecutor>({t0, 1.0, 1.0});
         check_chain<SequentialExecutor>({t0 - 1.0, 1.0, 1.0, 1.0});
         check_chain<StdThreadExecutor>({t0 - 1.0, 1.0, 1.0, 1.0});
+    }
+}
+
+TEST_CASE("Bidirectional: finds a path once when the source starts past the midpoint") {
+    // The source label is never extended, so the path is joined across the
+    // arc out of the source whatever its length.
+    for (std::vector<double> time_d :
+         {std::vector<double>{1.0, 1.0}, {1.0, 1.0, 1.0}, {0.0, 1.0, 1.0, 1.0}}) {
+        CAPTURE(time_d.size());
+        check_chain<SequentialExecutor>(time_d, 6.0);
+        check_chain<StdThreadExecutor>(time_d, 6.0);
     }
 }
 

@@ -20,7 +20,7 @@ using namespace bgspprc;
 // ════════════════════════════════════════════════════════════════════
 
 /// Compare sequential bidir and parallel bidir: same best cost and
-/// same set of path vertex-sequences.
+/// same set of path arc sequences.
 static void check_parallel_bidir_agree(const ProblemView& pv, double tol = 1e9, double step = 5.0) {
     BucketGraph<EmptyPack> seq(
         pv, EmptyPack{},
@@ -45,7 +45,7 @@ static void check_parallel_bidir_agree(const ProblemView& pv, double tol = 1e9, 
         std::vector<std::vector<int>> vs;
         vs.reserve(paths.size());
         for (auto& p : paths) {
-            vs.push_back(p.vertices);
+            vs.push_back(p.arcs);
         }
         std::ranges::sort(vs);
         vs.erase(std::ranges::unique(vs).begin(), vs.end());
@@ -53,13 +53,16 @@ static void check_parallel_bidir_agree(const ProblemView& pv, double tol = 1e9, 
     };
     auto seq_set = to_set(sp);
     auto par_set = to_set(pp);
+    // Each path once (#109).
+    CHECK(seq_set.size() == sp.size());
+    CHECK(par_set.size() == pp.size());
     for (auto& path : seq_set) {
         CHECK(std::ranges::find(par_set, path) != par_set.end());
     }
 }
 
 /// Compare mono and bidir: same best cost, and both produce the same
-/// set of path vertex-sequences (order-independent).
+/// set of path arc sequences (order-independent).
 static void check_mono_bidir_agree(const ProblemView& pv, double tol = 1e9, double step = 5.0) {
     BucketGraph<EmptyPack> mono(pv, EmptyPack{},
                                 {.bucket_steps = {step, 1.0}, .theta = tol, .stage = Stage::Exact});
@@ -78,14 +81,14 @@ static void check_mono_bidir_agree(const ProblemView& pv, double tol = 1e9, doub
         CHECK(mp.empty() == bp.empty());
     }
 
-    // Verify all mono path vertex sequences appear in bidir results.
-    // Bidir may find duplicate paths via different concatenation points,
-    // so we check mono ⊆ bidir (same paths, bidir may have extras).
+    // Verify all mono paths appear in bidir results, each
+    // path once (#109). Dominance can differ between the two, so bidir may
+    // return paths mono does not.
     auto to_set = [](const auto& paths) {
         std::vector<std::vector<int>> vs;
         vs.reserve(paths.size());
         for (auto& p : paths) {
-            vs.push_back(p.vertices);
+            vs.push_back(p.arcs);
         }
         std::ranges::sort(vs);
         vs.erase(std::ranges::unique(vs).begin(), vs.end());
@@ -93,6 +96,8 @@ static void check_mono_bidir_agree(const ProblemView& pv, double tol = 1e9, doub
     };
     auto mono_set = to_set(mp);
     auto bidir_set = to_set(bp);
+    CHECK(mono_set.size() == mp.size());
+    CHECK(bidir_set.size() == bp.size());
     // Every mono path must appear in bidir
     for (auto& path : mono_set) {
         CHECK(std::ranges::find(bidir_set, path) != bidir_set.end());
