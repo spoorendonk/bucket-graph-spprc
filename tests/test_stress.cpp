@@ -759,6 +759,48 @@ TEST_CASE("Stress: infeasible sink in bidir returns empty") {
     CHECK(paths.empty());
 }
 
+TEST_CASE("Parallel bidir: fixing after a solve with an infeasible sink") {
+    // The parallel solve computes completion bounds before seeding, and an
+    // infeasible sink returns before the bw_c_best bounds are saved; fixing
+    // and elimination must still read them in range (#111).
+    int from[] = {0};
+    int to[] = {1};
+    double base_cost[] = {1.0};
+    double time_d[] = {1.0};
+    double tw_lb[] = {0.0, 0.0};
+    double tw_ub[] = {10.0, 10.0};
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 2;
+    pv.source = 0;
+    pv.sink = 1;
+    pv.n_arcs = 1;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = base_cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    double pickup[] = {0.0, 999.0};
+    double delivery[] = {0.0, 0.0};
+    PickupDeliveryResource pd(pickup, delivery, 10.0, 2);
+    using Pack = ResourcePack<PickupDeliveryResource>;
+
+    BucketGraph<Pack, StdThreadExecutor> bg(
+        pv, Pack(pd),
+        {.bucket_steps = {5.0, 1.0}, .theta = 1e9, .bidirectional = true, .stage = Stage::Exact});
+    bg.build();
+    CHECK(bg.solve().empty());
+    CHECK(bg.fix_buckets(1e9) == static_cast<int>(bg.buckets().size()));
+    bg.eliminate_arcs(1e9);
+}
+
 // ════════════════════════════════════════════════════════════════════
 // 11. Mono vs bidir path contents match (not just cost)
 // ════════════════════════════════════════════════════════════════════

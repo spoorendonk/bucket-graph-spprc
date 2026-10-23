@@ -415,6 +415,8 @@ public:
                "eliminate_arcs requires completion bounds from a prior solve()");
         assert((!opts_.bidirectional || !bw_completion_.empty()) &&
                "eliminate_arcs requires bw completion bounds from a prior solve()");
+        assert((!opts_.bidirectional || bw_c_best_bound_.size() == buckets_.size()) &&
+               "eliminate_arcs requires bw_c_best bounds from a prior solve()");
 
         int nb = static_cast<int>(buckets_.size());
         executor_.parallel_for(0, nb, [&](int bi) {
@@ -477,6 +479,8 @@ public:
                "fix_buckets requires completion bounds from a prior solve()");
         assert((!opts_.bidirectional || !bw_completion_.empty()) &&
                "fix_buckets requires bw completion bounds from a prior solve()");
+        assert((!opts_.bidirectional || bw_c_best_bound_.size() == buckets_.size()) &&
+               "fix_buckets requires bw_c_best bounds from a prior solve()");
 
         int nb = static_cast<int>(buckets_.size());
         bool bidir = opts_.bidirectional;
@@ -3131,6 +3135,9 @@ private:
         }
         vertex_min_c_best_.assign(pv_.n_vertices, INF);
         vertex_min_bw_c_best_.assign(pv_.n_vertices, INF);
+        // A solve can return before saving it (infeasible source or sink),
+        // and fixing still reads it.
+        bw_c_best_bound_.assign(nb, INF);
     }
 
     Label<Pack>* create_initial_label(Direction dir) {
