@@ -136,6 +136,9 @@ public:
         bool parallel_bidir = true;  // concurrent fw/bw labeling (requires parallel executor)
         Stage stage = Stage::Exact;
         int max_enum_labels = 5000000;  // safety cap on total labels during enumeration
+        // Labels one SCC may hold outside enumeration. A solve that reaches it
+        // stops extending there and is no longer exact (exact_complete()).
+        int max_scc_labels = 500000;
     };
 
     BucketGraph(const ProblemView& pv, Pack pack, Options opts = {}, Exec executor = {})
@@ -245,6 +248,17 @@ public:
     void set_stage(Stage s) { opts_.stage = s; }
     void set_theta(double t) { opts_.theta = t; }
     bool enumeration_complete() const { return enum_complete_; }
+
+    /// True when the last solve() ran Stage::Exact or Stage::Enumerate and
+    /// hit no label cap, so it returned every path within theta (up to
+    /// max_paths): an empty result proves there is none. False after a
+    /// heuristic stage, or when an SCC reached max_scc_labels or enumeration
+    /// stopped short (enumeration_complete()). Arc elimination and bucket
+    /// fixing do nothing after a capped solve.
+    bool exact_complete() const {
+        return (solved_stage_ == Stage::Exact || solved_stage_ == Stage::Enumerate) &&
+               !label_cap_hit_.load(std::memory_order_relaxed) && enum_complete_;
+    }
 
     void reset_midpoint() { midpoint_initialized_ = false; }
     double midpoint() const { return midpoint_.load(std::memory_order_relaxed); }
@@ -2173,15 +2187,17 @@ private:
 
         const bool enumerating = (opts_.stage == Stage::Enumerate);
         // Enumeration needs more labels per SCC since dominance is disabled.
-        const int scc_cap = enumerating ? 2000000 : 500000;
+        const int scc_cap = enumerating ? 2000000 : opts_.max_scc_labels;
         int label_count = 0;
         auto& dc = counters_for(dir);
 
-        // Check all label caps; marks enumeration incomplete on hit.
-        // In parallel mode, per-direction counters avoid data races.
-        // enum_complete_ is atomic to allow safe concurrent writes.
+        // Check all label caps; marks the solve inexact (and enumeration
+        // incomplete) on hit. In parallel mode, per-direction counters avoid
+        // data races; label_cap_hit_ and enum_complete_ are atomic to allow
+        // safe concurrent writes.
         auto at_label_cap = [&]() -> bool {
             if (label_count >= scc_cap) {
+                label_cap_hit_.store(true, std::memory_order_relaxed);
                 if (enumerating) {
                     enum_complete_.store(false, std::memory_order_relaxed);
                 }
@@ -2549,7 +2565,12 @@ private:
 
         // Process SCCs in reverse topological order (from sink toward source).
         // For DAG SCCs (single bucket), one pass suffices.
-        // For SCCs with cycles, iterate until convergence.
+        // For SCCs with cycles, relax Bellman-Ford style: without a negative
+        // cycle, |scc| passes settle every bucket, so a change in pass
+        // |scc| + 1 means one (#115). Every bucket of the SCC reaches that
+        // cycle, so its cost-to-go over the bucket graph is unbounded below:
+        // NEG_INF, which the SCCs before it inherit and which prunes,
+        // eliminates and fixes nothing.
         for (int i = static_cast<int>(scc_topo.size()) - 1; i >= 0; --i) {
             int scc = scc_topo[i];
             auto& scc_bs = scc_buckets[scc];
@@ -2559,28 +2580,64 @@ private:
 
             for (int iter = 0; iter < max_iters; ++iter) {
                 bool changed = false;
+                auto relax = [&](int bi, int to, double cost) {
+                    if (completion[to] >= INF) {
+                        return;
+                    }
+                    double candidate = cost + completion[to];
+                    if (candidate < completion[bi] - EPS) {
+                        completion[bi] = candidate;
+                        changed = true;
+                    }
+                };
                 for (int bi : scc_bs) {
                     auto& arcs = (dir == Direction::Forward) ? buckets_[bi].bucket_arcs
                                                              : buckets_[bi].bw_bucket_arcs;
                     for (const auto& ba : arcs) {
-                        if (completion[ba.to_bucket] >= INF) {
-                            continue;
+                        relax(bi, ba.to_bucket, ba.cost);
+                    }
+                    // A label can jump to the next bucket of its vertex, so
+                    // bound by that bucket's cost-to-go too, here and not only
+                    // in the pass below: once elimination took arc a out of
+                    // bi, bi reaches a only by a jump arc (#115). The SCC
+                    // graph has these edges, so that bucket is final or in
+                    // this SCC.
+                    const int v = buckets_[bi].vertex;
+                    const int start = vertex_bucket_start_[v];
+                    const auto& vnb = vertex_n_buckets_[v];
+                    const int k0 = (bi - start) / vnb[1];
+                    const int k1 = (bi - start) % vnb[1];
+                    if (dir == Direction::Forward) {
+                        if (k0 + 1 < vnb[0]) {
+                            relax(bi, bi + vnb[1], 0.0);
                         }
-                        double candidate = ba.cost + completion[ba.to_bucket];
-                        if (candidate < completion[bi] - EPS) {
-                            completion[bi] = candidate;
-                            changed = true;
+                        if (k1 + 1 < vnb[1]) {
+                            relax(bi, bi + 1, 0.0);
+                        }
+                    } else {
+                        if (k0 > 0) {
+                            relax(bi, bi - vnb[1], 0.0);
+                        }
+                        if (k1 > 0) {
+                            relax(bi, bi - 1, 0.0);
                         }
                     }
                 }
                 if (!changed) {
                     break;
                 }
+                if (has_cycle && iter == max_iters - 1) {
+                    for (int bi : scc_bs) {
+                        completion[bi] = NEG_INF;
+                    }
+                }
             }
         }
 
         // Within-vertex propagation: lower resource bucket has more slack,
         // so its cost-to-go is at least as good as higher resource buckets.
+        // The relaxation above already bounds it so, but within EPS per step;
+        // this makes the min exact.
         // Each vertex writes only its own bucket range, so vertices are independent.
         executor_.parallel_for(0, pv_.n_vertices, [&](int v) {
             auto [start, end] = vertex_bucket_range(v);
@@ -3224,6 +3281,8 @@ private:
         total_enum_labels_ = 0;
         enum_complete_ = true;
         enum_sink_labels_ = 0;
+        label_cap_hit_ = false;
+        solved_stage_ = opts_.stage;
         if (opts_.stage == Stage::Enumerate) {
             compute_completion_bounds(Direction::Forward);
             if (fixed_.n_fixed() > 0 && std::abs(opts_.theta - fixing_theta_) > EPS) {
@@ -3280,7 +3339,8 @@ private:
         if (opts_.stage != Stage::Enumerate) {
             compute_completion_bounds(Direction::Forward);
         }
-        completion_ready_ = true;
+        // c_best of a capped solve misses the labels it never extended.
+        completion_ready_ = !label_cap_hit_.load(std::memory_order_relaxed);
         timings_.completion_bounds = Clock_::now() - t_comp_start;
 
         // Path extraction
@@ -3356,6 +3416,8 @@ private:
         total_enum_labels_ = 0;
         enum_complete_ = true;
         enum_sink_labels_ = 0;
+        label_cap_hit_ = false;
+        solved_stage_ = opts_.stage;
 
         // Decide whether to run parallel bidir labeling.
         // Requires: non-sequential executor, parallel_bidir enabled, not symmetric.
@@ -3536,7 +3598,8 @@ private:
             compute_completion_bounds(Direction::Forward);
             compute_completion_bounds(Direction::Backward);
         }
-        completion_ready_ = true;
+        // c_best of a capped solve misses the labels it never extended.
+        completion_ready_ = !label_cap_hit_.load(std::memory_order_relaxed);
 
         // Fixing and elimination need bw_c_best over every bw label, before
         // the prune below drops some by fw c_best (#111).
@@ -4221,8 +4284,10 @@ private:
 
     int total_enum_labels_ = 0;  // global label counter for enumeration
     std::atomic<bool> enum_complete_ = true;
-    int enum_sink_labels_ = 0;   // labels that landed in sink buckets
-    double fixing_theta_ = INF;  // theta used in last fix_buckets call
+    std::atomic<bool> label_cap_hit_ = false;  // an SCC reached max_scc_labels
+    Stage solved_stage_ = Stage::Exact;        // stage of the last solve()
+    int enum_sink_labels_ = 0;                 // labels that landed in sink buckets
+    double fixing_theta_ = INF;                // theta used in last fix_buckets call
 
     DirCounters fw_counters_;
     DirCounters bw_counters_;

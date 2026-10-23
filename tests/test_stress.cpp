@@ -2604,3 +2604,133 @@ TEST_CASE("Bidir Enumerate returns the mono paths on random instances (#117)") {
         }
     }
 }
+
+TEST_CASE("Elimination keeps the paths that need a jump arc (#115)") {
+    // After elimination a bucket can reach an arc only by a jump arc to a
+    // later bucket of its vertex. The completion bounds took the min over
+    // those later buckets only after the SCC pass, so the buckets before it
+    // never saw them, and the next elimination (or Enumerate's pruning) cut
+    // improving paths: on seed 104, Enumerate after three rounds lost 4 of
+    // its 6 paths (e.g. 0 3 5 3 5 2 4 7).
+    auto enumerate = [](BucketGraph<EmptyPack>& bg) {
+        bg.set_stage(Stage::Enumerate);
+        std::vector<std::vector<int>> v;
+        for (const auto& p : bg.solve()) {
+            v.push_back(p.vertices);
+        }
+        CHECK(bg.enumeration_complete());
+        std::ranges::sort(v);
+        return v;
+    };
+    for (bool bidir : {false, true}) {
+        for (int seed = 0; seed < 200; ++seed) {
+            CAPTURE(bidir);
+            CAPTURE(seed);
+            RandomTwInstance inst(seed, 1);
+            const BucketGraph<EmptyPack>::Options opts{.bucket_steps = {2.0, 0.0},
+                                                       .bidirectional = bidir};
+            BucketGraph<EmptyPack> fresh(inst.pv, EmptyPack{}, opts);
+            fresh.build();
+            const auto all = enumerate(fresh);
+
+            BucketGraph<EmptyPack> bg(inst.pv, EmptyPack{}, opts);
+            bg.build();
+            for (int k = 0; k < 3; ++k) {
+                bg.solve();
+                CHECK(bg.exact_complete());
+                bg.eliminate_arcs(-1e-6);
+                bg.fix_buckets(-1e-6);
+            }
+            CHECK(enumerate(bg) == all);
+        }
+    }
+}
+
+TEST_CASE("Completion bounds stay lower bounds in a negative bucket cycle (#115)") {
+    // 0 -> 1 <-> 2 -> 3, windows [0, 10], one bucket per vertex: 1 and 2 form
+    // one SCC whose cycle 1 2 1 costs -2 and takes 0.2, so the best path
+    // (-79) takes 89 cycle arcs. |SCC| + 1 relaxation passes left completion
+    // bounds far above that instead of unbounded below: parallel bidir
+    // pruned every label by them, and elimination cut the path's arcs.
+    int from[] = {0, 1, 2, 2};
+    int to[] = {1, 2, 1, 3};
+    double cost[] = {10.0, -1.0, -1.0, 0.0};
+    double time_d[] = {1.0, 0.1, 0.1, 0.0};
+    double tw_lb[] = {0.0, 0.0, 0.0, 0.0};
+    double tw_ub[] = {10.0, 10.0, 10.0, 10.0};
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 4;
+    pv.source = 0;
+    pv.sink = 3;
+    pv.n_arcs = 4;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    auto run = [&]<typename Exec>(Exec, bool bidir) {
+        BucketGraph<EmptyPack, Exec> bg(pv, EmptyPack{},
+                                        {.bucket_steps = {20.0, 0.0}, .bidirectional = bidir});
+        bg.build();
+        for (int k = 0; k < 3; ++k) {
+            CAPTURE(k);
+            auto paths = bg.solve();
+            CHECK(bg.exact_complete());
+            CHECK(best_reduced_cost(paths) == doctest::Approx(-79.0));
+            bg.eliminate_arcs(-1e-6);
+            bg.fix_buckets(-1e-6);
+        }
+    };
+    for (bool bidir : {false, true}) {
+        CAPTURE(bidir);
+        run(SequentialExecutor{}, bidir);
+        run(StdThreadExecutor{}, bidir);
+    }
+}
+
+TEST_CASE("exact_complete is false after a label cap, and elimination waits (#115)") {
+    RandomTwInstance inst(104, 1);
+    for (bool bidir : {false, true}) {
+        CAPTURE(bidir);
+        auto make = [&](int cap) {
+            return BucketGraph<EmptyPack>(
+                inst.pv, EmptyPack{},
+                {.bucket_steps = {2.0, 0.0}, .bidirectional = bidir, .max_scc_labels = cap});
+        };
+        auto bg = make(500000);
+        bg.build();
+        bg.solve();
+        CHECK(bg.exact_complete());
+
+        auto capped = make(1);
+        capped.build();
+        capped.solve();
+        CHECK_FALSE(capped.exact_complete());
+        capped.eliminate_arcs(-1e9);
+        CHECK(capped.eliminated_bucket_arcs() == 0);
+        CHECK(capped.fix_buckets(-1e9) == 0);
+
+        // A later uncapped solve is complete again; a heuristic one is not.
+        bg.set_stage(Stage::Heuristic1);
+        bg.solve();
+        CHECK_FALSE(bg.exact_complete());
+        bg.set_stage(Stage::Exact);
+        bg.solve();
+        CHECK(bg.exact_complete());
+    }
+
+    Solver<EmptyPack> solver(inst.pv, EmptyPack{},
+                             {.bucket_steps = {2.0, 0.0}, .max_scc_labels = 1});
+    solver.set_stage(Stage::Exact);
+    solver.build();
+    solver.solve();
+    CHECK_FALSE(solver.exact_complete());
+}

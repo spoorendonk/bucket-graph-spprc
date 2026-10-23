@@ -29,6 +29,7 @@ public:
         int max_paths = 0;           // 0 = unlimited
         double theta = -1e-6;
         int max_enum_labels = 5000000;
+        int max_scc_labels = 500000;  // see BucketGraph::Options
     };
 
     Solver(const ProblemView& problem, Pack resources, Options opts = {}, Exec executor = {})
@@ -47,6 +48,7 @@ public:
                   .parallel_bidir = opts_.parallel_bidir,
                   .stage = Stage::Exact,
                   .max_enum_labels = opts_.max_enum_labels,
+                  .max_scc_labels = opts_.max_scc_labels,
               },
               std::move(executor)) {}
 
@@ -143,6 +145,10 @@ public:
 
     /// Whether the last enumeration was complete (no caps hit).
     [[nodiscard]] bool enumeration_complete() const { return bg_.enumeration_complete(); }
+
+    /// Whether the last solve was exact and hit no label cap, so an empty
+    /// result proves no path within theta exists; see BucketGraph::exact_complete().
+    [[nodiscard]] bool exact_complete() const { return bg_.exact_complete(); }
 
     /// Phase timing breakdown accumulated across all solve iterations
     /// (including A+ refinement retries).
