@@ -183,6 +183,7 @@ public:
         }
         midpoint_initialized_ = false;
         initial_bucket_arc_count_ = current_bucket_arc_count();
+        completion_ready_ = false;  // any bounds are for the old grid
     }
 
     /// Update reduced costs (fast, O(1) — just stores the pointer).
@@ -409,15 +410,12 @@ public:
     /// Arc elimination: remove bucket arcs incompatible with gap theta.
     /// Uses a bound on the cost to b (fw_prefix_bound / bw_suffix_bound) +
     /// completion (cost-to-go to the terminal).
-    /// Completion bounds must be available from a prior solve().
     /// Then generates jump arcs to maintain reachability.
+    /// Does nothing unless the last solve() computed completion bounds.
     void eliminate_arcs(double theta) {
-        assert(!fw_completion_.empty() &&
-               "eliminate_arcs requires completion bounds from a prior solve()");
-        assert((!opts_.bidirectional || !bw_completion_.empty()) &&
-               "eliminate_arcs requires bw completion bounds from a prior solve()");
-        assert((!opts_.bidirectional || bw_c_best_bound_.size() == buckets_.size()) &&
-               "eliminate_arcs requires bw_c_best bounds from a prior solve()");
+        if (!completion_ready_) {
+            return;
+        }
 
         int nb = static_cast<int>(buckets_.size());
         executor_.parallel_for(0, nb, [&](int bi) {
@@ -441,7 +439,11 @@ public:
     /// Requires labels from a prior solve(). Tighter than bound-based
     /// eliminate_arcs because it checks actual θ-compatible (L, L̃) pairs.
     /// Falls back to bound-based for mono-directional (no opposite labels).
+    /// Does nothing unless the last solve() computed completion bounds.
     void eliminate_arcs_label_based(double theta) {
+        if (!completion_ready_) {
+            return;
+        }
         if (!opts_.bidirectional || opts_.symmetric) {
             // Mono or symmetric: no backward labels → fall back to bound-based
             eliminate_arcs(theta);
@@ -467,7 +469,7 @@ public:
     ///
     /// Fix bucket b if c_best(b) + completion(b) > theta, meaning no
     /// source-to-sink path through b can have cost within the gap.
-    /// Completion bounds must be available from a prior solve().
+    /// Fixes nothing unless the last solve() computed completion bounds.
     ///
     /// In bidir, c_best covers only paths through b at or below the
     /// midpoint of the last solve, and bw_c_best only those at or above it
@@ -475,13 +477,10 @@ public:
     ///
     /// Returns number of newly fixed buckets.
     int fix_buckets(double theta) {
+        if (!completion_ready_) {
+            return 0;
+        }
         fixing_theta_ = theta;
-        assert(!fw_completion_.empty() &&
-               "fix_buckets requires completion bounds from a prior solve()");
-        assert((!opts_.bidirectional || !bw_completion_.empty()) &&
-               "fix_buckets requires bw completion bounds from a prior solve()");
-        assert((!opts_.bidirectional || bw_c_best_bound_.size() == buckets_.size()) &&
-               "fix_buckets requires bw_c_best bounds from a prior solve()");
 
         int nb = static_cast<int>(buckets_.size());
         bool bidir = opts_.bidirectional;
@@ -561,6 +560,7 @@ public:
         fixing_theta_ = INF;
         fw_completion_.clear();
         bw_completion_.clear();
+        completion_ready_ = false;
         for (auto& b : buckets_) {
             b.jump_arcs.clear();
             b.bw_jump_arcs.clear();
@@ -3139,6 +3139,9 @@ private:
         // A solve can return before saving it (infeasible source or sink),
         // and fixing still reads it.
         bw_c_best_bound_.assign(nb, INF);
+        // Set again once the solve has labelled and computed completions,
+        // which it skips when it returns early.
+        completion_ready_ = false;
     }
 
     Label<Pack>* create_initial_label(Direction dir) {
@@ -3268,6 +3271,7 @@ private:
         if (opts_.stage != Stage::Enumerate) {
             compute_completion_bounds(Direction::Forward);
         }
+        completion_ready_ = true;
         timings_.completion_bounds = Clock_::now() - t_comp_start;
 
         // Path extraction
@@ -3523,6 +3527,7 @@ private:
             compute_completion_bounds(Direction::Forward);
             compute_completion_bounds(Direction::Backward);
         }
+        completion_ready_ = true;
 
         // Fixing and elimination need bw_c_best over every bw label, before
         // the prune below drops some by fw c_best (#111).
@@ -4067,6 +4072,7 @@ private:
     std::vector<double> fw_completion_;    // forward cost-to-go (b → sink)
     std::vector<double> bw_completion_;    // backward cost-to-go (b → source)
     std::vector<double> bw_c_best_bound_;  // bw_c_best before the bw post-pass prune
+    bool completion_ready_ = false;        // last solve() computed completions for this grid
     std::vector<int> vertex_bucket_start_;
     std::vector<std::array<int, 2>> vertex_n_buckets_;
 

@@ -762,7 +762,7 @@ TEST_CASE("Stress: infeasible sink in bidir returns empty") {
 TEST_CASE("Parallel bidir: fixing after a solve with an infeasible sink") {
     // The parallel solve computes completion bounds before seeding, and an
     // infeasible sink returns before the bw_c_best bounds are saved; fixing
-    // and elimination must still read them in range (#111).
+    // and elimination must not read them (#111, #118).
     int from[] = {0};
     int to[] = {1};
     double base_cost[] = {1.0};
@@ -797,8 +797,106 @@ TEST_CASE("Parallel bidir: fixing after a solve with an infeasible sink") {
         {.bucket_steps = {5.0, 1.0}, .theta = 1e9, .bidirectional = true, .stage = Stage::Exact});
     bg.build();
     CHECK(bg.solve().empty());
-    CHECK(bg.fix_buckets(1e9) == static_cast<int>(bg.buckets().size()));
+    CHECK(bg.fix_buckets(1e9) == 0);
     bg.eliminate_arcs(1e9);
+}
+
+TEST_CASE("Sequential: fixing and elimination after a first solve with an infeasible end") {
+    // A solve with an infeasible source or sink returns before computing
+    // completion bounds; fixing and elimination then leave the graph as it
+    // is rather than read the empty bounds (#118).
+    int from[] = {0};
+    int to[] = {1};
+    double base_cost[] = {1.0};
+    double time_d[] = {1.0};
+    double tw_lb[] = {0.0, 0.0};
+    double tw_ub[] = {10.0, 10.0};
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 2;
+    pv.source = 0;
+    pv.sink = 1;
+    pv.n_arcs = 1;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = base_cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    double pickup[] = {0.0, 0.0};
+    double delivery[] = {0.0, 0.0};
+    bool bidir = false;
+    SUBCASE("mono, infeasible source") {
+        pickup[0] = 999.0;
+    }
+    SUBCASE("bidir, infeasible source") {
+        pickup[0] = 999.0;
+        bidir = true;
+    }
+    SUBCASE("bidir, infeasible sink") {
+        pickup[1] = 999.0;
+        bidir = true;
+    }
+    PickupDeliveryResource pd(pickup, delivery, 10.0, 2);
+    using Pack = ResourcePack<PickupDeliveryResource>;
+
+    BucketGraph<Pack> bg(
+        pv, Pack(pd),
+        {.bucket_steps = {5.0, 1.0}, .theta = 1e9, .bidirectional = bidir, .stage = Stage::Exact});
+    bg.build();
+    const auto arcs_before = bg.non_fixed_arc_count();
+    CHECK(bg.solve().empty());
+    CHECK(bg.fix_buckets(0.0) == 0);
+    CHECK(bg.n_fixed_buckets() == 0);
+    bg.eliminate_arcs(0.0);
+    bg.eliminate_arcs_label_based(0.0);
+    CHECK(bg.non_fixed_arc_count() == arcs_before);
+}
+
+TEST_CASE("Fixing after a rebuild waits for the next solve") {
+    // build() replaces the grid the completion bounds were computed for.
+    int from[] = {0};
+    int to[] = {1};
+    double base_cost[] = {1.0};
+    double time_d[] = {1.0};
+    double tw_lb[] = {0.0, 0.0};
+    double tw_ub[] = {10.0, 10.0};
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 2;
+    pv.source = 0;
+    pv.sink = 1;
+    pv.n_arcs = 1;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = base_cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    BucketGraph<ResourcePack<>> bg(pv, ResourcePack<>{},
+                                   {.bucket_steps = {5.0, 1.0}, .stage = Stage::Exact});
+    bg.build();
+    bg.solve();
+    const auto n_before = bg.buckets().size();
+    bg.double_xi();
+    bg.build();
+    REQUIRE(bg.buckets().size() > n_before);
+    CHECK(bg.fix_buckets(-1.0) == 0);
+    bg.eliminate_arcs(-1.0);
+    bg.solve();
+    CHECK(bg.fix_buckets(-1.0) > 0);
 }
 
 // ════════════════════════════════════════════════════════════════════
