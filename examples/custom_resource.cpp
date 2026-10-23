@@ -53,14 +53,16 @@ struct CapacityResource {
 
     // Forward: lower accumulated demand dominates (more room left).
     // Backward: higher remaining capacity dominates.
+    // Compare exactly, not within EPS: an EPS here adds to the one in
+    // extend_to_vertex, and a dominator could be cut where its victim is not.
     [[nodiscard]] double domination_cost(bgspprc::Direction dir, int /*vertex*/, State s1,
                                          State s2) const {
         if (dir == bgspprc::Direction::Forward) {
-            if (s1 > s2 + bgspprc::EPS) {
+            if (s1 > s2) {
                 return bgspprc::INF;
             }
         } else {
-            if (s1 < s2 - bgspprc::EPS) {
+            if (s1 < s2) {
                 return bgspprc::INF;
             }
         }
