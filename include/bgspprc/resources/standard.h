@@ -84,13 +84,15 @@ struct StandardResource {
         return {q_new, 0.0};
     }
 
+    /// Exact, not within EPS: extend_to_vertex checks windows strictly, so a
+    /// dominator an EPS past s2 could be cut where s2 is not (#114).
     [[nodiscard]] double domination_cost(Direction dir, int /*vertex*/, State s1, State s2) const {
         if (dir == Direction::Forward) {
-            if (s1 > s2 + EPS) {
+            if (s1 > s2) {
                 return INF;
             }
         } else {
-            if (s1 < s2 - EPS) {
+            if (s1 < s2) {
                 return INF;
             }
         }

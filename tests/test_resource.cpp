@@ -115,9 +115,8 @@ TEST_CASE("StandardResource domination_cost forward") {
     // s1 > s2 → infeasible (INF)
     CHECK(res.domination_cost(Direction::Forward, 0, 15.0, 10.0) >= INF);
 
-    // EPS boundary: within tolerance → feasible, beyond → infeasible
-    CHECK(res.domination_cost(Direction::Forward, 0, 10.0 + 0.5e-9, 10.0) == 0.0);
-    CHECK(res.domination_cost(Direction::Forward, 0, 10.0 + 2e-9, 10.0) >= INF);
+    // Exact, no EPS: windows are checked strictly (#114)
+    CHECK(res.domination_cost(Direction::Forward, 0, 0.1 + 0.2, 0.3) >= INF);
 }
 
 TEST_CASE("StandardResource domination_cost backward") {
@@ -134,9 +133,8 @@ TEST_CASE("StandardResource domination_cost backward") {
     // s1 < s2 → infeasible (INF)
     CHECK(res.domination_cost(Direction::Backward, 0, 30.0, 40.0) >= INF);
 
-    // EPS boundary
-    CHECK(res.domination_cost(Direction::Backward, 0, 40.0 - 0.5e-9, 40.0) == 0.0);
-    CHECK(res.domination_cost(Direction::Backward, 0, 40.0 - 2e-9, 40.0) >= INF);
+    // Exact, no EPS: windows are checked strictly (#114)
+    CHECK(res.domination_cost(Direction::Backward, 0, 0.3, 0.1 + 0.2) >= INF);
 }
 
 TEST_CASE("StandardResource concatenation_cost asymmetric") {
@@ -1762,6 +1760,9 @@ TEST_CASE("PickupDeliveryResource: domination_cost forward") {
     CHECK(res.domination_cost(Direction::Forward, 0, {2.0, 6.0}, {3.0, 7.0}) == INF);
     // Equal → 0
     CHECK(res.domination_cost(Direction::Forward, 0, {3.0, 7.0}, {3.0, 7.0}) == 0.0);
+    // Exact, no EPS: s1 one rounding error worse on P or D does not dominate (#114)
+    CHECK(res.domination_cost(Direction::Forward, 0, {0.1 + 0.2, 7.0}, {0.3, 7.0}) == INF);
+    CHECK(res.domination_cost(Direction::Forward, 0, {3.0, 0.3}, {3.0, 0.1 + 0.2}) == INF);
 }
 
 TEST_CASE("PickupDeliveryResource: domination_cost backward") {
@@ -1775,6 +1776,9 @@ TEST_CASE("PickupDeliveryResource: domination_cost backward") {
     CHECK(res.domination_cost(Direction::Backward, 0, {8.0, 4.0}, {7.0, 3.0}) == INF);
     // P_bar1 < P_bar2 → INF
     CHECK(res.domination_cost(Direction::Backward, 0, {6.0, 2.0}, {7.0, 3.0}) == INF);
+    // Exact, no EPS (#114)
+    CHECK(res.domination_cost(Direction::Backward, 0, {7.0, 0.1 + 0.2}, {7.0, 0.3}) == INF);
+    CHECK(res.domination_cost(Direction::Backward, 0, {0.3, 3.0}, {0.1 + 0.2, 3.0}) == INF);
 }
 
 TEST_CASE("PickupDeliveryResource: concatenation_cost") {

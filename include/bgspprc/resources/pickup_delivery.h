@@ -79,20 +79,22 @@ struct PickupDeliveryResource {
 
     /// Forward: INF if P1 > P2 or D1 < D2, else 0.
     /// Backward: INF if D_bar1 > D_bar2 or P_bar1 < P_bar2, else 0.
+    /// Exact, not within EPS: the EPS in extend_to_vertex and here would add
+    /// up, so a dominator could be cut where the label it pruned is not (#114).
     [[nodiscard]] double domination_cost(Direction dir, int /*vertex*/, State s1, State s2) const {
         if (dir == Direction::Forward) {
-            if (s1.P > s2.P + EPS) {
+            if (s1.P > s2.P) {
                 return INF;
             }
-            if (s1.D < s2.D - EPS) {
+            if (s1.D < s2.D) {
                 return INF;
             }
             return 0.0;
         }
-        if (s1.D > s2.D + EPS) {
+        if (s1.D > s2.D) {
             return INF;
         }
-        if (s1.P < s2.P - EPS) {
+        if (s1.P < s2.P) {
             return INF;
         }
         return 0.0;
