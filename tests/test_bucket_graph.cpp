@@ -1954,6 +1954,36 @@ TEST_CASE("Symmetric: depot tours come back once, bidir and symmetric") {
     check(lg.pv);
 }
 
+TEST_CASE("Warm starting: labels are injected, and not when enumerating") {
+    LargerGraph g;
+    for (bool bidir : {false, true}) {
+        CAPTURE(bidir);
+        typename BucketGraph<EmptyPack>::Options opts{
+            .bucket_steps = {1.0, 1.0}, .theta = 1e9, .bidirectional = bidir};
+        BucketGraph<EmptyPack> cold(g.pv, EmptyPack{}, opts);
+        BucketGraph<EmptyPack> warm(g.pv, EmptyPack{}, opts);
+        for (auto* bg : {&cold, &warm}) {
+            bg->build();
+            bg->solve();
+        }
+        warm.save_warm_labels(1.0);
+        auto cold_paths = cold.solve();
+        auto warm_paths = warm.solve();
+        // The re-extended warm labels are allocated on top of labeling's.
+        CHECK(warm.labels_created() > cold.labels_created());
+        REQUIRE(!warm_paths.empty());
+        CHECK(warm_paths[0].reduced_cost == doctest::Approx(cold_paths[0].reduced_cost));
+
+        for (auto* bg : {&cold, &warm}) {
+            bg->set_stage(Stage::Enumerate);
+        }
+        cold_paths = cold.solve();
+        warm_paths = warm.solve();
+        CHECK(each_path_once(warm_paths));
+        CHECK(warm_paths.size() == cold_paths.size());
+    }
+}
+
 TEST_CASE("Symmetric: no backward labels generated") {
     SymmetricGraph g;
 

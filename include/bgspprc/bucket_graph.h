@@ -13,6 +13,7 @@
 #include <limits>
 #include <numbers>
 #include <numeric>
+#include <ranges>
 #include <span>
 #include <stack>
 #include <tuple>
@@ -4094,10 +4095,17 @@ private:
     BucketLabels fw_labels_;
     BucketLabels bw_labels_;
 
-    // Warm labels: the arc path from the source of each label saved by the
-    // previous solve. They are re-extended from the new source label, so they
-    // keep a parent chain and are costed under the current duals.
-    std::vector<std::vector<int>> warm_labels_;
+    // Warm labels: the labels saved by the previous solve, as a prefix tree
+    // of arcs from the source. Each node is the label its parent reaches
+    // along `arc`; parents come before their children. The tree is
+    // re-extended from the new source label, so the labels keep a parent
+    // chain and are costed under the current duals.
+    struct WarmNode {
+        int parent;  // -1: the source label
+        int arc;
+        bool saved;  // a saved label rather than only a prefix of one
+    };
+    std::vector<WarmNode> warm_labels_;
 
     void collect_warm_labels(const BucketLabels& bl, double fraction) {
         // Gather all non-dominated labels
@@ -4118,54 +4126,80 @@ private:
         int keep = std::max(1, static_cast<int>(all_labels.size() * fraction));
         keep = std::min(keep, static_cast<int>(all_labels.size()));
 
+        std::unordered_map<const Label<Pack>*, int> node_of;
+        std::vector<const Label<Pack>*> chain;
         for (int i = 0; i < keep; ++i) {
-            std::vector<int> arcs;
-            for (const auto* L = all_labels[i]; L->parent_arc != -1; L = L->parent) {
-                arcs.push_back(L->parent_arc);
-            }
-            if (arcs.empty()) {
+            const auto* L = all_labels[i];
+            if (L->parent_arc == -1) {
                 continue;  // the source label, which every solve starts from
             }
-            std::ranges::reverse(arcs);
-            warm_labels_.push_back(std::move(arcs));
+            chain.clear();
+            const auto* cur = L;
+            while (cur->parent_arc != -1 && !node_of.contains(cur)) {
+                chain.push_back(cur);
+                cur = cur->parent;
+            }
+            int parent = (cur->parent_arc == -1) ? -1 : node_of.at(cur);
+            for (const auto* c : std::views::reverse(chain)) {
+                node_of.emplace(c, static_cast<int>(warm_labels_.size()));
+                warm_labels_.push_back({parent, c->parent_arc, false});
+                parent = static_cast<int>(warm_labels_.size()) - 1;
+            }
+            warm_labels_[node_of.at(L)].saved = true;
         }
     }
 
-    /// Re-extend each warm path from `src` along the current bucket arcs, or
-    /// a jump arc when its bucket has no bucket arc for the next arc, and
-    /// insert the label it ends at. A path stops at its first label past the
-    /// midpoint, since labeling never extends one. A path that is now
-    /// infeasible, or that passes a fixed bucket, is dropped.
-    void inject_warm_labels(const Label<Pack>* src, BucketLabels& bl) {
+    /// Extend `parent` along arc `a` the way labeling would: by its bucket's
+    /// bucket arc for `a`, or else by a jump arc for `a`. Null when its
+    /// bucket has neither, or the extension is infeasible.
+    Label<Pack>* extend_warm(const Label<Pack>* parent, int a) {
         constexpr Direction dir = Direction::Forward;
+        const Bucket& b = buckets_[parent->bucket];
+        auto ba = std::ranges::find(b.bucket_arcs, a, &BucketArc::arc_id);
+        if (ba != b.bucket_arcs.end()) {
+            return extend_label(parent, *ba, dir);
+        }
+        for (const auto& ja : b.jump_arcs) {
+            if (ja.arc_id == a) {
+                if (auto* L = extend_label(parent, ja, dir, buckets_[ja.jump_bucket])) {
+                    return L;
+                }
+            }
+        }
+        return nullptr;
+    }
+
+    /// Re-extend the warm tree from `src` and insert the saved labels. A
+    /// label past the midpoint is inserted and not extended further, since
+    /// labeling never extends one. A node that is now infeasible, or lands
+    /// in a fixed bucket, is dropped with its subtree. Enumerate keeps every
+    /// label without dominance, so there a warm label would only return its
+    /// paths twice: it injects none.
+    void inject_warm_labels(const Label<Pack>* src, BucketLabels& bl) {
+        if (opts_.stage == Stage::Enumerate) {
+            return;
+        }
         const double mid = midpoint_.load(std::memory_order_relaxed);
         int label_count = 0;  // local counter for try_insert_label
-        for (const auto& arcs : warm_labels_) {
-            Label<Pack>* L = nullptr;
-            const Label<Pack>* cur = src;
-            for (int a : arcs) {
-                const Bucket& b = buckets_[cur->bucket];
-                auto ba = std::ranges::find(b.bucket_arcs, a, &BucketArc::arc_id);
-                L = nullptr;
-                if (ba != b.bucket_arcs.end()) {
-                    L = extend_label(cur, *ba, dir);
-                } else {
-                    for (const auto& ja : b.jump_arcs) {
-                        if (ja.arc_id == a) {
-                            L = extend_label(cur, ja, dir, buckets_[ja.jump_bucket]);
-                            if (L) {
-                                break;
-                            }
-                        }
-                    }
-                }
-                if (!L || fixed_.test(L->bucket) || L->q[0] > mid) {
-                    break;
-                }
-                cur = L;
+        // The label each node reached, null when it was dropped or is past
+        // the midpoint, so that its subtree is not extended.
+        std::vector<const Label<Pack>*> reached(warm_labels_.size(), nullptr);
+        for (std::size_t i = 0; i < warm_labels_.size(); ++i) {
+            const WarmNode& node = warm_labels_[i];
+            const Label<Pack>* parent = (node.parent == -1) ? src : reached[node.parent];
+            if (!parent) {
+                continue;
             }
-            if (L && !fixed_.test(L->bucket)) {
-                try_insert_label(L, L->bucket, dir, bl, label_count);
+            auto* L = extend_warm(parent, node.arc);
+            if (!L || fixed_.test(L->bucket)) {
+                continue;
+            }
+            const bool past_mid = L->q[0] > mid;
+            if (node.saved || past_mid) {
+                try_insert_label(L, L->bucket, Direction::Forward, bl, label_count);
+            }
+            if (!past_mid) {
+                reached[i] = L;
             }
         }
     }
