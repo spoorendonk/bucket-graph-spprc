@@ -1935,6 +1935,99 @@ TEST_CASE("Bidir: a label cap leaves fw labels to join, each path once") {
     }
 }
 
+TEST_CASE("Bidir finds the mono best at the default theta on random instances") {
+    // Random time-window (and capacity) instances with negative arc costs, so
+    // bw labels can be cheaper than 0. Bidir at the default theta must return
+    // the mono best; a join skip that took bw costs as non-negative lost it on
+    // seeds 936 and 1099 (1D) and 459 (2D).
+    for (int n_main = 1; n_main <= 2; ++n_main) {
+        for (int seed = 0; seed < 1200; ++seed) {
+            CAPTURE(n_main);
+            CAPTURE(seed);
+            std::mt19937 rng(seed);
+            std::uniform_real_distribution<double> U(0, 1);
+            const int n = 6 + seed % 6;  // 0 source, n-1 sink
+            std::vector<double> x(n);
+            std::vector<double> y(n);
+            std::vector<double> du(n);
+            std::vector<double> dem(n);
+            std::vector<double> lb0(n);
+            std::vector<double> ub0(n);
+            std::vector<double> lb1(n, 0.0);
+            std::vector<double> ub1(n);
+            for (int v = 0; v < n; ++v) {
+                x[v] = U(rng) * 10;
+                y[v] = U(rng) * 10;
+                du[v] = (v > 0 && v < n - 1) ? U(rng) * 14 : 0;
+                dem[v] = (v > 0 && v < n - 1) ? 1 + static_cast<int>(U(rng) * 3) : 0;
+                double c = U(rng) * 40;
+                lb0[v] = c;
+                ub0[v] = c + 5 + U(rng) * 20;
+            }
+            x[n - 1] = x[0];
+            y[n - 1] = y[0];
+            lb0[0] = lb0[n - 1] = 0;
+            ub0[0] = ub0[n - 1] = 60;
+            std::ranges::fill(ub1, 6 + static_cast<int>(U(rng) * 6));
+
+            std::vector<int> from_v;
+            std::vector<int> to_v;
+            std::vector<double> cost_v;
+            std::vector<double> time_v;
+            std::vector<double> load_v;
+            for (int u = 0; u <= n - 2; ++u) {
+                for (int v = 1; v <= n - 1; ++v) {
+                    if (u == v || (u == 0 && v == n - 1)) {
+                        continue;
+                    }
+                    double d = std::hypot(x[u] - x[v], y[u] - y[v]);
+                    from_v.push_back(u);
+                    to_v.push_back(v);
+                    cost_v.push_back(d - du[u] / 2 - du[v] / 2);
+                    time_v.push_back(d + 1);
+                    load_v.push_back(dem[v]);
+                }
+            }
+            const double* arc_res[] = {time_v.data(), load_v.data()};
+            const double* v_lb[] = {lb0.data(), lb1.data()};
+            const double* v_ub[] = {ub0.data(), ub1.data()};
+
+            ProblemView pv;
+            pv.n_vertices = n;
+            pv.source = 0;
+            pv.sink = n - 1;
+            pv.n_arcs = static_cast<int>(from_v.size());
+            pv.arc_from = from_v.data();
+            pv.arc_to = to_v.data();
+            pv.arc_base_cost = cost_v.data();
+            pv.n_resources = 2;
+            pv.arc_resource = arc_res;
+            pv.vertex_lb = v_lb;
+            pv.vertex_ub = v_ub;
+            pv.n_main_resources = n_main;
+
+            auto best = [&](bool bidir) {
+                BucketGraph<EmptyPack> bg(
+                    pv, EmptyPack{},
+                    {.bucket_steps = {2.0, n_main == 2 ? 2.0 : 0.0}, .bidirectional = bidir});
+                bg.build();
+                double b = INF;
+                for (const auto& p : bg.solve()) {
+                    b = std::min(b, p.reduced_cost);
+                }
+                return b;
+            };
+            const double mono = best(false);
+            const double bidir = best(true);
+            if (mono >= INF) {
+                CHECK(bidir >= INF);
+            } else {
+                CHECK(bidir == doctest::Approx(mono));
+            }
+        }
+    }
+}
+
 TEST_CASE("Parallel bidir: parallel_bidir=false gives sequential bidir with StdThreadExecutor") {
     int from[] = {0, 0, 1, 2};
     int to[] = {1, 2, 3, 3};

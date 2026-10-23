@@ -3615,14 +3615,6 @@ private:
 
                         double fw_arc = fw->cost + arc_cost;
 
-                        // For EmptyPack, bw costs and resource adjustments are
-                        // non-negative, so fw + arc alone exceeding theta is sufficient.
-                        if constexpr (Pack::size == 0) {
-                            if (fw_arc >= opts_.theta) {
-                                continue;
-                            }
-                        }
-
                         // Hoist per-resource feasibility thresholds out of the bbi loop —
                         // they depend only on fw, arc a, and vertex j, all fixed here.
                         // Asymmetric: test bw->q[r] >= q_thr_forward[r].
