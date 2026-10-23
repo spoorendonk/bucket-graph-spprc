@@ -2568,3 +2568,39 @@ TEST_CASE("ThreadPoolExecutor: bidir with nested pool dispatch matches sequentia
     REQUIRE(!pp.empty());
     CHECK(sp[0].reduced_cost == doctest::Approx(pp[0].reduced_cost).epsilon(1e-6));
 }
+
+TEST_CASE("Bidir Enumerate returns the mono paths on random instances (#117)") {
+    // Enumerate keeps every label below theta, so mono and bidir must return
+    // the same paths. Bidir lost some on over half of these instances:
+    // Enumerate stored a bucket's labels unsorted, and the concatenation
+    // stopped at the first one over theta.
+    auto paths = [&]<typename Exec>(Exec, const ProblemView& pv, int n_main, double theta,
+                                    bool bidir) {
+        BucketGraph<EmptyPack, Exec> bg(pv, EmptyPack{},
+                                        {.bucket_steps = {2.0, n_main == 2 ? 2.0 : 0.0},
+                                         .theta = theta,
+                                         .bidirectional = bidir,
+                                         .stage = Stage::Enumerate});
+        bg.build();
+        std::vector<std::vector<int>> v;
+        for (const auto& p : bg.solve()) {
+            v.push_back(p.vertices);
+        }
+        CHECK(bg.enumeration_complete());
+        std::ranges::sort(v);
+        return v;
+    };
+    for (double theta : {-1e-6, 5.0}) {
+        for (int n_main = 1; n_main <= 2; ++n_main) {
+            for (int seed = 0; seed < 200; ++seed) {
+                CAPTURE(theta);
+                CAPTURE(n_main);
+                CAPTURE(seed);
+                RandomTwInstance inst(seed, n_main);
+                const auto mono = paths(SequentialExecutor{}, inst.pv, n_main, theta, false);
+                CHECK(paths(SequentialExecutor{}, inst.pv, n_main, theta, true) == mono);
+                CHECK(paths(StdThreadExecutor{}, inst.pv, n_main, theta, true) == mono);
+            }
+        }
+    }
+}

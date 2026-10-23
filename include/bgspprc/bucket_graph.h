@@ -2362,6 +2362,15 @@ private:
             }
         }
 
+        // Enumerate appends labels unsorted (try_insert_label), but the
+        // concatenation stops a bucket at its first label over theta: sort
+        // them by cost here, and the compaction rebuilds the SoA to match.
+        if (enumerating) {
+            for (int bi : scc_bs) {
+                std::ranges::stable_sort(bl.labels[bi], {}, &Label<Pack>::cost);
+            }
+        }
+
         // Batch compaction: physically remove dominated labels at SCC boundary
         compact_labels(bl, scc_bs);
 
