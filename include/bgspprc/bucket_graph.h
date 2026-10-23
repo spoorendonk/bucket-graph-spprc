@@ -254,7 +254,7 @@ public:
     /// Keeps the top `fraction` of non-dominated labels by cost.
     void save_warm_labels(double fraction = 0.7) {
         warm_labels_.clear();
-        collect_warm_labels(fw_labels_, Direction::Forward, fraction);
+        collect_warm_labels(fw_labels_, fraction);
     }
 
     /// Adaptive bucket step size: halve steps for vertices where the ratio
@@ -3241,13 +3241,13 @@ private:
             ++fw_counters_.total_enum_labels;
         }
 
-        // Inject warm labels from previous solve
-        if (!warm_labels_.empty()) {
-            inject_warm_labels(fw_labels_, Direction::Forward);
-        }
-
         // Mono solve: set midpoint to INF so forward labels are never skipped.
         midpoint_.store(INF, std::memory_order_relaxed);
+
+        // Inject warm labels from previous solve
+        if (!warm_labels_.empty()) {
+            inject_warm_labels(src, fw_labels_);
+        }
 
         // Forward labeling
         auto t_fw_start = Clock_::now();
@@ -3414,7 +3414,7 @@ private:
             }
 
             if (!warm_labels_.empty()) {
-                inject_warm_labels(fw_labels_, Direction::Forward);
+                inject_warm_labels(src, fw_labels_);
             }
 
             auto t_parallel_start = Clock_::now();
@@ -3496,7 +3496,7 @@ private:
             }
 
             if (!warm_labels_.empty()) {
-                inject_warm_labels(fw_labels_, Direction::Forward);
+                inject_warm_labels(src, fw_labels_);
             }
 
             auto t_fw_start = Clock_::now();
@@ -3602,11 +3602,10 @@ private:
 
     /// True when every label on L's parent chain is at v and the chain starts
     /// at a start label (parent_arc -1): the start label at v, possibly
-    /// jump-boosted, rather than a path that left v and came back. A warm
-    /// label has no parent but keeps its last arc, so it never counts.
+    /// jump-boosted, rather than a path that left v and came back.
     static bool never_left(const Label<Pack>* L, int v) {
         for (; L != nullptr; L = L->parent) {
-            if (L->vertex != v || (L->parent == nullptr && L->parent_arc != -1)) {
+            if (L->vertex != v) {
                 return false;
             }
         }
@@ -4095,19 +4094,12 @@ private:
     BucketLabels fw_labels_;
     BucketLabels bw_labels_;
 
-    // Warm label storage: saved state from previous solve
-    struct WarmLabel {
-        int vertex;
-        Direction dir;
-        double cost;
-        double real_cost;
-        std::array<double, 2> q;
-        int parent_arc;  // last arc (for path, not critical for warm start)
-        typename Pack::StatesTuple resource_states;
-    };
-    std::vector<WarmLabel> warm_labels_;
+    // Warm labels: the arc path from the source of each label saved by the
+    // previous solve. They are re-extended from the new source label, so they
+    // keep a parent chain and are costed under the current duals.
+    std::vector<std::vector<int>> warm_labels_;
 
-    void collect_warm_labels(const BucketLabels& bl, Direction dir, double fraction) {
+    void collect_warm_labels(const BucketLabels& bl, double fraction) {
         // Gather all non-dominated labels
         std::vector<const Label<Pack>*> all_labels;
         for (const auto& bucket : bl.labels) {
@@ -4127,42 +4119,54 @@ private:
         keep = std::min(keep, static_cast<int>(all_labels.size()));
 
         for (int i = 0; i < keep; ++i) {
-            const auto* L = all_labels[i];
-            WarmLabel wl;
-            wl.vertex = L->vertex;
-            wl.dir = dir;
-            wl.cost = L->cost;
-            wl.real_cost = L->real_cost;
-            wl.q = L->q;
-            wl.parent_arc = L->parent_arc;
-            wl.resource_states = L->resource_states;
-            warm_labels_.push_back(std::move(wl));
+            std::vector<int> arcs;
+            for (const auto* L = all_labels[i]; L->parent_arc != -1; L = L->parent) {
+                arcs.push_back(L->parent_arc);
+            }
+            if (arcs.empty()) {
+                continue;  // the source label, which every solve starts from
+            }
+            std::ranges::reverse(arcs);
+            warm_labels_.push_back(std::move(arcs));
         }
     }
 
-    void inject_warm_labels(BucketLabels& bl, Direction dir) {
+    /// Re-extend each warm path from `src` along the current bucket arcs, or
+    /// a jump arc when its bucket has no bucket arc for the next arc, and
+    /// insert the label it ends at. A path stops at its first label past the
+    /// midpoint, since labeling never extends one. A path that is now
+    /// infeasible, or that passes a fixed bucket, is dropped.
+    void inject_warm_labels(const Label<Pack>* src, BucketLabels& bl) {
+        constexpr Direction dir = Direction::Forward;
+        const double mid = midpoint_.load(std::memory_order_relaxed);
         int label_count = 0;  // local counter for try_insert_label
-        for (const auto& wl : warm_labels_) {
-            if (wl.dir != dir) {
-                continue;
+        for (const auto& arcs : warm_labels_) {
+            Label<Pack>* L = nullptr;
+            const Label<Pack>* cur = src;
+            for (int a : arcs) {
+                const Bucket& b = buckets_[cur->bucket];
+                auto ba = std::ranges::find(b.bucket_arcs, a, &BucketArc::arc_id);
+                L = nullptr;
+                if (ba != b.bucket_arcs.end()) {
+                    L = extend_label(cur, *ba, dir);
+                } else {
+                    for (const auto& ja : b.jump_arcs) {
+                        if (ja.arc_id == a) {
+                            L = extend_label(cur, ja, dir, buckets_[ja.jump_bucket]);
+                            if (L) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!L || fixed_.test(L->bucket) || L->q[0] > mid) {
+                    break;
+                }
+                cur = L;
             }
-
-            // Compute bucket before allocation for locality
-            int bi = vertex_bucket_index(wl.vertex, wl.q);
-            auto* L = pool_for(dir).allocate(bi);
-            L->vertex = wl.vertex;
-            L->dir = dir;
-            L->cost = wl.cost;
-            L->real_cost = wl.real_cost;
-            L->q = wl.q;
-            L->parent = nullptr;  // warm labels have no parent chain
-            L->parent_arc = wl.parent_arc;
-            L->extended = false;
-            L->dominated = false;
-            L->resource_states = wl.resource_states;
-            L->bucket = bi;
-
-            try_insert_label(L, bi, dir, bl, label_count);
+            if (L && !fixed_.test(L->bucket)) {
+                try_insert_label(L, L->bucket, dir, bl, label_count);
+            }
         }
     }
 

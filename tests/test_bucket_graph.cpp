@@ -1756,6 +1756,129 @@ struct LargerSymmetricGraph {
     }
 };
 
+// Every path runs from the source to the sink along contiguous arcs, and its
+// costs are the sums over its arcs of `red` and of the base costs.
+template <typename Paths>
+void check_paths_against_arcs(const Paths& paths, const ProblemView& pv, const double* red) {
+    for (const auto& p : paths) {
+        REQUIRE(!p.arcs.empty());
+        REQUIRE(p.vertices.size() == p.arcs.size() + 1);
+        CHECK(p.vertices.front() == pv.source);
+        CHECK(p.vertices.back() == pv.sink);
+        double rc = 0.0;
+        double oc = 0.0;
+        for (std::size_t k = 0; k < p.arcs.size(); ++k) {
+            int a = p.arcs[k];
+            CHECK(pv.arc_from[a] == p.vertices[k]);
+            CHECK(pv.arc_to[a] == p.vertices[k + 1]);
+            rc += red[a];
+            oc += pv.arc_base_cost[a];
+        }
+        CHECK(p.reduced_cost == doctest::Approx(rc));
+        CHECK(p.original_cost == doctest::Approx(oc));
+    }
+}
+
+// Solve under `first`, save every label and solve again, under `first` and
+// under `second`; mono, bidir and, when source == sink, symmetric.
+template <typename Exec>
+void check_warm_restart(const ProblemView& pv, const double* first, const double* second,
+                        double theta) {
+    const int n_modes = pv.source == pv.sink ? 3 : 2;
+    for (int mode = 0; mode < n_modes; ++mode) {
+        for (const double* duals : {first, second}) {
+            CAPTURE(mode);
+            CAPTURE(duals == second);
+            BucketGraph<EmptyPack, Exec> bg(pv, EmptyPack{},
+                                            {.bucket_steps = {1.0, 1.0},
+                                             .theta = theta,
+                                             .bidirectional = mode == 1,
+                                             .symmetric = mode == 2,
+                                             .stage = Stage::Exact});
+            bg.build();
+            bg.update_arc_costs(first);
+            auto paths = bg.solve();
+            REQUIRE(!paths.empty());
+            check_paths_against_arcs(paths, pv, first);
+            bg.save_warm_labels(1.0);
+            bg.update_arc_costs(duals);
+            paths = bg.solve();
+            REQUIRE(!paths.empty());
+            check_paths_against_arcs(paths, pv, duals);
+        }
+    }
+}
+
+TEST_CASE("Warm starting: paths run from the source under the current duals") {
+    // Chain 0 -> 1 -> 2 -> 3 -> 4; the one path is 0 1 2 3 4.
+    int from[4] = {0, 1, 2, 3};
+    int to[4] = {1, 2, 3, 4};
+    double cost[4] = {1.0, 2.0, 3.0, 4.0};
+    double time_d[4] = {3.0, 3.0, 1.0, 1.0};
+    double tw_lb[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+    double tw_ub[5] = {10.0, 10.0, 10.0, 10.0, 10.0};
+    const double* arc_res[1] = {time_d};
+    const double* v_lb[1] = {tw_lb};
+    const double* v_ub[1] = {tw_ub};
+    ProblemView pv;
+    pv.n_vertices = 5;
+    pv.source = 0;
+    pv.sink = 4;
+    pv.n_arcs = 4;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    double red[4] = {-5.0, 1.0, -2.0, 0.5};
+    check_warm_restart<SequentialExecutor>(pv, cost, red, 1e9);
+    check_warm_restart<StdThreadExecutor>(pv, cost, red, 1e9);
+
+    for (bool bidir : {false, true}) {
+        CAPTURE(bidir);
+        BucketGraph<EmptyPack> bg(pv, EmptyPack{},
+                                  {.bucket_steps = {1.0, 1.0},
+                                   .theta = 1e9,
+                                   .bidirectional = bidir,
+                                   .stage = Stage::Exact});
+        bg.build();
+        bg.solve();
+        bg.save_warm_labels(1.0);
+        auto paths = bg.solve();
+        REQUIRE(paths.size() == 1);
+        CHECK(paths[0].vertices == std::vector<int>{0, 1, 2, 3, 4});
+    }
+}
+
+TEST_CASE("Warm starting: depot tours run from the depot under the current duals") {
+    // source == sink, so a saved tour back at the depot must not be taken
+    // for the depot start label. Duals make the tours negative: the depot
+    // start label dominates a tour that costs more.
+    SymmetricGraph g;
+    double red1[12];
+    double red2[12];
+    for (int a = 0; a < 12; ++a) {
+        red1[a] = g.cost[a] - 3.0;
+        red2[a] = g.cost[a] - 4.0;
+    }
+    check_warm_restart<SequentialExecutor>(g.pv, red1, red2, -1e-6);
+    check_warm_restart<StdThreadExecutor>(g.pv, red1, red2, -1e-6);
+
+    LargerSymmetricGraph lg;
+    double lred1[16];
+    double lred2[16];
+    for (int a = 0; a < 16; ++a) {
+        lred1[a] = lg.cost[a] - 4.0;
+        lred2[a] = lg.cost[a] - 5.0;
+    }
+    check_warm_restart<SequentialExecutor>(lg.pv, lred1, lred2, -1e-6);
+    check_warm_restart<StdThreadExecutor>(lg.pv, lred1, lred2, -1e-6);
+}
+
 TEST_CASE("Symmetric: matches bidir on small graph") {
     SymmetricGraph g;
 
