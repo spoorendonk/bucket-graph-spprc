@@ -1269,18 +1269,20 @@ private:
             return false;
         }
 
+        // Main resources compare exactly: windows are checked without EPS, so
+        // a dominator an EPS past L2 can be cut at a window L2 meets (#114).
         for (int r = 0; r < n_main_; ++r) {
             if (main_nondisposable_[r]) {
                 // Non-disposable: require equality
-                if (std::abs(L1->q[r] - L2->q[r]) > EPS) {
+                if (L1->q[r] != L2->q[r]) {
                     return false;
                 }
             } else if (dir == Direction::Forward) {
-                if (L1->q[r] > L2->q[r] + EPS) {
+                if (L1->q[r] > L2->q[r]) {
                     return false;
                 }
             } else {
-                if (L1->q[r] < L2->q[r] - EPS) {
+                if (L1->q[r] < L2->q[r]) {
                     return false;
                 }
             }
@@ -1404,9 +1406,9 @@ private:
             if (n_main_ >= 1) {
                 simd_d q0_vec(bucket_q0.data() + i, stdx::element_aligned);
                 if (dir == Direction::Forward) {
-                    mask = mask & (q0_vec <= simd_d(L->q[0] + EPS));
+                    mask = mask & (q0_vec <= simd_d(L->q[0]));
                 } else {
-                    mask = mask & (q0_vec >= simd_d(L->q[0] - EPS));
+                    mask = mask & (q0_vec >= simd_d(L->q[0]));
                 }
                 if (!stdx::any_of(mask)) {
                     continue;
@@ -1417,9 +1419,9 @@ private:
             if (n_main_ >= 2) {
                 simd_d q1_vec(bucket_q1.data() + i, stdx::element_aligned);
                 if (dir == Direction::Forward) {
-                    mask = mask & (q1_vec <= simd_d(L->q[1] + EPS));
+                    mask = mask & (q1_vec <= simd_d(L->q[1]));
                 } else {
-                    mask = mask & (q1_vec >= simd_d(L->q[1] - EPS));
+                    mask = mask & (q1_vec >= simd_d(L->q[1]));
                 }
                 if (!stdx::any_of(mask)) {
                     continue;
@@ -1911,20 +1913,20 @@ private:
                 bool b_ok = true;
                 if (n_main_ >= 1) {
                     if (dir == Direction::Forward) {
-                        a_ok = a_ok && (batch_q0[j] >= existing_q0 - EPS);
-                        b_ok = b_ok && (batch_q0[j] <= existing_q0 + EPS);
+                        a_ok = a_ok && (batch_q0[j] >= existing_q0);
+                        b_ok = b_ok && (batch_q0[j] <= existing_q0);
                     } else {
-                        a_ok = a_ok && (batch_q0[j] <= existing_q0 + EPS);
-                        b_ok = b_ok && (batch_q0[j] >= existing_q0 - EPS);
+                        a_ok = a_ok && (batch_q0[j] <= existing_q0);
+                        b_ok = b_ok && (batch_q0[j] >= existing_q0);
                     }
                 }
                 if (n_main_ >= 2) {
                     if (dir == Direction::Forward) {
-                        a_ok = a_ok && (batch_q1[j] >= existing_q1 - EPS);
-                        b_ok = b_ok && (batch_q1[j] <= existing_q1 + EPS);
+                        a_ok = a_ok && (batch_q1[j] >= existing_q1);
+                        b_ok = b_ok && (batch_q1[j] <= existing_q1);
                     } else {
-                        a_ok = a_ok && (batch_q1[j] <= existing_q1 + EPS);
-                        b_ok = b_ok && (batch_q1[j] >= existing_q1 - EPS);
+                        a_ok = a_ok && (batch_q1[j] <= existing_q1);
+                        b_ok = b_ok && (batch_q1[j] >= existing_q1);
                     }
                 }
                 if constexpr (has_ng_) {
@@ -1946,10 +1948,8 @@ private:
                 using simd_d = stdx::native_simd<double>;
                 constexpr std::size_t W = simd_d::size();
 
-                const simd_d eq0_fw(existing_q0 + EPS);
-                const simd_d eq0_bw(existing_q0 - EPS);
-                const simd_d eq1_fw(existing_q1 + EPS);
-                const simd_d eq1_bw(existing_q1 - EPS);
+                const simd_d eq0(existing_q0);
+                const simd_d eq1(existing_q1);
 
                 int j = 0;
                 for (; j + static_cast<int>(W) <= batch_size; j += static_cast<int>(W)) {
@@ -1959,22 +1959,22 @@ private:
                         simd_d q0_vec(batch_q0 + j, stdx::element_aligned);
                         if (dir == Direction::Forward) {
                             // (a) existing dominates batch: existing_q0 <= batch_q0
-                            mask_a = mask_a & (q0_vec >= eq0_bw);
+                            mask_a = mask_a & (q0_vec >= eq0);
                             // (b) batch dominates existing: batch_q0 <= existing_q0
-                            mask_b = mask_b & (q0_vec <= eq0_fw);
+                            mask_b = mask_b & (q0_vec <= eq0);
                         } else {
-                            mask_a = mask_a & (q0_vec <= eq0_fw);
-                            mask_b = mask_b & (q0_vec >= eq0_bw);
+                            mask_a = mask_a & (q0_vec <= eq0);
+                            mask_b = mask_b & (q0_vec >= eq0);
                         }
                     }
                     if (n_main_ >= 2) {
                         simd_d q1_vec(batch_q1 + j, stdx::element_aligned);
                         if (dir == Direction::Forward) {
-                            mask_a = mask_a & (q1_vec >= eq1_bw);
-                            mask_b = mask_b & (q1_vec <= eq1_fw);
+                            mask_a = mask_a & (q1_vec >= eq1);
+                            mask_b = mask_b & (q1_vec <= eq1);
                         } else {
-                            mask_a = mask_a & (q1_vec <= eq1_fw);
-                            mask_b = mask_b & (q1_vec >= eq1_bw);
+                            mask_a = mask_a & (q1_vec <= eq1);
+                            mask_b = mask_b & (q1_vec >= eq1);
                         }
                     }
                     for (std::size_t k = 0; k < W; ++k) {

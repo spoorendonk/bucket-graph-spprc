@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <bgspprc/executor_thread.h>
 #include <bgspprc/resource.h>
 #include <bgspprc/solver.h>
@@ -490,4 +491,81 @@ TEST_CASE("Bidirectional: source-arc join keeps a one-arc and a longer suffix ap
     auto [par_mono, par_bidir] = solve_mono_bidir<StdThreadExecutor>(pv);
     check(par_mono);
     check(par_bidir);
+}
+
+// Dominance on a main resource must be exact: windows are checked without
+// EPS, so a dominator a rounding error past the label it prunes can be cut
+// at a window that label meets (#114).
+static ProblemView rounding_view(const int* from, const int* to, const double* cost,
+                                 const double** arc_res, const double** v_lb, const double** v_ub) {
+    ProblemView pv;
+    pv.n_vertices = 5;
+    pv.source = 0;
+    pv.sink = 4;
+    pv.n_arcs = 5;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+    return pv;
+}
+
+TEST_CASE("Dominance: a forward label one rounding error later does not prune a feasible one") {
+    // At 2, 0 → 1 → 2 arrives at 0.1 + 0.2 = 0.30000000000000004 for -5 and
+    // 0 → 2 at 0.3 for 0. Vertex 3 closes at 0.3, below the midpoint 10, so
+    // only 0 → 2 → 3 → 4 (-1) is feasible.
+    int from[] = {0, 1, 0, 2, 3};
+    int to[] = {1, 2, 2, 3, 4};
+    double cost[] = {-5.0, 0.0, 0.0, -1.0, 0.0};
+    double time_d[] = {0.1, 0.2, 0.3, 0.0, 0.0};
+    double tw_lb[] = {0.0, 0.0, 0.0, 0.0, 0.0};
+    double tw_ub[] = {20.0, 20.0, 20.0, 0.3, 20.0};
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+    ProblemView pv = rounding_view(from, to, cost, arc_res, v_lb, v_ub);
+
+    auto check = [](const auto& paths) {
+        REQUIRE(paths.size() == 1);
+        CHECK(paths[0].reduced_cost == doctest::Approx(-1.0));
+        CHECK(paths[0].vertices == std::vector<int>{0, 2, 3, 4});
+    };
+    auto [mono, bidir] = solve_mono_bidir<SequentialExecutor>(pv);
+    check(mono);
+    check(bidir);
+}
+
+TEST_CASE("Dominance: a backward label one rounding error earlier does not prune a feasible one") {
+    // Backward from the sink at 20, 2 → 1 → 4 reaches 2 at
+    // 20 - 0.1 - 0.1 = 19.799999999999997 for -5 and 2 → 4 at 19.8 for 0.
+    // Vertex 3 opens at 19.8, above the midpoint 10, so only 0 → 3 → 2 → 4
+    // (-1) is feasible; forward, 0 → 3 → 2 → 1 → 4 ends at
+    // 19.8 + 0.1 + 0.1 > 20 too. The bidir join checks q within EPS, as fw
+    // and bw arithmetic round apart, so it may also return that path (-6).
+    int from[] = {0, 3, 2, 2, 1};
+    int to[] = {3, 2, 4, 1, 4};
+    double cost[] = {0.0, -1.0, 0.0, -5.0, 0.0};
+    double time_d[] = {0.0, 0.0, 0.2, 0.1, 0.1};
+    double tw_lb[] = {0.0, 0.0, 0.0, 19.8, 0.0};
+    double tw_ub[] = {20.0, 20.0, 20.0, 20.0, 20.0};
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+    ProblemView pv = rounding_view(from, to, cost, arc_res, v_lb, v_ub);
+
+    auto check = [](const auto& paths) {
+        REQUIRE(paths.size() == 1);
+        CHECK(paths[0].reduced_cost == doctest::Approx(-1.0));
+        CHECK(paths[0].vertices == std::vector<int>{0, 3, 2, 4});
+    };
+    auto [mono, bidir] = solve_mono_bidir<SequentialExecutor>(pv);
+    check(mono);
+    CHECK(std::ranges::any_of(bidir, [](const auto& p) {
+        return p.vertices == std::vector<int>{0, 3, 2, 4} &&
+               p.reduced_cost == doctest::Approx(-1.0);
+    }));
 }
