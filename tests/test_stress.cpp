@@ -1891,6 +1891,50 @@ TEST_CASE("Parallel bidir: Enumerate stage") {
     CHECK(sp.size() == pp.size());
 }
 
+TEST_CASE("Bidir: a label cap leaves fw labels to join, each path once") {
+    // Chain 0 -> 1 -> 2 -> 3 -> 4, windows [0, 10] (midpoint 5), unit times: no
+    // fw label passes the midpoint. A low enumeration cap stops the labeling
+    // with fw labels below it unextended; they still join the bw labels, and
+    // the one path comes back once.
+    int from[] = {0, 1, 2, 3};
+    int to[] = {1, 2, 3, 4};
+    double cost[] = {-5.0, 1.0, 1.0, 1.0};
+    double time_d[] = {1.0, 1.0, 1.0, 1.0};
+    double tw_lb[] = {0.0, 0.0, 0.0, 0.0, 0.0};
+    double tw_ub[] = {10.0, 10.0, 10.0, 10.0, 10.0};
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 5;
+    pv.source = 0;
+    pv.sink = 4;
+    pv.n_arcs = 4;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    for (int cap = 3; cap <= 8; ++cap) {
+        CAPTURE(cap);
+        BucketGraph<EmptyPack> bg(pv, EmptyPack{},
+                                  {.theta = 1e9,
+                                   .bidirectional = true,
+                                   .stage = Stage::Enumerate,
+                                   .max_enum_labels = cap});
+        bg.build();
+        auto paths = bg.solve();
+        REQUIRE(paths.size() == 1);
+        CHECK(paths[0].vertices == std::vector<int>{0, 1, 2, 3, 4});
+        CHECK(paths[0].reduced_cost == doctest::Approx(-2.0));
+    }
+}
+
 TEST_CASE("Parallel bidir: parallel_bidir=false gives sequential bidir with StdThreadExecutor") {
     int from[] = {0, 0, 1, 2};
     int to[] = {1, 2, 3, 3};
