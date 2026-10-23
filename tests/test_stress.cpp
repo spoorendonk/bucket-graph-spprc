@@ -2707,6 +2707,7 @@ TEST_CASE("exact_complete is false after a label cap, and elimination waits (#11
         };
         auto bg = make(500000);
         bg.build();
+        CHECK_FALSE(bg.exact_complete());  // nothing solved yet
         bg.solve();
         CHECK(bg.exact_complete());
 
@@ -2718,10 +2719,14 @@ TEST_CASE("exact_complete is false after a label cap, and elimination waits (#11
         CHECK(capped.eliminated_bucket_arcs() == 0);
         CHECK(capped.fix_buckets(-1e9) == 0);
 
-        // A later uncapped solve is complete again; a heuristic one is not.
+        // A later uncapped solve is complete again; a heuristic one is not,
+        // and elimination and fixing wait for an exact one.
         bg.set_stage(Stage::Heuristic1);
         bg.solve();
         CHECK_FALSE(bg.exact_complete());
+        bg.eliminate_arcs(-1e9);
+        CHECK(bg.eliminated_bucket_arcs() == 0);
+        CHECK(bg.fix_buckets(-1e9) == 0);
         bg.set_stage(Stage::Exact);
         bg.solve();
         CHECK(bg.exact_complete());
@@ -2733,4 +2738,45 @@ TEST_CASE("exact_complete is false after a label cap, and elimination waits (#11
     solver.build();
     solver.solve();
     CHECK_FALSE(solver.exact_complete());
+}
+
+TEST_CASE("A label cap reached only by inserts downstream leaves the solve exact (#115)") {
+    // Star 0 -> {1..5} -> 6: the source's SCC is one bucket whose one label
+    // inserts 5 labels at other vertices. That reaches a cap of 3, but the
+    // SCC has nothing left to extend, so nothing was cut off.
+    std::vector<int> from;
+    std::vector<int> to;
+    for (int v = 1; v <= 5; ++v) {
+        from.push_back(0);
+        to.push_back(v);
+        from.push_back(v);
+        to.push_back(6);
+    }
+    std::vector<double> cost(from.size(), -1.0);
+    std::vector<double> time_d(from.size(), 1.0);
+    std::vector<double> tw_lb(7, 0.0);
+    std::vector<double> tw_ub(7, 10.0);
+    const double* arc_res[] = {time_d.data()};
+    const double* v_lb[] = {tw_lb.data()};
+    const double* v_ub[] = {tw_ub.data()};
+
+    ProblemView pv;
+    pv.n_vertices = 7;
+    pv.source = 0;
+    pv.sink = 6;
+    pv.n_arcs = static_cast<int>(from.size());
+    pv.arc_from = from.data();
+    pv.arc_to = to.data();
+    pv.arc_base_cost = cost.data();
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    BucketGraph<EmptyPack> bg(pv, EmptyPack{}, {.max_paths = 0, .max_scc_labels = 3});
+    bg.build();
+    auto paths = bg.solve();
+    CHECK(best_reduced_cost(paths) == doctest::Approx(-2.0));
+    CHECK(bg.exact_complete());
 }

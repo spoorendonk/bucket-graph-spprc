@@ -187,6 +187,7 @@ public:
         midpoint_initialized_ = false;
         initial_bucket_arc_count_ = current_bucket_arc_count();
         completion_ready_ = false;  // any bounds are for the old grid
+        solved_ = false;
     }
 
     /// Update reduced costs (fast, O(1) — just stores the pointer).
@@ -253,10 +254,11 @@ public:
     /// hit no label cap, so it returned every path within theta (up to
     /// max_paths): an empty result proves there is none. False after a
     /// heuristic stage, or when an SCC reached max_scc_labels or enumeration
-    /// stopped short (enumeration_complete()). Arc elimination and bucket
-    /// fixing do nothing after a capped solve.
+    /// stopped short (enumeration_complete()), and before the first solve
+    /// after build(). Arc elimination and bucket fixing do nothing unless the
+    /// last solve was exact_complete().
     bool exact_complete() const {
-        return (solved_stage_ == Stage::Exact || solved_stage_ == Stage::Enumerate) &&
+        return solved_ && (solved_stage_ == Stage::Exact || solved_stage_ == Stage::Enumerate) &&
                !label_cap_hit_.load(std::memory_order_relaxed) && enum_complete_;
     }
 
@@ -508,12 +510,13 @@ public:
                     return;
                 }
 
-                bool fw_bad = (buckets_[bi].c_best + fw_completion_[bi] > theta + EPS);
+                bool fw_bad = bound_exceeds(buckets_[bi].c_best, fw_completion_[bi], theta);
                 bool should_fix = fw_bad;
 
                 if (bidir) {
-                    bool bw_bad = (bw_c_best_bound_[bi] + bw_completion_[bi] > theta + EPS);
-                    bool concat_bad = (buckets_[bi].c_best + bw_c_best_bound_[bi] > theta + EPS);
+                    bool bw_bad = bound_exceeds(bw_c_best_bound_[bi], bw_completion_[bi], theta);
+                    bool concat_bad =
+                        bound_exceeds(buckets_[bi].c_best, bw_c_best_bound_[bi], theta);
                     should_fix = fw_bad && bw_bad && concat_bad;
                 }
 
@@ -537,15 +540,15 @@ public:
             }
 
             // Forward path bound: cost-to-b + cost-from-b-to-sink > theta
-            bool fw_bad = (buckets_[bi].c_best + fw_completion_[bi] > theta + EPS);
+            bool fw_bad = bound_exceeds(buckets_[bi].c_best, fw_completion_[bi], theta);
 
             bool should_fix = fw_bad;
 
             if (bidir) {
                 // Backward path bound
-                bool bw_bad = (bw_c_best_bound_[bi] + bw_completion_[bi] > theta + EPS);
+                bool bw_bad = bound_exceeds(bw_c_best_bound_[bi], bw_completion_[bi], theta);
                 // Concatenation bound: fw_cost_at_b + bw_cost_at_b > theta
-                bool concat_bad = (buckets_[bi].c_best + bw_c_best_bound_[bi] > theta + EPS);
+                bool concat_bad = bound_exceeds(buckets_[bi].c_best, bw_c_best_bound_[bi], theta);
 
                 // Fix only if ALL path types through b are bad
                 should_fix = fw_bad && bw_bad && concat_bad;
@@ -2178,6 +2181,26 @@ private:
         }
     }
 
+    /// True when a bucket of scc_bs holds a label process_scc would still
+    /// extend: not extended, not dominated, on its side of the midpoint.
+    bool has_unextended_label(const std::vector<int>& scc_bs, Direction dir,
+                              const BucketLabels& bl) const {
+        const double mid = midpoint_.load(std::memory_order_relaxed);
+        for (int bi : scc_bs) {
+            if (fixed_.test(bi)) {
+                continue;
+            }
+            for (const auto* label : bl.labels[bi]) {
+                const bool past_mid =
+                    (dir == Direction::Forward) ? label->q[0] > mid : label->q[0] < mid;
+                if (!label->extended && !label->dominated && !past_mid) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     void process_scc(int scc_id, Direction dir, const std::vector<std::vector<int>>& scc_buckets,
                      BucketLabels& bl) {
         const auto& scc_bs = scc_buckets[scc_id];
@@ -2191,13 +2214,13 @@ private:
         int label_count = 0;
         auto& dc = counters_for(dir);
 
-        // Check all label caps; marks the solve inexact (and enumeration
-        // incomplete) on hit. In parallel mode, per-direction counters avoid
-        // data races; label_cap_hit_ and enum_complete_ are atomic to allow
-        // safe concurrent writes.
+        // Check all label caps; marks enumeration incomplete on hit. The
+        // callers mark the solve inexact when the cap leaves labels
+        // unextended. In parallel mode, per-direction counters avoid data
+        // races; label_cap_hit_ and enum_complete_ are atomic to allow safe
+        // concurrent writes.
         auto at_label_cap = [&]() -> bool {
             if (label_count >= scc_cap) {
-                label_cap_hit_.store(true, std::memory_order_relaxed);
                 if (enumerating) {
                     enum_complete_.store(false, std::memory_order_relaxed);
                 }
@@ -2377,6 +2400,11 @@ private:
                 break;
             }
         }
+        // The cap counts labels inserted downstream too, so it truncated the
+        // solve only if it left a label here that the passes would extend.
+        if (at_label_cap() && has_unextended_label(scc_bs, dir, bl)) {
+            label_cap_hit_.store(true, std::memory_order_relaxed);
+        }
 
         // Enumerate appends labels unsorted (try_insert_label), but the
         // concatenation stops a bucket at its first label over theta: sort
@@ -2524,12 +2552,20 @@ private:
         return std::min(bw_c_best_bound_[bi], fw_completion_[bi]);
     }
 
+    /// True when bounds a + b on the two parts of a path exceed theta. An
+    /// INF part means no such path; it exceeds even against a NEG_INF one,
+    /// whose sum is NaN (#115).
+    static bool bound_exceeds(double a, double b, double theta) {
+        return a >= INF || b >= INF || a + b > theta + EPS;
+    }
+
     /// True when no path of cost within theta uses bucket arc ba out of bi.
     bool arc_bound_exceeds(int bi, const BucketArc& ba, Direction dir, double theta) const {
         if (dir == Direction::Forward) {
-            return fw_prefix_bound(bi) + ba.cost + fw_completion_[ba.to_bucket] > theta + EPS;
+            return bound_exceeds(fw_prefix_bound(bi), ba.cost + fw_completion_[ba.to_bucket],
+                                 theta);
         }
-        return bw_suffix_bound(bi) + ba.cost + bw_completion_[ba.to_bucket] > theta + EPS;
+        return bound_exceeds(bw_suffix_bound(bi), ba.cost + bw_completion_[ba.to_bucket], theta);
     }
 
     /// True when the last solve left a label at both ends of every path using
@@ -3283,6 +3319,7 @@ private:
         enum_sink_labels_ = 0;
         label_cap_hit_ = false;
         solved_stage_ = opts_.stage;
+        solved_ = true;
         if (opts_.stage == Stage::Enumerate) {
             compute_completion_bounds(Direction::Forward);
             if (fixed_.n_fixed() > 0 && std::abs(opts_.theta - fixing_theta_) > EPS) {
@@ -3339,8 +3376,8 @@ private:
         if (opts_.stage != Stage::Enumerate) {
             compute_completion_bounds(Direction::Forward);
         }
-        // c_best of a capped solve misses the labels it never extended.
-        completion_ready_ = !label_cap_hit_.load(std::memory_order_relaxed);
+        // c_best of a heuristic or capped solve misses labels it dropped.
+        completion_ready_ = exact_complete();
         timings_.completion_bounds = Clock_::now() - t_comp_start;
 
         // Path extraction
@@ -3418,6 +3455,7 @@ private:
         enum_sink_labels_ = 0;
         label_cap_hit_ = false;
         solved_stage_ = opts_.stage;
+        solved_ = true;
 
         // Decide whether to run parallel bidir labeling.
         // Requires: non-sequential executor, parallel_bidir enabled, not symmetric.
@@ -3598,8 +3636,8 @@ private:
             compute_completion_bounds(Direction::Forward);
             compute_completion_bounds(Direction::Backward);
         }
-        // c_best of a capped solve misses the labels it never extended.
-        completion_ready_ = !label_cap_hit_.load(std::memory_order_relaxed);
+        // c_best of a heuristic or capped solve misses labels it dropped.
+        completion_ready_ = exact_complete();
 
         // Fixing and elimination need bw_c_best over every bw label, before
         // the prune below drops some by fw c_best (#111).
@@ -4286,6 +4324,7 @@ private:
     std::atomic<bool> enum_complete_ = true;
     std::atomic<bool> label_cap_hit_ = false;  // an SCC reached max_scc_labels
     Stage solved_stage_ = Stage::Exact;        // stage of the last solve()
+    bool solved_ = false;                      // solve() ran since build()
     int enum_sink_labels_ = 0;                 // labels that landed in sink buckets
     double fixing_theta_ = INF;                // theta used in last fix_buckets call
 

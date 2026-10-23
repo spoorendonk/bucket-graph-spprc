@@ -78,8 +78,9 @@ public:
             ++exact_pricing_calls_;
 
             // BG2021 §6.3 A+: on CG convergence (empty exact pricing),
-            // check if finer buckets would help
-            if (paths.empty() && try_refine_buckets()) {
+            // check if finer buckets would help. A capped solve proves no
+            // convergence.
+            if (paths.empty() && bg_.exact_complete() && try_refine_buckets()) {
                 bg_.set_stage(stage_);
                 paths = bg_.solve();
                 accumulated_timings_ += bg_.solve_timings();
