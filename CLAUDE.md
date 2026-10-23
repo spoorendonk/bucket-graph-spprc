@@ -344,6 +344,7 @@ See [References](README.md#references) for full citations. Key papers:
 - `extend_label` must compute actual bucket from label's q values, not use bucket arc's `to_bucket`.
 - Bucket fixing must check `fixed_.test(actual_bi)` (label's actual landing bucket), not `fixed_.test(ba.to_bucket)`.
 - Bidir fixing requires AND logic — fix only if ALL path types (fw, bw, concatenation) exceed theta.
+- In bidir, `c_best` bounds the cost to a bucket only at or below the midpoint the last solve labelled with (`labelled_mid_`), and `bw_c_best` only at or above it; elsewhere it is too high (often `INF`). Elimination must fall back on the opposite completion bound there (`fw_prefix_bound`/`bw_suffix_bound`), and label-based elimination decides only arcs crossing the midpoint (#111). The bw post-pass prune also raises `bw_c_best`, so fixing reads `bw_c_best_bound_`, saved before it.
 - Dominance cost early-exit (`existing->cost > L->cost + EPS`) is unsafe when resource domination_cost can be negative. Use `c_best + min_dom_cost_ > L->cost + EPS`.
 - Solver starts at `Stage::Heuristic1` by default. Benchmarks should call `set_stage(Stage::Exact)` for deterministic results.
 - F-class Roberti instances with large capacity windows are inherently slow with step=10 bidir — filter them from benchmarks.

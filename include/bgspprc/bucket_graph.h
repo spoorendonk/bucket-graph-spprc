@@ -406,30 +406,28 @@ public:
     }
 
     /// Arc elimination: remove bucket arcs incompatible with gap theta.
-    /// Uses c_best (cost-to-b from source) + completion (cost-to-go to sink).
+    /// Uses a bound on the cost to b (fw_prefix_bound / bw_suffix_bound) +
+    /// completion (cost-to-go to the terminal).
     /// Completion bounds must be available from a prior solve().
     /// Then generates jump arcs to maintain reachability.
     void eliminate_arcs(double theta) {
         assert(!fw_completion_.empty() &&
                "eliminate_arcs requires completion bounds from a prior solve()");
+        assert((!opts_.bidirectional || !bw_completion_.empty()) &&
+               "eliminate_arcs requires bw completion bounds from a prior solve()");
 
         int nb = static_cast<int>(buckets_.size());
         executor_.parallel_for(0, nb, [&](int bi) {
-            auto& b = buckets_[bi];
-            std::erase_if(b.bucket_arcs, [&](const BucketArc& ba) {
-                return b.c_best + ba.cost + fw_completion_[ba.to_bucket] > theta + EPS;
+            std::erase_if(buckets_[bi].bucket_arcs, [&](const BucketArc& ba) {
+                return arc_bound_exceeds(bi, ba, Direction::Forward, theta);
             });
         });
         obtain_jump_arcs(Direction::Forward);
 
         if (opts_.bidirectional) {
-            assert(!bw_completion_.empty() &&
-                   "eliminate_arcs requires bw completion bounds from a prior solve()");
-
             executor_.parallel_for(0, nb, [&](int bi) {
-                auto& b = buckets_[bi];
-                std::erase_if(b.bw_bucket_arcs, [&](const BucketArc& ba) {
-                    return b.bw_c_best + ba.cost + bw_completion_[ba.to_bucket] > theta + EPS;
+                std::erase_if(buckets_[bi].bw_bucket_arcs, [&](const BucketArc& ba) {
+                    return arc_bound_exceeds(bi, ba, Direction::Backward, theta);
                 });
             });
             obtain_jump_arcs(Direction::Backward);
@@ -468,6 +466,10 @@ public:
     /// source-to-sink path through b can have cost within the gap.
     /// Completion bounds must be available from a prior solve().
     ///
+    /// In bidir, c_best covers only paths through b at or below the
+    /// midpoint of the last solve, and bw_c_best only those at or above it
+    /// (#111), so a bucket is fixed only when both bounds rule it out.
+    ///
     /// Returns number of newly fixed buckets.
     int fix_buckets(double theta) {
         fixing_theta_ = theta;
@@ -492,8 +494,8 @@ public:
                 bool should_fix = fw_bad;
 
                 if (bidir) {
-                    bool bw_bad = (buckets_[bi].bw_c_best + bw_completion_[bi] > theta + EPS);
-                    bool concat_bad = (buckets_[bi].c_best + buckets_[bi].bw_c_best > theta + EPS);
+                    bool bw_bad = (bw_c_best_bound_[bi] + bw_completion_[bi] > theta + EPS);
+                    bool concat_bad = (buckets_[bi].c_best + bw_c_best_bound_[bi] > theta + EPS);
                     should_fix = fw_bad && bw_bad && concat_bad;
                 }
 
@@ -523,9 +525,9 @@ public:
 
             if (bidir) {
                 // Backward path bound
-                bool bw_bad = (buckets_[bi].bw_c_best + bw_completion_[bi] > theta + EPS);
+                bool bw_bad = (bw_c_best_bound_[bi] + bw_completion_[bi] > theta + EPS);
                 // Concatenation bound: fw_cost_at_b + bw_cost_at_b > theta
-                bool concat_bad = (buckets_[bi].c_best + buckets_[bi].bw_c_best > theta + EPS);
+                bool concat_bad = (buckets_[bi].c_best + bw_c_best_bound_[bi] > theta + EPS);
 
                 // Fix only if ALL path types through b are bad
                 should_fix = fw_bad && bw_bad && concat_bad;
@@ -2463,6 +2465,53 @@ private:
 
     double completion_bound(int bi) const { return buckets_[bi].c_best; }
 
+    // ── Bounds for arc elimination (#111) ──
+    //
+    // In bidir, the last solve extended fw labels only up to its midpoint and
+    // bw labels only down from it. c_best(b) bounds the cost to b of a path
+    // only when every label of that path before b was extended: when all of
+    // b lies at or below the midpoint. bw_c_best is the mirror image. Past
+    // that, fall back on the completion bound of the opposite direction,
+    // which covers every path.
+
+    /// Lower bound on the cost source → b of any path through bucket b.
+    double fw_prefix_bound(int bi) const {
+        const auto& b = buckets_[bi];
+        if (!opts_.bidirectional || b.ub[0] <= labelled_mid_) {
+            return b.c_best;
+        }
+        return std::min(b.c_best, bw_completion_[bi]);
+    }
+
+    /// Lower bound on the cost b → sink of any path through bucket b. Reads
+    /// bw_c_best from before the bw post-pass prune, which drops bw labels by
+    /// fw c_best and so only by the prefixes labelled up to the midpoint.
+    double bw_suffix_bound(int bi) const {
+        const auto& b = buckets_[bi];
+        if (!opts_.symmetric && b.lb[0] >= labelled_mid_) {
+            return bw_c_best_bound_[bi];
+        }
+        return std::min(bw_c_best_bound_[bi], fw_completion_[bi]);
+    }
+
+    /// True when no path of cost within theta uses bucket arc ba out of bi.
+    bool arc_bound_exceeds(int bi, const BucketArc& ba, Direction dir, double theta) const {
+        if (dir == Direction::Forward) {
+            return fw_prefix_bound(bi) + ba.cost + fw_completion_[ba.to_bucket] > theta + EPS;
+        }
+        return bw_suffix_bound(bi) + ba.cost + bw_completion_[ba.to_bucket] > theta + EPS;
+    }
+
+    /// True when the last solve left a label at both ends of every path using
+    /// an arc from bi into arr_bi in direction dir: the arc crosses the
+    /// midpoint. Only then can label-based elimination rule the arc out.
+    bool labels_cover_arc(int bi, int arr_bi, Direction dir) const {
+        if (dir == Direction::Forward) {
+            return buckets_[bi].ub[0] <= labelled_mid_ && buckets_[arr_bi].lb[0] >= labelled_mid_;
+        }
+        return buckets_[bi].lb[0] >= labelled_mid_ && buckets_[arr_bi].ub[0] <= labelled_mid_;
+    }
+
     // ── Completion bound computation (cost-to-go) ──
 
     /// Compute backward completion bounds for arc elimination / bucket fixing.
@@ -2858,7 +2907,11 @@ private:
                     }
                     do_update(L, ba.arc_id, arr_bi);
                 }
-                eliminate = should_eliminate_arc(arr_bi, get_bbar(ba.arc_id), dir);
+                // The labels decide only an arc they cover; B̄ is still
+                // updated above, since it carries over to larger buckets.
+                eliminate = labels_cover_arc(bi, arr_bi, dir)
+                                ? should_eliminate_arc(arr_bi, get_bbar(ba.arc_id), dir)
+                                : arc_bound_exceeds(bi, ba, dir, theta);
             }
 
             if (!eliminate) {
@@ -3308,7 +3361,9 @@ private:
             compute_completion_bounds(Direction::Backward);
         }
 
-        get_midpoint();  // ensure midpoint_ and resource bounds are initialized
+        // Ensure midpoint_ and resource bounds are initialized; the midpoint
+        // stays fixed until adjust_midpoint() after labelling.
+        labelled_mid_ = get_midpoint();
 
         if (run_parallel) {
             // ── Parallel bidirectional labeling ──
@@ -3461,6 +3516,12 @@ private:
             compute_completion_bounds(Direction::Backward);
         }
 
+        // Fixing and elimination need bw_c_best over every bw label, before
+        // the prune below drops some by fw c_best (#111).
+        if (!opts_.symmetric) {
+            save_bw_c_best_bound();
+        }
+
         // Post-pass: prune bw labels incompatible with any fw path
         if (!opts_.symmetric && opts_.stage != Stage::Enumerate) {
             // Precompute min fw arrival cost per vertex
@@ -3482,6 +3543,7 @@ private:
         if (opts_.symmetric) {
             // Symmetric: populate bw_c_best from fw c_best via mirror
             populate_symmetric_bw_c_best();
+            save_bw_c_best_bound();
         }
         timings_.completion_bounds = Clock_::now() - t_comp_start;
 
@@ -3880,6 +3942,13 @@ private:
         }
     }
 
+    void save_bw_c_best_bound() {
+        bw_c_best_bound_.resize(buckets_.size());
+        for (int bi = 0; bi < static_cast<int>(buckets_.size()); ++bi) {
+            bw_c_best_bound_[bi] = buckets_[bi].bw_c_best;
+        }
+    }
+
     /// Recompute bw_c_best per bucket and vertex_min_bw_c_best_ per vertex
     /// from surviving bw labels (call after compaction removes dominated).
     /// Includes monotone propagation (larger → smaller buckets) matching
@@ -3988,8 +4057,9 @@ private:
     std::vector<Bucket> buckets_;
     std::vector<std::array<double, 2>> vertex_bucket_steps_;  // per-vertex steps (optional)
     BucketFixBitmap fixed_;
-    std::vector<double> fw_completion_;  // forward cost-to-go (b → sink)
-    std::vector<double> bw_completion_;  // backward cost-to-go (b → source)
+    std::vector<double> fw_completion_;    // forward cost-to-go (b → sink)
+    std::vector<double> bw_completion_;    // backward cost-to-go (b → source)
+    std::vector<double> bw_c_best_bound_;  // bw_c_best before the bw post-pass prune
     std::vector<int> vertex_bucket_start_;
     std::vector<std::array<int, 2>> vertex_n_buckets_;
 
@@ -4101,6 +4171,7 @@ private:
     int bw_labels_pruned_ = 0;
     std::atomic<double> midpoint_{0.0};
     bool midpoint_initialized_ = false;
+    double labelled_mid_ = INF;  // midpoint the last bidir solve labelled with
 
     // Cached resource bounds for post-solve midpoint adjustment.
     double resource_min_lb_ = 0.0;
