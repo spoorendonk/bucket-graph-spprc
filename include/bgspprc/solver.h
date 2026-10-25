@@ -94,15 +94,28 @@ public:
         return paths;
     }
 
+    // Elimination and fixing need an exact prior solve. When it pruned below
+    // the gap (BucketGraph::bounds_cover_gap), they first label again at the
+    // gap, discarding the paths (#116).
+
     /// Arc elimination using optimality gap (bound-based).
-    void eliminate_arcs(double theta) { bg_.eliminate_arcs(theta); }
+    void eliminate_arcs(double theta) {
+        cover_gap(theta, false);
+        bg_.eliminate_arcs(theta);
+    }
 
     /// Label-based arc elimination (Section 4.2). Tighter but requires prior
     /// solve.
-    void eliminate_arcs_label_based(double theta) { bg_.eliminate_arcs_label_based(theta); }
+    void eliminate_arcs_label_based(double theta) {
+        cover_gap(theta, true);
+        bg_.eliminate_arcs_label_based(theta);
+    }
 
     /// Bucket fixing using optimality gap. Returns number of newly fixed buckets.
-    int fix_buckets(double theta) { return bg_.fix_buckets(theta); }
+    int fix_buckets(double theta) {
+        cover_gap(theta, false);
+        return bg_.fix_buckets(theta);
+    }
 
     /// Number of fixed buckets.
     [[nodiscard]] int n_fixed_buckets() const { return bg_.n_fixed_buckets(); }
@@ -199,6 +212,19 @@ public:
     }
 
 private:
+    /// Label at `gap` when the last solve was exact but its bounds do not
+    /// cover the gap, so elimination and fixing there keep every path below it.
+    void cover_gap(double gap, bool label_based) {
+        if (!bg_.exact_complete() || bg_.bounds_cover_gap(gap, label_based)) {
+            return;
+        }
+        bg_.set_stage(Stage::Exact);
+        bg_.set_theta(gap);
+        bg_.solve();
+        bg_.set_theta(opts_.theta);
+        bg_.set_stage(stage_);
+    }
+
     /// BG2021 §6.3 A+: check if ξ should be doubled.
     /// Returns true if bucket graph was rebuilt with finer steps.
     bool try_refine_buckets() {

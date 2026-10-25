@@ -263,6 +263,20 @@ public:
                !label_cap_hit_.load(std::memory_order_relaxed) && enum_complete_;
     }
 
+    /// True when the last solve()'s bounds and labels cover every path
+    /// costing below `gap`, so arc elimination (label_based for
+    /// eliminate_arcs_label_based) and bucket fixing at `gap` drop nothing
+    /// such a path uses. False unless the solve was exact_complete(), and when
+    /// it pruned labels against an Options::theta below `gap` (#116): the
+    /// parallel bidir and Enumerate completion prunes drop labels from c_best,
+    /// and the bw post-pass prune drops the partners label-based elimination
+    /// reads. Elimination and fixing at such a gap do nothing; run the solve
+    /// with theta at the gap first (Solver does).
+    bool bounds_cover_gap(double gap, bool label_based = false) const {
+        return completion_ready_ &&
+               gap <= (label_based ? std::min(bounds_theta_, partners_theta_) : bounds_theta_);
+    }
+
     void reset_midpoint() { midpoint_initialized_ = false; }
     double midpoint() const { return midpoint_.load(std::memory_order_relaxed); }
 
@@ -428,9 +442,9 @@ public:
     /// Uses a bound on the cost to b (fw_prefix_bound / bw_suffix_bound) +
     /// completion (cost-to-go to the terminal).
     /// Then generates jump arcs to maintain reachability.
-    /// Does nothing unless the last solve() computed completion bounds.
+    /// Does nothing unless the last solve() covers theta (bounds_cover_gap).
     void eliminate_arcs(double theta) {
-        if (!completion_ready_) {
+        if (!bounds_cover_gap(theta)) {
             return;
         }
 
@@ -456,9 +470,9 @@ public:
     /// Requires labels from a prior solve(). Tighter than bound-based
     /// eliminate_arcs because it checks actual θ-compatible (L, L̃) pairs.
     /// Falls back to bound-based for mono-directional (no opposite labels).
-    /// Does nothing unless the last solve() computed completion bounds.
+    /// Does nothing unless the last solve() covers theta (bounds_cover_gap).
     void eliminate_arcs_label_based(double theta) {
-        if (!completion_ready_) {
+        if (!bounds_cover_gap(theta, true)) {
             return;
         }
         if (!opts_.bidirectional || opts_.symmetric) {
@@ -486,7 +500,7 @@ public:
     ///
     /// Fix bucket b if c_best(b) + completion(b) > theta, meaning no
     /// source-to-sink path through b can have cost within the gap.
-    /// Fixes nothing unless the last solve() computed completion bounds.
+    /// Fixes nothing unless the last solve() covers theta (bounds_cover_gap).
     ///
     /// In bidir, c_best covers only paths through b at or below the
     /// midpoint of the last solve, and bw_c_best only those at or above it
@@ -494,7 +508,7 @@ public:
     ///
     /// Returns number of newly fixed buckets.
     int fix_buckets(double theta) {
-        if (!completion_ready_) {
+        if (!bounds_cover_gap(theta)) {
             return 0;
         }
         fixing_theta_ = theta;
@@ -3245,6 +3259,8 @@ private:
         // Set again once the solve has labelled and computed completions,
         // which it skips when it returns early.
         completion_ready_ = false;
+        bounds_theta_ = INF;
+        partners_theta_ = INF;
     }
 
     Label<Pack>* create_initial_label(Direction dir) {
@@ -3323,6 +3339,7 @@ private:
         solved_ = true;
         if (opts_.stage == Stage::Enumerate) {
             compute_completion_bounds(Direction::Forward);
+            bounds_theta_ = opts_.theta;  // the completion prune drops labels
             if (fixed_.n_fixed() > 0 && std::abs(opts_.theta - fixing_theta_) > EPS) {
                 fprintf(stderr,
                         "bgspprc: warning: enumerating with gap=%.6g but "
@@ -3481,6 +3498,10 @@ private:
         if (run_parallel && opts_.stage != Stage::Enumerate) {
             compute_completion_bounds(Direction::Forward);
             compute_completion_bounds(Direction::Backward);
+        }
+        // Both prune labels by cost + completion against theta (#116).
+        if (run_parallel || opts_.stage == Stage::Enumerate) {
+            bounds_theta_ = opts_.theta;
         }
 
         // Ensure midpoint_ and resource bounds are initialized; the midpoint
@@ -3659,6 +3680,7 @@ private:
             }
             // Prune ALL bw labels incompatible with any fw path
             prune_bw_incompatible(opts_.theta);
+            partners_theta_ = opts_.theta;
             // Compact bw SoA + recompute bw_c_best
             compact_labels(bw_labels_, static_cast<int>(buckets_.size()));
             recompute_bw_c_best();
@@ -4184,6 +4206,11 @@ private:
     std::vector<double> bw_completion_;    // backward cost-to-go (b → source)
     std::vector<double> bw_c_best_bound_;  // bw_c_best before the bw post-pass prune
     bool completion_ready_ = false;        // last solve() computed completions for this grid
+    // Largest gap the last solve's c_best (bounds_theta_) and its bw labels
+    // as label-based partners (partners_theta_) cover: the theta it pruned
+    // them against, or INF when it pruned none (bounds_cover_gap).
+    double bounds_theta_ = INF;
+    double partners_theta_ = INF;
     std::vector<int> vertex_bucket_start_;
     std::vector<std::array<int, 2>> vertex_n_buckets_;
 

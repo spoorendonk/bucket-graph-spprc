@@ -2780,3 +2780,107 @@ TEST_CASE("A label cap reached only by inserts downstream leaves the solve exact
     CHECK(best_reduced_cost(paths) == doctest::Approx(-2.0));
     CHECK(bg.exact_complete());
 }
+
+TEST_CASE(
+    "Elimination and fixing at a gap above the solve's theta keep the paths below it (#116)") {
+    // Pricing solves at theta = -1e-6 and eliminates or fixes at gap 5. The
+    // parallel completion prune and the bw post-pass prune dropped labels
+    // against the solve's theta, so bounds and partners missed paths between
+    // it and the gap: 23 (bound-based), 31 (label-based with fixing) and 16
+    // (fixing) of these 400 instances lost one in parallel bidir, 5
+    // (label-based with fixing) in sequential. Enumerate at the gap
+    // afterwards must still return every path below it.
+    constexpr double kGap = 5.0;
+    auto enumerate = [](auto& solver) {
+        std::vector<std::vector<int>> v;
+        for (const auto& p : solver.enumerate(kGap)) {
+            v.push_back(p.vertices);
+        }
+        CHECK(solver.enumeration_complete());
+        std::ranges::sort(v);
+        return v;
+    };
+    auto run = [&]<typename Exec>(Exec, bool parallel_bidir) {
+        for (int mode = 0; mode < 3; ++mode) {
+            int64_t reduced = 0;
+            for (int n_main = 1; n_main <= 2; ++n_main) {
+                for (int seed = 0; seed < 200; ++seed) {
+                    CAPTURE(parallel_bidir);
+                    CAPTURE(mode);
+                    CAPTURE(n_main);
+                    CAPTURE(seed);
+                    RandomTwInstance inst(seed, n_main);
+                    const typename Solver<EmptyPack, Exec>::Options opts{
+                        .bucket_steps = {2.0, n_main == 2 ? 2.0 : 0.0},
+                        .parallel_bidir = parallel_bidir};
+                    Solver<EmptyPack> fresh(
+                        inst.pv, EmptyPack{},
+                        {.bucket_steps = opts.bucket_steps, .bidirectional = false});
+                    fresh.build();
+                    const auto all = enumerate(fresh);
+
+                    Solver<EmptyPack, Exec> solver(inst.pv, EmptyPack{}, opts);
+                    solver.set_stage(Stage::Exact);
+                    solver.build();
+                    for (int k = 0; k < 4; ++k) {
+                        solver.solve();
+                        if (mode == 0) {
+                            solver.eliminate_arcs(kGap);
+                        } else if (mode == 1) {
+                            solver.eliminate_arcs_label_based(kGap);
+                            reduced += solver.fix_buckets(kGap);
+                        } else {
+                            reduced += solver.fix_buckets(kGap);
+                        }
+                    }
+                    reduced += solver.eliminated_bucket_arcs();
+                    CHECK(enumerate(solver) == all);
+                }
+            }
+            CHECK(reduced > 0);  // the gap still lets something go
+        }
+    };
+    run(SequentialExecutor{}, false);
+    run(StdThreadExecutor{}, true);
+}
+
+TEST_CASE("bounds_cover_gap: the theta a solve pruned against bounds the gap (#116)") {
+    RandomTwInstance inst(42, 1);
+    auto make = [&]<typename Exec>(Exec, bool parallel_bidir, double theta) {
+        return BucketGraph<EmptyPack, Exec>(inst.pv, EmptyPack{},
+                                            {.bucket_steps = {2.0, 0.0},
+                                             .theta = theta,
+                                             .bidirectional = true,
+                                             .parallel_bidir = parallel_bidir});
+    };
+    auto solve = [](auto& bg) {
+        bg.build();
+        CHECK_FALSE(bg.bounds_cover_gap(-1e9));  // nothing solved yet
+        bg.solve();
+        CHECK(bg.exact_complete());
+    };
+
+    // Sequential bidir prunes only the bw partners against theta.
+    auto seq = make(SequentialExecutor{}, false, -1e-6);
+    solve(seq);
+    CHECK(seq.bounds_cover_gap(5.0));
+    CHECK(seq.bounds_cover_gap(-1e-6, true));
+    CHECK_FALSE(seq.bounds_cover_gap(5.0, true));
+
+    // Parallel bidir prunes the labels behind c_best too, and elimination and
+    // fixing at a gap above theta do nothing.
+    auto par = make(StdThreadExecutor{}, true, -1e-6);
+    solve(par);
+    CHECK(par.bounds_cover_gap(-1e-6));
+    CHECK_FALSE(par.bounds_cover_gap(5.0));
+    CHECK_FALSE(par.bounds_cover_gap(5.0, true));
+    par.eliminate_arcs(5.0);
+    par.eliminate_arcs_label_based(5.0);
+    CHECK(par.eliminated_bucket_arcs() == 0);
+    CHECK(par.fix_buckets(5.0) == 0);
+
+    auto at_gap = make(StdThreadExecutor{}, true, 5.0);
+    solve(at_gap);
+    CHECK(at_gap.bounds_cover_gap(5.0));
+    CHECK(at_gap.bounds_cover_gap(5.0, true));
+}
