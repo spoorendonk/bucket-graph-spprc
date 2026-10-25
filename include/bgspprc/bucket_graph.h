@@ -255,8 +255,9 @@ public:
     /// max_paths): an empty result proves there is none. False after a
     /// heuristic stage, or when an SCC reached max_scc_labels or enumeration
     /// stopped short (enumeration_complete()), and before the first solve
-    /// after build(). Arc elimination and bucket fixing do nothing unless the
-    /// last solve was exact_complete().
+    /// after build(). Arc elimination and bucket fixing do nothing unless
+    /// labelling was exact_complete(); an Enumerate whose result alone was
+    /// cut to max_paths made every label and still allows them.
     bool exact_complete() const {
         return solved_ && (solved_stage_ == Stage::Exact || solved_stage_ == Stage::Enumerate) &&
                !label_cap_hit_.load(std::memory_order_relaxed) && enum_complete_;
