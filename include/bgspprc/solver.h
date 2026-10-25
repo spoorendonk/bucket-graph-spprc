@@ -56,6 +56,7 @@ public:
     void build() {
         bg_.build();
         exact_complete_ = false;
+        labelled_gap_ = NEG_INF;
     }
 
     /// Fast cost update — O(1), just stores the pointer.
@@ -94,6 +95,7 @@ public:
         }
 
         exact_complete_ = bg_.exact_complete();
+        labelled_gap_ = NEG_INF;
         update_stage(paths);
         return paths;
     }
@@ -101,8 +103,10 @@ public:
     // Elimination and fixing need an exact prior solve. When it pruned below
     // the gap (BucketGraph::bounds_cover_gap), they first label again at the
     // gap (BucketGraph::label_bounds, #116): the per-solve statistics then
-    // describe that labelling, and the reduced costs passed to
-    // update_arc_costs() must still be alive.
+    // describe that labelling, save_warm_labels() keeps its labels, and the
+    // reduced costs passed to update_arc_costs() must still be alive. A gap
+    // labelling that hits max_scc_labels leaves them doing nothing, and is
+    // not run again at that gap before the next solve.
 
     /// Arc elimination using optimality gap (bound-based).
     void eliminate_arcs(double theta) {
@@ -151,7 +155,10 @@ public:
     static constexpr std::size_t label_state_size() { return Pack::label_state_size(); }
 
     /// Reset all elimination/fixing.
-    void reset_elimination() { bg_.reset_elimination(); }
+    void reset_elimination() {
+        bg_.reset_elimination();
+        labelled_gap_ = NEG_INF;
+    }
 
     /// Adaptive midpoint control for bidirectional labeling.
     void reset_midpoint() { bg_.reset_midpoint(); }
@@ -186,6 +193,7 @@ public:
         bg_.set_theta(opts_.theta);
         bg_.set_stage(stage_);
         exact_complete_ = bg_.exact_complete();
+        labelled_gap_ = NEG_INF;
         return paths;
     }
 
@@ -198,6 +206,7 @@ public:
         if (changed) {
             bg_.build();
             exact_complete_ = false;
+            labelled_gap_ = NEG_INF;
         }
         return changed;
     }
@@ -223,8 +232,9 @@ private:
     /// Label at `gap` when the last solve was exact but its bounds do not
     /// cover the gap, so elimination and fixing there keep every path below it.
     void cover_gap(double gap, bool label_based) {
-        if (exact_complete_ && !bg_.bounds_cover_gap(gap, label_based)) {
+        if (exact_complete_ && gap > labelled_gap_ && !bg_.bounds_cover_gap(gap, label_based)) {
             bg_.label_bounds(gap);
+            labelled_gap_ = gap;
         }
     }
 
@@ -284,6 +294,9 @@ private:
     // exact_complete() of the last solve() or enumerate(), which the labelling
     // behind elimination and fixing (cover_gap) leaves as it was.
     bool exact_complete_ = false;
+    // Largest gap cover_gap labelled at since the last solve, enumerate,
+    // build or reset_elimination; NEG_INF when none.
+    double labelled_gap_ = NEG_INF;
 
     // Accumulated timings across solve iterations (including A+ retries)
     SolveTimings accumulated_timings_;

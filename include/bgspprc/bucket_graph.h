@@ -282,15 +282,22 @@ public:
     /// left where pricing put it. Stage and theta are restored; the solve
     /// statistics and exact_complete() describe this labelling afterwards.
     void label_bounds(double gap) {
-        const Stage stage = opts_.stage;
-        const double theta = opts_.theta;
+        // Restores even when solve() throws, or every later solve would stop
+        // before its paths.
+        struct Restore {
+            BucketGraph& bg;
+            Stage stage;
+            double theta;
+            ~Restore() {
+                bg.bounds_only_ = false;
+                bg.opts_.theta = theta;
+                bg.opts_.stage = stage;
+            }
+        } restore{*this, opts_.stage, opts_.theta};
         opts_.stage = Stage::Exact;
         opts_.theta = gap;
         bounds_only_ = true;
         solve();
-        bounds_only_ = false;
-        opts_.theta = theta;
-        opts_.stage = stage;
     }
 
     void reset_midpoint() { midpoint_initialized_ = false; }
@@ -300,7 +307,8 @@ public:
     const SolveTimings& solve_timings() const { return timings_; }
 
     /// Save best labels for warm starting the next solve.
-    /// Keeps the top `fraction` of non-dominated labels by cost.
+    /// Keeps the top `fraction` of non-dominated labels by cost, from the
+    /// last labelling: after label_bounds(), that one's.
     void save_warm_labels(double fraction = 0.7) {
         warm_labels_.clear();
         collect_warm_labels(fw_labels_, fraction);
