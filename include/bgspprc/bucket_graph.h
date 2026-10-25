@@ -271,10 +271,26 @@ public:
     /// parallel bidir and Enumerate completion prunes drop labels from c_best,
     /// and the bw post-pass prune drops the partners label-based elimination
     /// reads. Elimination and fixing at such a gap do nothing; run the solve
-    /// with theta at the gap first (Solver does).
+    /// with theta at the gap first (label_bounds; Solver does).
     bool bounds_cover_gap(double gap, bool label_based = false) const {
         return completion_ready_ &&
                gap <= (label_based ? std::min(bounds_theta_, partners_theta_) : bounds_theta_);
+    }
+
+    /// Label in Stage::Exact with theta = gap for elimination and fixing at
+    /// that gap, then stop: no concatenation, no paths, and the midpoint is
+    /// left where pricing put it. Stage and theta are restored; the solve
+    /// statistics and exact_complete() describe this labelling afterwards.
+    void label_bounds(double gap) {
+        const Stage stage = opts_.stage;
+        const double theta = opts_.theta;
+        opts_.stage = Stage::Exact;
+        opts_.theta = gap;
+        bounds_only_ = true;
+        solve();
+        bounds_only_ = false;
+        opts_.theta = theta;
+        opts_.stage = stage;
     }
 
     void reset_midpoint() { midpoint_initialized_ = false; }
@@ -3397,6 +3413,9 @@ private:
         // c_best of a heuristic or capped solve misses labels it dropped.
         completion_ready_ = exact_complete();
         timings_.completion_bounds = Clock_::now() - t_comp_start;
+        if (bounds_only_) {
+            return {};
+        }
 
         // Path extraction
         auto t_path_start = Clock_::now();
@@ -3692,6 +3711,9 @@ private:
             save_bw_c_best_bound();
         }
         timings_.completion_bounds = Clock_::now() - t_comp_start;
+        if (bounds_only_) {
+            return {};
+        }
 
         if (opts_.stage == Stage::Exact && !opts_.symmetric) {
             adjust_midpoint();
@@ -4211,6 +4233,7 @@ private:
     // them against, or INF when it pruned none (bounds_cover_gap).
     double bounds_theta_ = INF;
     double partners_theta_ = INF;
+    bool bounds_only_ = false;  // label_bounds(): stop before concatenation
     std::vector<int> vertex_bucket_start_;
     std::vector<std::array<int, 2>> vertex_n_buckets_;
 

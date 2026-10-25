@@ -53,7 +53,10 @@ public:
               std::move(executor)) {}
 
     /// Build bucket graph (call once, or after step size changes).
-    void build() { bg_.build(); }
+    void build() {
+        bg_.build();
+        exact_complete_ = false;
+    }
 
     /// Fast cost update — O(1), just stores the pointer.
     void update_arc_costs(std::span<const double> reduced_costs) {
@@ -90,13 +93,16 @@ public:
             }
         }
 
+        exact_complete_ = bg_.exact_complete();
         update_stage(paths);
         return paths;
     }
 
     // Elimination and fixing need an exact prior solve. When it pruned below
     // the gap (BucketGraph::bounds_cover_gap), they first label again at the
-    // gap, discarding the paths (#116).
+    // gap (BucketGraph::label_bounds, #116): the per-solve statistics then
+    // describe that labelling, and the reduced costs passed to
+    // update_arc_costs() must still be alive.
 
     /// Arc elimination using optimality gap (bound-based).
     void eliminate_arcs(double theta) {
@@ -162,7 +168,7 @@ public:
 
     /// Whether the last solve was exact and hit no label cap, so an empty
     /// result proves no path within theta exists; see BucketGraph::exact_complete().
-    [[nodiscard]] bool exact_complete() const { return bg_.exact_complete(); }
+    [[nodiscard]] bool exact_complete() const { return exact_complete_; }
 
     /// Phase timing breakdown accumulated across all solve iterations
     /// (including A+ refinement retries).
@@ -179,6 +185,7 @@ public:
         auto paths = bg_.solve();
         bg_.set_theta(opts_.theta);
         bg_.set_stage(stage_);
+        exact_complete_ = bg_.exact_complete();
         return paths;
     }
 
@@ -190,6 +197,7 @@ public:
         bool changed = bg_.adapt_bucket_steps(threshold);
         if (changed) {
             bg_.build();
+            exact_complete_ = false;
         }
         return changed;
     }
@@ -215,14 +223,9 @@ private:
     /// Label at `gap` when the last solve was exact but its bounds do not
     /// cover the gap, so elimination and fixing there keep every path below it.
     void cover_gap(double gap, bool label_based) {
-        if (!bg_.exact_complete() || bg_.bounds_cover_gap(gap, label_based)) {
-            return;
+        if (exact_complete_ && !bg_.bounds_cover_gap(gap, label_based)) {
+            bg_.label_bounds(gap);
         }
-        bg_.set_stage(Stage::Exact);
-        bg_.set_theta(gap);
-        bg_.solve();
-        bg_.set_theta(opts_.theta);
-        bg_.set_stage(stage_);
     }
 
     /// BG2021 §6.3 A+: check if ξ should be doubled.
@@ -277,6 +280,10 @@ private:
     int64_t total_dom_checks_ = 0;
     int64_t total_nondom_labels_ = 0;
     int exact_pricing_calls_ = 0;
+
+    // exact_complete() of the last solve() or enumerate(), which the labelling
+    // behind elimination and fixing (cover_gap) leaves as it was.
+    bool exact_complete_ = false;
 
     // Accumulated timings across solve iterations (including A+ retries)
     SolveTimings accumulated_timings_;

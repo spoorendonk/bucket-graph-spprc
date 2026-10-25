@@ -2879,6 +2879,14 @@ TEST_CASE("bounds_cover_gap: the theta a solve pruned against bounds the gap (#1
     CHECK(par.eliminated_bucket_arcs() == 0);
     CHECK(par.fix_buckets(5.0) == 0);
 
+    // label_bounds labels at the gap and keeps pricing's midpoint.
+    const double mid = par.midpoint();
+    par.label_bounds(5.0);
+    CHECK(par.midpoint() == mid);
+    CHECK(par.bounds_cover_gap(5.0));
+    CHECK(par.bounds_cover_gap(5.0, true));
+    CHECK_FALSE(par.bounds_cover_gap(5.0 + 1e-3));
+
     auto at_gap = make(StdThreadExecutor{}, true, 5.0);
     solve(at_gap);
     CHECK(at_gap.bounds_cover_gap(5.0));
