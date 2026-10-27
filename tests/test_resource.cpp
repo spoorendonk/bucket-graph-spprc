@@ -2037,6 +2037,16 @@ TEST_CASE("BucketGraph refuses a view without readable main resources") {
         pv.n_main_resources = 2;
         CHECK_THROWS_AS(Solver<EmptyPack>(pv, EmptyPack{}), std::invalid_argument);
     }
+    SUBCASE("no arc consumptions") {
+        ProblemView pv = inst.view();
+        pv.arc_resource = nullptr;
+        CHECK_THROWS_AS(Solver<EmptyPack>(pv, EmptyPack{}), std::invalid_argument);
+    }
+    SUBCASE("no lower bounds") {
+        ProblemView pv = inst.view();
+        pv.vertex_lb = nullptr;
+        CHECK_THROWS_AS(Solver<EmptyPack>(pv, EmptyPack{}), std::invalid_argument);
+    }
     SUBCASE("no vertex windows") {
         ProblemView pv = inst.view();
         pv.vertex_ub = nullptr;
