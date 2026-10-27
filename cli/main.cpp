@@ -420,7 +420,8 @@ static std::string sppg_unsupported(const ProblemView& pv) {
     }
     for (int r = 0; r < n_main; ++r) {
         for (int v = 0; v < pv.n_vertices; ++v) {
-            if (!std::isfinite(pv.vertex_lb[r][v]) || !std::isfinite(pv.vertex_ub[r][v])) {
+            // The range too: [-1e308, 1e308] is finite, its width is not.
+            if (!std::isfinite(pv.vertex_ub[r][v] - pv.vertex_lb[r][v])) {
                 return "main resource " + std::to_string(r) +
                        " has an unbounded window at vertex " + std::to_string(v) +
                        ": the bucket grid needs finite windows";
@@ -455,7 +456,11 @@ static Result run_sppg(const std::string& path, const Options& opts, Exec execut
     const int n_side = pv.n_resources - side_first;
     const bool ng = opts.ng > 0;
     if (ng) {
-        io::compute_ng_neighbors(*inst, opts.ng, opts.ng_metric == 1);
+        if (opts.ng_metric == 1) {
+            r.error = "--ng-metric distance needs coordinates, which sppg does not carry";
+            return r;
+        }
+        io::compute_ng_neighbors(*inst, opts.ng, false);
     }
     auto make_ng = [&] {
         return NgPathResource(pv.n_vertices, pv.n_arcs, pv.arc_from, pv.arc_to, inst->ng_neighbors);
@@ -492,8 +497,10 @@ static Result run_instance(const std::string& path, const Options& opts, Exec ex
     if (ext == ".sppg") {
         return run_sppg(path, opts, executor);
     }
-    std::fprintf(stderr, "Unknown extension: %s\n", path.c_str());
-    return {};
+    Result r;
+    r.name = fs::path(path).filename().string();
+    r.error = "unknown extension";
+    return r;
 }
 
 static bool is_instance_file(const fs::path& p) {
@@ -502,8 +509,9 @@ static bool is_instance_file(const fs::path& p) {
 }
 
 /// Write the instance at `path` as `<dir>/<stem>.sppg`: the view the solver
-/// would get, so a .graph file's ng sets are not carried over. Returns an
-/// error message, or empty.
+/// would get, so a .graph file's ng sets are not carried over. Never
+/// overwrites a file: two inputs sharing a stem, or an output that would
+/// replace its own input, are refused. Returns an error message, or empty.
 static std::string convert_to_sppg(const std::string& path, const std::string& dir) {
     const auto ext = fs::path(path).extension().string();
     io::Instance inst;
@@ -523,6 +531,9 @@ static std::string convert_to_sppg(const std::string& path, const std::string& d
         return "unknown extension";
     }
     const auto out_path = fs::path(dir) / (fs::path(path).stem().string() + ".sppg");
+    if (fs::exists(out_path)) {
+        return out_path.string() + " exists, not overwriting it";
+    }
     std::ofstream out(out_path);
     if (!out) {
         return "cannot write " + out_path.string();
@@ -606,6 +617,11 @@ static void print_result(const Result& r, const Options& opts) {
 /// Solve (or convert) one file. Returns false when it failed.
 template <Executor Exec>
 static bool run_file(const std::string& path, const Options& opts, Exec executor) {
+    // The .sppcc/.vrp/.graph loaders only assert that the file opened.
+    if (!std::ifstream(path).is_open()) {
+        std::fprintf(stderr, "%s: cannot open\n", path.c_str());
+        return false;
+    }
     if (!opts.write_sppg_dir.empty()) {
         auto error = convert_to_sppg(path, opts.write_sppg_dir);
         if (!error.empty()) {

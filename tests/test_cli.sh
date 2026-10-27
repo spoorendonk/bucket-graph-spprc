@@ -139,6 +139,21 @@ run_test "converted tiny.graph solves to cost=9.000" \
 run_test "--write-sppg into a missing directory → exit 1" \
   expect_exit 1 "$SOLVER" --write-sppg "$TMP/missing" "$FIXTURES/tiny.graph"
 
+run_test "--write-sppg never overwrites (same stem twice) → exit 1" \
+  expect_exit_and_output 1 "exists, not overwriting" "$SOLVER" --write-sppg "$TMP" "$FIXTURES/tiny.vrp"
+
+run_test "--write-sppg missing input → exit 1, cannot open" \
+  expect_exit_and_output 1 "cannot open" "$SOLVER" --write-sppg "$TMP" "$FIXTURES/missing.graph"
+
+run_test "missing input → exit 1, cannot open" \
+  expect_exit_and_output 1 "cannot open" "$SOLVER" "$FIXTURES/missing.graph"
+
+run_test "unknown extension → exit 1" \
+  expect_exit_and_output 1 "unknown extension" "$SOLVER" "$FIXTURES/../test_cli.sh"
+
+run_test "--ng-metric distance on sppg → exit 1, not an abort" \
+  expect_exit_and_output 1 "needs coordinates" "$SOLVER" --ng 2 --ng-metric distance "$FIXTURES/tiny.sppg"
+
 # ── Summary ──
 
 echo ""

@@ -31,7 +31,9 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <new>
 #include <ostream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -132,18 +134,28 @@ inline std::expected<Instance, std::string> read_sppg(std::istream& in) {
             seen_p = true;
             const auto nv = static_cast<std::size_t>(inst.n_vertices);
             const auto na = static_cast<std::size_t>(n_arcs);
-            inst.arc_from.reserve(na);
-            inst.arc_to.reserve(na);
-            inst.arc_cost.reserve(na);
-            inst.res_arc.assign(static_cast<std::size_t>(n_res), {});
-            for (auto& r : inst.res_arc) {
-                r.reserve(na);
+            // The header sizes everything: counts a corrupt file inflates are
+            // an error of its p line, not an exception out of the reader.
+            try {
+                inst.arc_from.reserve(na);
+                inst.arc_to.reserve(na);
+                inst.arc_cost.reserve(na);
+                inst.res_arc.assign(static_cast<std::size_t>(n_res), {});
+                for (auto& r : inst.res_arc) {
+                    r.reserve(na);
+                }
+                inst.res_lb.assign(
+                    static_cast<std::size_t>(n_res),
+                    std::vector<double>(nv, -std::numeric_limits<double>::infinity()));
+                inst.res_ub.assign(
+                    static_cast<std::size_t>(n_res),
+                    std::vector<double>(nv, std::numeric_limits<double>::infinity()));
+                has_window.assign(nv, 0);
+            } catch (const std::bad_alloc&) {
+                return std::unexpected(error_at(line_no, "counts too large to allocate"));
+            } catch (const std::length_error&) {
+                return std::unexpected(error_at(line_no, "counts too large to allocate"));
             }
-            inst.res_lb.assign(static_cast<std::size_t>(n_res),
-                               std::vector<double>(nv, -std::numeric_limits<double>::infinity()));
-            inst.res_ub.assign(static_cast<std::size_t>(n_res),
-                               std::vector<double>(nv, std::numeric_limits<double>::infinity()));
-            has_window.assign(nv, 0);
             continue;
         }
 
