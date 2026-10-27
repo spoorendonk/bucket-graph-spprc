@@ -25,7 +25,6 @@
 ///   --write-sppg DIR  Write each instance to DIR/<stem>.sppg instead of solving
 
 #include "instance_io.h"
-#include "side_resources.h"
 #include "sppg_io.h"
 #include "version.h"
 
@@ -33,6 +32,7 @@
 #include <bgspprc/executor_thread.h>
 #include <bgspprc/resource.h>
 #include <bgspprc/resources/ng_path.h>
+#include <bgspprc/resources/side.h>
 #include <bgspprc/solver.h>
 #include <chrono>
 #include <cmath>
@@ -40,6 +40,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -413,8 +414,8 @@ static std::string sppg_unsupported(const ProblemView& pv) {
                "main resources";
     }
     const int n_main = std::min(pv.n_main_resources, 2);
-    if (pv.n_resources - n_main > io::kMaxSideResources) {
-        return "more than " + std::to_string(io::kMaxSideResources) +
+    if (pv.n_resources - n_main > kMaxSideResources) {
+        return "more than " + std::to_string(kMaxSideResources) +
                " resources past the first two main ones";
     }
     // inf is a valid sppg number, but an infinite cost is no solution, and
@@ -446,7 +447,7 @@ static std::string sppg_unsupported(const ProblemView& pv) {
 /// Solve an .sppg instance. Its steps default to the library's ξ rule; there
 /// are no ng sets in the format, so ng-path is off unless --ng K asks for
 /// sets of the K cheapest outgoing arcs. Main resources past the first two,
-/// and every non-main one, are enforced by io::SideResources.
+/// and every non-main one, are enforced by SideResources.
 template <Executor Exec>
 static Result run_sppg(const std::string& path, const Options& opts, Exec executor = {}) {
     Result r;
@@ -479,12 +480,12 @@ static Result run_sppg(const std::string& path, const Options& opts, Exec execut
     };
 
     if (ng && n_side > 0) {
-        solve_into(r, pv, make_resource_pack(make_ng(), io::SideResources(pv, side_first, n_side)),
+        solve_into(r, pv, make_resource_pack(make_ng(), SideResources(pv, side_first, n_side)),
                    opts.auto_steps, opts, executor);
     } else if (ng) {
         solve_into(r, pv, make_resource_pack(make_ng()), opts.auto_steps, opts, executor);
     } else if (n_side > 0) {
-        solve_into(r, pv, make_resource_pack(io::SideResources(pv, side_first, n_side)),
+        solve_into(r, pv, make_resource_pack(SideResources(pv, side_first, n_side)),
                    opts.auto_steps, opts, executor);
     } else {
         solve_into(r, pv, EmptyPack{}, opts.auto_steps, opts, executor);
@@ -651,7 +652,12 @@ static bool run_file(const std::string& path, const Options& opts, Exec executor
         }
         return true;
     }
-    auto r = run_instance(path, opts, executor);
+    Result r;
+    try {
+        r = run_instance(path, opts, executor);
+    } catch (const std::invalid_argument& e) {  // a view the solver refuses (#119)
+        r.error = e.what();
+    }
     if (!r.error.empty()) {
         std::fprintf(stderr, "%s: %s\n", path.c_str(), r.error.c_str());
         return false;

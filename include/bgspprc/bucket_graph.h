@@ -16,6 +16,7 @@
 #include <ranges>
 #include <span>
 #include <stack>
+#include <stdexcept>
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
@@ -150,6 +151,7 @@ public:
                        "symmetric mode requires all resources to be symmetric");
             }
         }
+        check_view(pv_);
         adj_.build(pv_);
         n_main_ = std::min(pv_.n_main_resources, 2);
         assert(opts_.xi > 0.0 && std::isfinite(opts_.xi) && "xi must be positive and finite");
@@ -746,6 +748,21 @@ private:
             return vertex_bucket_steps_[v];
         }
         return opts_.bucket_steps;
+    }
+
+    /// The grid reads its main resources from the view unconditionally;
+    /// resources past them are the pack's (SideResources), never read here.
+    static void check_view(const ProblemView& pv) {
+        const int n_main = std::min(pv.n_main_resources, 2);
+        if (n_main < 1 || pv.n_resources < n_main) {
+            throw std::invalid_argument(
+                "BucketGraph: the view needs at least one main resource, and n_resources "
+                "covering its main ones");
+        }
+        if (pv.arc_resource == nullptr || pv.vertex_lb == nullptr || pv.vertex_ub == nullptr) {
+            throw std::invalid_argument(
+                "BucketGraph: the view's main resources need arc consumptions and vertex windows");
+        }
     }
 
     void build_buckets() {

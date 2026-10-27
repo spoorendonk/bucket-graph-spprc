@@ -12,6 +12,7 @@
 #include "r1c.h"
 #include "resource.h"
 #include "resources/ng_path.h"
+#include "resources/side.h"
 #include "resources/standard.h"
 #include "solver.h"
 #include "types.h"

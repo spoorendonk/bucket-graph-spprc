@@ -9,6 +9,7 @@
 #include <bgspprc/resource.h>
 #include <bgspprc/solver.h>
 #include <cstdio>
+#include <exception>
 #include <utility>
 
 // A capacity resource: tracks accumulated demand consumed along the path.
@@ -85,7 +86,7 @@ struct CapacityResource {
 // Verify at compile time that CapacityResource satisfies the Resource concept.
 static_assert(bgspprc::Resource<CapacityResource>);
 
-int main() {
+int main() try {
     using namespace bgspprc;
 
     // Arc topology (same graph as basic_spprc.cpp)
@@ -156,4 +157,7 @@ int main() {
     }
 
     return 0;
+} catch (const std::exception& e) {  // e.g. a view the solver refuses
+    std::fprintf(stderr, "error: %s\n", e.what());
+    return 1;
 }

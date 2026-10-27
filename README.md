@@ -11,7 +11,7 @@ Header-only C++23 template library implementing the bucket graph labeling algori
 ## Key Features
 
 - **Generic Resource concept** — 7-function compile-time interface
-- **5 built-in resources** — Standard (time/capacity), NgPath, R1C (rank-1 cuts), CumulativeCost, PickupDelivery
+- **6 built-in resources** — Standard (time/capacity), Side (a view's non-main resources), NgPath, R1C (rank-1 cuts), CumulativeCost, PickupDelivery
 - **Mono and bidirectional labeling** with across-arc concatenation
 - **Multi-stage heuristics** — Heuristic1 → Heuristic2 → Exact → Enumerate
 - **Bucket fixing and arc elimination** with completion-bound pruning
@@ -165,6 +165,14 @@ auto paths = solver.solve();
 for (auto& p : paths)
     printf("cost=%.2f  vertices=%zu\n", p.reduced_cost, p.vertices.size());
 ```
+
+The bucket grid takes its one or two main resources (`n_main_resources`, at
+most 2) from the view and never reads the rest. Resources past them are the
+pack's to enforce: `SideResources` (`resources/side.h`) enforces view resources
+`[first, first + n)` as standard resources, e.g.
+`make_resource_pack(SideResources(pv, pv.n_main_resources, pv.n_resources - pv.n_main_resources))`.
+A view without a main resource makes the constructor throw
+`std::invalid_argument`.
 
 ## Custom Resources
 

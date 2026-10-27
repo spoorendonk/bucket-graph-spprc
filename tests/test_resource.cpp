@@ -3,10 +3,14 @@
 #include <bgspprc/resources/cumulative_cost.h>
 #include <bgspprc/resources/ng_path.h>
 #include <bgspprc/resources/pickup_delivery.h>
+#include <bgspprc/resources/side.h>
 #include <bgspprc/resources/standard.h>
 #include <bgspprc/solver.h>
 #include <doctest/doctest.h>
+#include <stdexcept>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 using namespace bgspprc;
 
@@ -1950,4 +1954,97 @@ TEST_CASE("Solver: PickupDeliveryResource blocks capacity-violating paths") {
     CHECK(paths[0].vertices[0] == 0);
     CHECK(paths[0].vertices[1] == 2);
     CHECK(paths[0].vertices[2] == 3);
+}
+
+// ── SideResources: a view's resources past the grid's (#119) ──
+
+namespace {
+
+// 0->1->3 (cost 2) and 0->2->3 (cost 4). Resource 0 (time) is the grid's and
+// binds nothing; resource 1 (a budget of 3) is the view's only other one, and
+// 0->1 alone spends 5 of it.
+struct SideInstance {
+    int from[4] = {0, 1, 0, 2};
+    int to[4] = {1, 3, 2, 3};
+    double cost[4] = {1, 1, 2, 2};
+    double time_d[4] = {1, 1, 1, 1};
+    double budget_d[4] = {5, 1, 1, 1};
+    double time_lb[4] = {0, 0, 0, 0};
+    double time_ub[4] = {100, 100, 100, 100};
+    double budget_lb[4] = {0, 0, 0, 0};
+    double budget_ub[4] = {3, 3, 3, 3};
+    const double* arc_res[2] = {time_d, budget_d};
+    const double* v_lb[2] = {time_lb, budget_lb};
+    const double* v_ub[2] = {time_ub, budget_ub};
+
+    [[nodiscard]] ProblemView view() const {
+        ProblemView pv;
+        pv.n_vertices = 4;
+        pv.source = 0;
+        pv.sink = 3;
+        pv.n_arcs = 4;
+        pv.arc_from = from;
+        pv.arc_to = to;
+        pv.arc_base_cost = cost;
+        pv.n_resources = 2;
+        pv.arc_resource = arc_res;
+        pv.vertex_lb = v_lb;
+        pv.vertex_ub = v_ub;
+        pv.n_main_resources = 1;
+        return pv;
+    }
+};
+
+template <typename Pack>
+auto best_paths(const ProblemView& pv, Pack pack, bool bidir) {
+    Solver<Pack> solver(pv, std::move(pack), {.bidirectional = bidir, .theta = 1e9});
+    solver.build();
+    solver.set_stage(Stage::Exact);
+    return solver.solve();
+}
+
+}  // namespace
+
+TEST_CASE("SideResources enforces the view resources the grid never reads") {
+    const SideInstance inst;
+    const ProblemView pv = inst.view();
+
+    for (bool bidir : {false, true}) {
+        CAPTURE(bidir);
+        // The grid alone takes 0->1->3, over the budget.
+        auto unenforced = best_paths(pv, EmptyPack{}, bidir);
+        REQUIRE(!unenforced.empty());
+        CHECK(unenforced[0].reduced_cost == doctest::Approx(2.0));
+
+        auto paths = best_paths(pv, make_resource_pack(SideResources(pv, 1, 1)), bidir);
+        REQUIRE(!paths.empty());
+        CHECK(paths[0].reduced_cost == doctest::Approx(4.0));
+        CHECK(paths[0].vertices == std::vector<int>{0, 2, 3});
+    }
+}
+
+TEST_CASE("BucketGraph refuses a view without readable main resources") {
+    const SideInstance inst;
+
+    SUBCASE("no main resource") {
+        ProblemView pv = inst.view();
+        pv.n_main_resources = 0;
+        CHECK_THROWS_AS(Solver<EmptyPack>(pv, EmptyPack{}), std::invalid_argument);
+    }
+    SUBCASE("fewer resources than main ones") {
+        ProblemView pv = inst.view();
+        pv.n_resources = 1;
+        pv.n_main_resources = 2;
+        CHECK_THROWS_AS(Solver<EmptyPack>(pv, EmptyPack{}), std::invalid_argument);
+    }
+    SUBCASE("no vertex windows") {
+        ProblemView pv = inst.view();
+        pv.vertex_ub = nullptr;
+        CHECK_THROWS_AS(Solver<EmptyPack>(pv, EmptyPack{}), std::invalid_argument);
+    }
+    SUBCASE("more than two main resources are read as two") {
+        ProblemView pv = inst.view();
+        pv.n_main_resources = 3;
+        CHECK_NOTHROW(Solver<EmptyPack>(pv, EmptyPack{}));
+    }
 }

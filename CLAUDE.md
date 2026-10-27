@@ -84,6 +84,7 @@ Built-in resources:
 - **`NgPathResource`** (`resources/ng_path.h`) — uint32_t state, local k+1 bit remapping with destination marking per Meta-Solver §4.2.2.
 - **`R1CResource`** (`r1c.h`) — uint64_t state for up to 64 rank-1 cuts. Conforms to Resource concept.
 - **Borrowing split**: `NgPathData`/`R1CData` own the derived tables; `NgPathView`/`R1CView` are 8-byte resources borrowing them, so a caller can build the data once and share it across solvers. `NgPathResource`/`R1CResource` derive from the data and forward to `view()`. BucketGraph finds ng by duck-typing `compress_state` and R1C by the `is_r1c_resource` tag, so both views keep those.
+- **`SideResources`** (`resources/side.h`) — a `ProblemView`'s resources past its main ones, enforced from the view as standard resources (up to `kMaxSideResources`). The grid never reads them: a view's non-main resources are enforced only by the pack. `BucketGraph`'s constructor throws `std::invalid_argument` for a view without a main resource (#119).
 - **`CumulativeCostResource`** (`resources/cumulative_cost.h`) — struct{S, T_or_W} for CCVRP.
 - **`PickupDeliveryResource`** (`resources/pickup_delivery.h`) — struct{P, D} for PDVRP.
 

@@ -1,9 +1,9 @@
 #include "instance_io.h"
-#include "side_resources.h"
 #include "sppg_io.h"
 
 #include <bgspprc/resource.h>
 #include <bgspprc/resources/ng_path.h>
+#include <bgspprc/resources/side.h>
 #include <bgspprc/solver.h>
 #include <bit>
 #include <cmath>
@@ -399,11 +399,11 @@ TEST_CASE("Solve through parser: tiny_side.sppg enforces its non-main resource")
     auto inst = io::load_sppg(fixture("tiny_side.sppg"));
     REQUIRE(inst.has_value());
     auto pv = inst->problem_view();
-    using SidePack = ResourcePack<io::SideResources>;
+    using SidePack = ResourcePack<SideResources>;
 
     for (bool bidir : {false, true}) {
         CAPTURE(bidir);
-        Solver<SidePack> solver(pv, make_resource_pack(io::SideResources(pv, 1, 1)),
+        Solver<SidePack> solver(pv, make_resource_pack(SideResources(pv, 1, 1)),
                                 {.bidirectional = bidir, .theta = 1e9});
         solver.build();
         solver.set_stage(Stage::Exact);

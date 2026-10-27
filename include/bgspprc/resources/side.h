@@ -1,25 +1,26 @@
 #pragma once
 
-/// The resources of a ProblemView past its main ones, as one pack resource.
-///
-/// bgspprc's bucket grid takes at most two main resources from the view and
-/// ignores the rest; a general instance (.sppg) may carry more. This resource
-/// enforces resources [first, first + n) of the view, each a standard resource
-/// (StandardResource's extension, domination and concatenation), with
-/// equality in dominance for a non-disposable one. The count is a runtime
-/// value up to kMaxSideResources, so one instantiation serves every file.
+#include "../problem_view.h"
+#include "../types.h"
 
 #include <algorithm>
 #include <array>
-#include <bgspprc/problem_view.h>
-#include <bgspprc/types.h>
 #include <cassert>
 #include <utility>
 
-namespace bgspprc::io {
+namespace bgspprc {
 
 inline constexpr int kMaxSideResources = 8;
 
+/// The resources of a ProblemView past its main ones, as one pack resource.
+///
+/// The bucket grid takes at most two main resources from the view and never
+/// reads the rest: resources [min(n_main_resources, 2), n_resources) are the
+/// pack's to enforce. This resource enforces resources [first, first + n) of
+/// the view, each a standard resource (StandardResource's extension,
+/// domination and concatenation), with equality in dominance for a
+/// non-disposable one. The count is a runtime value up to kMaxSideResources,
+/// so one instantiation serves every view.
 struct SideResources {
     using State = std::array<double, kMaxSideResources>;
 
@@ -28,7 +29,7 @@ struct SideResources {
     int n;                  // side resources in use, <= kMaxSideResources
 
     SideResources(const ProblemView& pv_, int first_, int n_) : pv(&pv_), first(first_), n(n_) {
-        assert(n >= 0 && n <= kMaxSideResources && first + n <= pv->n_resources);
+        assert(first >= 0 && n >= 0 && n <= kMaxSideResources && first + n <= pv->n_resources);
     }
 
     [[nodiscard]] bool symmetric() const { return false; }
@@ -105,4 +106,4 @@ struct SideResources {
     }
 };
 
-}  // namespace bgspprc::io
+}  // namespace bgspprc

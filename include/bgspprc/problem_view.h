@@ -31,7 +31,14 @@ struct ProblemView {
     const double* const* vertex_lb = nullptr;  // [resource][vertex]
     const double* const* vertex_ub = nullptr;  // [resource][vertex]
 
-    int n_main_resources = 1;  // 1 or 2 (defines bucket grid dimensions)
+    // Resources [0, n_main_resources) define the bucket grid, which takes at
+    // most two: a larger count is read as 2. BucketGraph never reads the
+    // resources past its grid ones; to enforce them, put them in the pack
+    // (SideResources, resources/side.h, enforces them from this view).
+    // BucketGraph throws std::invalid_argument for a view without a main
+    // resource, with n_resources below the grid's count, or with a null
+    // arc_resource/vertex_lb/vertex_ub.
+    int n_main_resources = 1;
 
     // Per-resource non-disposability: array of n_resources bools.
     // true = non-disposable (equality required in dominance).

@@ -11,8 +11,9 @@
 
 #include <bgspprc/solver.h>
 #include <cstdio>
+#include <exception>
 
-int main() {
+int main() try {
     using namespace bgspprc;
 
     // Arc topology
@@ -66,4 +67,7 @@ int main() {
     }
 
     return paths.empty() ? 1 : 0;
+} catch (const std::exception& e) {  // e.g. a view the solver refuses
+    std::fprintf(stderr, "error: %s\n", e.what());
+    return 1;
 }
