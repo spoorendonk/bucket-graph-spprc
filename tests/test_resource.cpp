@@ -2048,3 +2048,19 @@ TEST_CASE("BucketGraph refuses a view without readable main resources") {
         CHECK_NOTHROW(Solver<EmptyPack>(pv, EmptyPack{}));
     }
 }
+
+TEST_CASE("SideResources refuses resources outside the view, and outlives it") {
+    const SideInstance inst;
+    const ProblemView pv = inst.view();
+
+    CHECK_THROWS_AS(SideResources(pv, 1, 2), std::invalid_argument);
+    CHECK_THROWS_AS(SideResources(pv, -1, 1), std::invalid_argument);
+    CHECK_THROWS_AS(SideResources(pv, 0, kMaxSideResources + 1), std::invalid_argument);
+    CHECK_NOTHROW(SideResources(pv, 2, 0));
+
+    // Built from a temporary view: it keeps the arrays, not the view.
+    auto pack = make_resource_pack(SideResources(inst.view(), 1, 1));
+    auto paths = best_paths(pv, std::move(pack), false);
+    REQUIRE(!paths.empty());
+    CHECK(paths[0].reduced_cost == doctest::Approx(4.0));
+}

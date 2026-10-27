@@ -5,7 +5,7 @@
 
 #include <algorithm>
 #include <array>
-#include <cassert>
+#include <stdexcept>
 #include <utility>
 
 namespace bgspprc {
@@ -24,12 +24,36 @@ inline constexpr int kMaxSideResources = 8;
 struct SideResources {
     using State = std::array<double, kMaxSideResources>;
 
-    const ProblemView* pv;  // borrowed: the caller keeps the view alive
-    int first;              // the view's index of side resource 0
-    int n;                  // side resources in use, <= kMaxSideResources
+    // The view's arrays, borrowed: the caller keeps them alive, not the view.
+    const double* const* arc_resource;
+    const double* const* vertex_lb;
+    const double* const* vertex_ub;
+    const bool* resource_nondisposable;
+    int source;
+    int sink;
+    int first;  // the view's index of side resource 0
+    int n;      // side resources in use, <= kMaxSideResources
 
-    SideResources(const ProblemView& pv_, int first_, int n_) : pv(&pv_), first(first_), n(n_) {
-        assert(first >= 0 && n >= 0 && n <= kMaxSideResources && first + n <= pv->n_resources);
+    /// Throws std::invalid_argument unless [first, first + n) lies in the
+    /// view's resources and n <= kMaxSideResources.
+    SideResources(const ProblemView& pv, int first_, int n_)
+        : arc_resource(pv.arc_resource),
+          vertex_lb(pv.vertex_lb),
+          vertex_ub(pv.vertex_ub),
+          resource_nondisposable(pv.resource_nondisposable),
+          source(pv.source),
+          sink(pv.sink),
+          first(first_),
+          n(n_) {
+        if (first < 0 || n < 0 || n > kMaxSideResources || first > pv.n_resources - n) {
+            throw std::invalid_argument(
+                "SideResources: [first, first + n) must lie in the view's resources, with n <= "
+                "kMaxSideResources");
+        }
+        if (n > 0 && (arc_resource == nullptr || vertex_lb == nullptr || vertex_ub == nullptr)) {
+            throw std::invalid_argument(
+                "SideResources: the view needs arc consumptions and vertex windows");
+        }
     }
 
     [[nodiscard]] bool symmetric() const { return false; }
@@ -37,8 +61,8 @@ struct SideResources {
     [[nodiscard]] State init_state(Direction dir) const {
         State s{};
         for (int i = 0; i < n; ++i) {
-            s[i] = dir == Direction::Forward ? pv->vertex_lb[first + i][pv->source]
-                                             : pv->vertex_ub[first + i][pv->sink];
+            s[i] = dir == Direction::Forward ? vertex_lb[first + i][source]
+                                             : vertex_ub[first + i][sink];
         }
         return s;
     }
@@ -46,7 +70,7 @@ struct SideResources {
     [[nodiscard]] std::pair<State, double> extend_along_arc(Direction dir, State q,
                                                             int arc_id) const {
         for (int i = 0; i < n; ++i) {
-            const double d = pv->arc_resource[first + i][arc_id];
+            const double d = arc_resource[first + i][arc_id];
             q[i] = dir == Direction::Forward ? q[i] + d : q[i] - d;
         }
         return {q, 0.0};
@@ -55,8 +79,8 @@ struct SideResources {
     [[nodiscard]] std::pair<State, double> extend_to_vertex(Direction dir, State q,
                                                             int vertex) const {
         for (int i = 0; i < n; ++i) {
-            const double lb = pv->vertex_lb[first + i][vertex];
-            const double ub = pv->vertex_ub[first + i][vertex];
+            const double lb = vertex_lb[first + i][vertex];
+            const double ub = vertex_ub[first + i][vertex];
             if (dir == Direction::Forward) {
                 q[i] = std::max(q[i], lb);
                 if (q[i] > ub) {
@@ -77,7 +101,7 @@ struct SideResources {
                                          const State& s2) const {
         for (int i = 0; i < n; ++i) {
             const bool nondisposable =
-                pv->resource_nondisposable != nullptr && pv->resource_nondisposable[first + i];
+                resource_nondisposable != nullptr && resource_nondisposable[first + i];
             if (nondisposable) {
                 if (s1[i] != s2[i]) {
                     return INF;
@@ -95,7 +119,7 @@ struct SideResources {
                                             const State& s_bw) const {
         for (int i = 0; i < n; ++i) {
             if (sym == Symmetry::Symmetric) {
-                if (s_fw[i] + s_bw[i] > pv->vertex_ub[first + i][vertex] + EPS) {
+                if (s_fw[i] + s_bw[i] > vertex_ub[first + i][vertex] + EPS) {
                     return INF;
                 }
             } else if (s_fw[i] > s_bw[i] + EPS) {

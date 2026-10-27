@@ -170,7 +170,9 @@ The bucket grid takes its one or two main resources (`n_main_resources`, at
 most 2) from the view and never reads the rest. Resources past them are the
 pack's to enforce: `SideResources` (`resources/side.h`) enforces view resources
 `[first, first + n)` as standard resources, e.g.
-`make_resource_pack(SideResources(pv, pv.n_main_resources, pv.n_resources - pv.n_main_resources))`.
+`SideResources(pv, n_grid, pv.n_resources - n_grid)` with
+`n_grid = std::min(pv.n_main_resources, 2)`; it throws `std::invalid_argument`
+for more than `kMaxSideResources` of them.
 A view without a main resource makes the constructor throw
 `std::invalid_argument`.
 
