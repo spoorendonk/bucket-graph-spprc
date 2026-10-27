@@ -1,0 +1,7 @@
+c vertex 1 has no w line, so its main window is [-inf, +inf]
+p sppg 1 3 2 1 1
+t 0 2
+w 0 0 10
+w 2 0 10
+a 0 1 1 1
+a 1 2 1 1

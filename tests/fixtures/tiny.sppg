@@ -1,0 +1,18 @@
+c tiny.graph's network in sppg v1: time is the main resource
+c Optimal: 0->2->3->4, cost=9
+p sppg 1 5 7 1 1
+t 0 4
+k d
+domain general
+w 0 0 20
+w 1 0 20
+w 2 0 20
+w 3 0 20
+w 4 0 20
+a 0 1 10 2
+a 0 2 3 4
+a 1 3 5 3
+a 2 3 4 2
+a 1 4 8 5
+a 3 4 2 1
+a 2 4 7 3

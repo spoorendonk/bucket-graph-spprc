@@ -3,6 +3,7 @@
 /// Parsers for benchmark instance formats:
 ///   - SPPCC (spprclib): TSPLIB-like, complete graph, capacity + demands
 ///   - RCSPP (.graph):   DIMACS-like, sparse arcs, time windows + capacity
+///   - sppg (.sppg):     spp-graph's general format, in sppg_io.h
 
 #include <algorithm>
 #include <bgspprc/problem_view.h>
@@ -11,6 +12,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -50,6 +52,14 @@ struct Instance {
     std::vector<double> ng_dist;
     int n_orig = 0;  // original node count (before source/sink split)
 
+    // General resources, read from .sppg: when set, they replace the
+    // capacity/time pair above, in file order (main resources first).
+    bool general_resources = false;
+    std::vector<std::vector<double>> res_arc;   // [resource][arc]
+    std::vector<std::vector<double>> res_lb;    // [resource][vertex]
+    std::vector<std::vector<double>> res_ub;    // [resource][vertex]
+    std::unique_ptr<bool[]> res_nondisposable;  // null = all disposable
+
     // Owning storage for ProblemView pointers
     std::vector<const double*> arc_res_ptrs;
     std::vector<const double*> v_lb_ptrs;
@@ -62,12 +72,20 @@ struct Instance {
         v_lb_ptrs.clear();
         v_ub_ptrs.clear();
 
-        // Always have capacity as resource 0
-        arc_res_ptrs.push_back(arc_demand.data());
-        v_lb_ptrs.push_back(cap_lb.data());
-        v_ub_ptrs.push_back(cap_ub.data());
+        if (general_resources) {
+            for (std::size_t r = 0; r < res_arc.size(); ++r) {
+                arc_res_ptrs.push_back(res_arc[r].data());
+                v_lb_ptrs.push_back(res_lb[r].data());
+                v_ub_ptrs.push_back(res_ub[r].data());
+            }
+        } else {
+            // Always have capacity as resource 0
+            arc_res_ptrs.push_back(arc_demand.data());
+            v_lb_ptrs.push_back(cap_lb.data());
+            v_ub_ptrs.push_back(cap_ub.data());
+        }
 
-        if (!arc_time.empty()) {
+        if (!general_resources && !arc_time.empty()) {
             arc_res_ptrs.push_back(arc_time.data());
             v_lb_ptrs.push_back(tw_lb.data());
             v_ub_ptrs.push_back(tw_ub.data());
@@ -86,6 +104,7 @@ struct Instance {
         pv.vertex_lb = v_lb_ptrs.data();
         pv.vertex_ub = v_ub_ptrs.data();
         pv.n_main_resources = n_main_resources;
+        pv.resource_nondisposable = res_nondisposable.get();
         return pv;
     }
 };

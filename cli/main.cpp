@@ -3,13 +3,14 @@
 /// Usage: bgspprc-solve [OPTIONS] <path>...
 ///
 /// Arguments:
-///   <path>    Instance file or directory (recurse, detect type by extension)
+///   <path>    Instance file or directory (recurse, detect type by extension:
+///             .sppcc, .vrp, .graph, .sppg)
 ///
 /// Options:
 ///   --version       Print version and build git hash, then exit
 ///   --mono          Use mono solver (default: bidir)
 ///   --stage STAGE   heuristic1|heuristic2|exact (default: exact)
-///   --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;
+///   --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp/sppg;
 ///                   from file or 8 for graph; 0 disables)
 ///   --ng-metric M   distance|cost — metric for ng neighborhoods
 ///                   (default: distance for sppcc/vrp, cost for graph)
@@ -21,8 +22,11 @@
 ///   --stats         Print solve statistics after each instance
 ///   --csv           Machine-readable CSV output (all fields)
 ///   --timing        Print phase timing breakdown
+///   --write-sppg DIR  Write each instance to DIR/<stem>.sppg instead of solving
 
 #include "instance_io.h"
+#include "side_resources.h"
+#include "sppg_io.h"
 #include "version.h"
 
 #include <algorithm>
@@ -35,6 +39,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -42,6 +47,8 @@ using namespace bgspprc;
 namespace fs = std::filesystem;
 
 using NgPack = ResourcePack<NgPathResource>;
+using SidePack = ResourcePack<io::SideResources>;
+using NgSidePack = ResourcePack<NgPathResource, io::SideResources>;
 
 // ── Options & Result ──
 
@@ -62,11 +69,13 @@ struct Options {
     bool timing = false;          // print phase timing breakdown
     bool parallel = true;         // use parallel executor (StdThreadExecutor)
     bool parallel_bidir = true;   // concurrent fw/bw labeling (requires parallel)
+    std::string write_sppg_dir;   // non-empty: convert to .sppg instead of solving
 };
 
 struct Result {
     std::string name;
     std::string type;
+    std::string error;  // non-empty: the instance was not solved
     int n_verts = 0;
     int n_arcs = 0;
     double theta = 0;
@@ -368,6 +377,104 @@ static Result run_graph(const std::string& path, const Options& opts, Exec execu
     return r;
 }
 
+template <typename Pack, Executor Exec>
+static void solve_into(Result& r, const ProblemView& pv, Pack pack, bool auto_steps,
+                       const Options& opts, Exec executor) {
+    r.n_verts = pv.n_vertices;
+    r.n_arcs = pv.n_arcs;
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+    auto so = make_solver_opts<Pack, Exec>(opts.step1, opts.step2, opts);
+    r.theta = so.theta;
+    Solver<Pack, Exec> solver(pv, std::move(pack), so, executor);
+    if (auto_steps) {
+        apply_auto_steps(solver);
+    }
+    solver.build();
+    solver.set_stage(opts.stage);
+    auto paths = solver.solve();
+    auto t1 = std::chrono::high_resolution_clock::now();
+
+    r.timings = solver.solve_timings();
+    r.n_paths = static_cast<int>(paths.size());
+    r.ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    if (!paths.empty()) {
+        r.cost = paths[0].reduced_cost;
+        r.best_path = paths[0].vertices;
+    }
+    if (opts.stats || opts.csv) {
+        collect_stats(solver, r);
+    }
+}
+
+/// Why bgspprc cannot solve a view read from .sppg, or empty if it can.
+static std::string sppg_unsupported(const ProblemView& pv) {
+    if (pv.n_main_resources < 1 || pv.n_main_resources > pv.n_resources) {
+        return "needs 1 <= n_main_resources <= n_resources: the bucket grid is built on the "
+               "main resources";
+    }
+    const int n_main = std::min(pv.n_main_resources, 2);
+    if (pv.n_resources - n_main > io::kMaxSideResources) {
+        return "more than " + std::to_string(io::kMaxSideResources) +
+               " resources past the first two main ones";
+    }
+    for (int r = 0; r < n_main; ++r) {
+        for (int v = 0; v < pv.n_vertices; ++v) {
+            if (!std::isfinite(pv.vertex_lb[r][v]) || !std::isfinite(pv.vertex_ub[r][v])) {
+                return "main resource " + std::to_string(r) +
+                       " has an unbounded window at vertex " + std::to_string(v) +
+                       ": the bucket grid needs finite windows";
+            }
+        }
+    }
+    return {};
+}
+
+/// Solve an .sppg instance. Its steps default to the library's ξ rule; there
+/// are no ng sets in the format, so ng-path is off unless --ng K asks for
+/// sets of the K cheapest outgoing arcs. Main resources past the first two,
+/// and every non-main one, are enforced by io::SideResources.
+template <Executor Exec>
+static Result run_sppg(const std::string& path, const Options& opts, Exec executor = {}) {
+    Result r;
+    r.name = fs::path(path).stem().string();
+    r.type = "sppg";
+
+    auto inst = io::load_sppg(path);
+    if (!inst) {
+        r.error = inst.error();
+        return r;
+    }
+    auto pv = inst->problem_view();
+    r.error = sppg_unsupported(pv);
+    if (!r.error.empty()) {
+        return r;
+    }
+
+    const int side_first = std::min(pv.n_main_resources, 2);
+    const int n_side = pv.n_resources - side_first;
+    const bool ng = opts.ng > 0;
+    if (ng) {
+        io::compute_ng_neighbors(*inst, opts.ng, opts.ng_metric == 1);
+    }
+    auto make_ng = [&] {
+        return NgPathResource(pv.n_vertices, pv.n_arcs, pv.arc_from, pv.arc_to, inst->ng_neighbors);
+    };
+
+    if (ng && n_side > 0) {
+        solve_into(r, pv, make_resource_pack(make_ng(), io::SideResources(pv, side_first, n_side)),
+                   opts.auto_steps, opts, executor);
+    } else if (ng) {
+        solve_into(r, pv, make_resource_pack(make_ng()), opts.auto_steps, opts, executor);
+    } else if (n_side > 0) {
+        solve_into(r, pv, make_resource_pack(io::SideResources(pv, side_first, n_side)),
+                   opts.auto_steps, opts, executor);
+    } else {
+        solve_into(r, pv, EmptyPack{}, opts.auto_steps, opts, executor);
+    }
+    return r;
+}
+
 // ── Dispatch ──
 
 template <Executor Exec>
@@ -382,7 +489,51 @@ static Result run_instance(const std::string& path, const Options& opts, Exec ex
     if (ext == ".graph") {
         return run_graph(path, opts, executor);
     }
+    if (ext == ".sppg") {
+        return run_sppg(path, opts, executor);
+    }
     std::fprintf(stderr, "Unknown extension: %s\n", path.c_str());
+    return {};
+}
+
+static bool is_instance_file(const fs::path& p) {
+    const auto ext = p.extension().string();
+    return ext == ".sppcc" || ext == ".vrp" || ext == ".graph" || ext == ".sppg";
+}
+
+/// Write the instance at `path` as `<dir>/<stem>.sppg`: the view the solver
+/// would get, so a .graph file's ng sets are not carried over. Returns an
+/// error message, or empty.
+static std::string convert_to_sppg(const std::string& path, const std::string& dir) {
+    const auto ext = fs::path(path).extension().string();
+    io::Instance inst;
+    if (ext == ".sppcc") {
+        inst = io::load_sppcc(path);
+    } else if (ext == ".vrp") {
+        inst = io::load_roberti_vrp(path);
+    } else if (ext == ".graph") {
+        inst = io::load_rcspp_graph(path);
+    } else if (ext == ".sppg") {
+        auto read = io::load_sppg(path);
+        if (!read) {
+            return read.error();
+        }
+        inst = std::move(*read);
+    } else {
+        return "unknown extension";
+    }
+    const auto out_path = fs::path(dir) / (fs::path(path).stem().string() + ".sppg");
+    std::ofstream out(out_path);
+    if (!out) {
+        return "cannot write " + out_path.string();
+    }
+    out << "c converted by bgspprc-solve from " << fs::path(path).filename().string() << '\n';
+    io::write_sppg(out, inst.problem_view());
+    out.close();
+    if (!out) {
+        return "cannot write " + out_path.string();
+    }
+    std::printf("%s\n", out_path.string().c_str());
     return {};
 }
 
@@ -397,7 +548,7 @@ static void print_csv_header() {
 }
 
 static void print_result(const Result& r, const Options& opts) {
-    if (r.name.empty()) {
+    if (r.name.empty() || !r.error.empty()) {
         return;
     }
 
@@ -452,33 +603,52 @@ static void print_result(const Result& r, const Options& opts) {
     }
 }
 
+/// Solve (or convert) one file. Returns false when it failed.
 template <Executor Exec>
-static void run_path_with(const std::string& path, const Options& opts, Exec executor) {
+static bool run_file(const std::string& path, const Options& opts, Exec executor) {
+    if (!opts.write_sppg_dir.empty()) {
+        auto error = convert_to_sppg(path, opts.write_sppg_dir);
+        if (!error.empty()) {
+            std::fprintf(stderr, "%s: %s\n", path.c_str(), error.c_str());
+            return false;
+        }
+        return true;
+    }
+    auto r = run_instance(path, opts, executor);
+    if (!r.error.empty()) {
+        std::fprintf(stderr, "%s: %s\n", path.c_str(), r.error.c_str());
+        return false;
+    }
+    print_result(r, opts);
+    return true;
+}
+
+/// Returns the number of files that failed.
+template <Executor Exec>
+static int run_path_with(const std::string& path, const Options& opts, Exec executor) {
+    int failed = 0;
     if (fs::is_directory(path)) {
         std::vector<std::string> files;
         for (const auto& entry : fs::directory_iterator(path)) {
-            auto ext = entry.path().extension().string();
-            if (ext == ".sppcc" || ext == ".vrp" || ext == ".graph") {
+            if (is_instance_file(entry.path())) {
                 files.push_back(entry.path().string());
             }
         }
         std::ranges::sort(files);
         for (auto& f : files) {
-            auto r = run_instance(f, opts, executor);
-            print_result(r, opts);
+            failed += run_file(f, opts, executor) ? 0 : 1;
         }
     } else {
-        auto r = run_instance(path, opts, executor);
-        print_result(r, opts);
+        failed += run_file(path, opts, executor) ? 0 : 1;
     }
+    return failed;
 }
 
-static void run_path(const std::string& path, const Options& opts) {
+static int run_path(const std::string& path, const Options& opts) {
     if (opts.parallel) {
-        run_path_with(path, opts, StdThreadExecutor{});
-    } else {
-        run_path_with(path, opts, SequentialExecutor{});
+        return run_path_with(path, opts, StdThreadExecutor{});
     }
+    return run_path_with(path, opts, SequentialExecutor{});
 }
 
 // ── CLI parsing ──
@@ -558,6 +728,8 @@ int main(int argc, char** argv) {
             opts.parallel = false;
         } else if (std::strcmp(argv[i], "--no-parallel-bidir") == 0) {
             opts.parallel_bidir = false;
+        } else if (std::strcmp(argv[i], "--write-sppg") == 0 && i + 1 < argc) {
+            opts.write_sppg_dir = argv[++i];
         } else if (argv[i][0] == '-') {
             std::fprintf(stderr, "Unknown option: %s\n", argv[i]);
             return 1;
@@ -578,7 +750,7 @@ int main(int argc, char** argv) {
                      "  --version       Print version and build git hash, then exit\n"
                      "  --mono          Use mono solver (default: bidir)\n"
                      "  --stage STAGE   heuristic1|heuristic2|exact (default: exact)\n"
-                     "  --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;\n"
+                     "  --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp/sppg;\n"
                      "                  from file or 8 for graph; 0 disables)\n"
                      "  --ng-metric M   distance|cost — ng neighbor metric\n"
                      "                  (default: cost — parity with Pathwyse buildNG)\n"
@@ -592,7 +764,8 @@ int main(int argc, char** argv) {
                      "  --timing        Print phase timing breakdown\n"
                      "  --parallel      Use parallel executor (default: on)\n"
                      "  --no-parallel   Use sequential executor\n"
-                     "  --no-parallel-bidir  Data-parallel only, sequential fw/bw labeling\n");
+                     "  --no-parallel-bidir  Data-parallel only, sequential fw/bw labeling\n"
+                     "  --write-sppg DIR  Write each instance to DIR/<stem>.sppg, no solve\n");
         return 1;
     }
 
@@ -616,11 +789,17 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "bgspprc: executor=%s  bidir=%s\n", exec_name, bidir_mode);
     }
 
-    if (opts.csv) {
+    if (!opts.write_sppg_dir.empty() && !fs::is_directory(opts.write_sppg_dir)) {
+        std::fprintf(stderr, "--write-sppg: %s is not a directory\n", opts.write_sppg_dir.c_str());
+        return 1;
+    }
+
+    if (opts.csv && opts.write_sppg_dir.empty()) {
         print_csv_header();
     }
+    int failed = 0;
     for (auto& p : paths) {
-        run_path(p, opts);
+        failed += run_path(p, opts);
     }
-    return 0;
+    return failed > 0 ? 1 : 0;
 }

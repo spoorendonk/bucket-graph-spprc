@@ -106,6 +106,39 @@ run_test "--ng-metric distance with --ng 2" \
 run_test "--ng-metric cost with --ng 2" \
   expect_exit_and_output 0 "cost=" "$SOLVER" --ng 2 --ng-metric cost "$FIXTURES/tiny.sppcc"
 
+run_test "single file tiny.sppg → optimal cost=9.000" \
+  expect_exit_and_output 0 "cost=9.000" "$SOLVER" --theta 1e9 "$FIXTURES/tiny.sppg"
+
+run_test "--mono tiny.sppg → optimal cost=9.000" \
+  expect_exit_and_output 0 "cost=9.000" "$SOLVER" --theta 1e9 --mono "$FIXTURES/tiny.sppg"
+
+run_test "--ng 2 tiny.sppg → optimal cost=9.000" \
+  expect_exit_and_output 0 "cost=9.000" "$SOLVER" --theta 1e9 --ng 2 "$FIXTURES/tiny.sppg"
+
+run_test "tiny_side.sppg → non-main resource cuts to cost=10.000" \
+  expect_exit_and_output 0 "cost=10.000" "$SOLVER" --theta 1e9 "$FIXTURES/tiny_side.sppg"
+
+run_test "--ng 2 tiny_side.sppg → cost=10.000" \
+  expect_exit_and_output 0 "cost=10.000" "$SOLVER" --theta 1e9 --ng 2 "$FIXTURES/tiny_side.sppg"
+
+run_test "malformed sppg → exit 1, error names the line" \
+  expect_exit_and_output 1 "nan_cost.sppg: line 5: bad number" "$SOLVER" "$FIXTURES/bad/nan_cost.sppg"
+
+run_test "unbounded main window → exit 1" \
+  expect_exit_and_output 1 "unbounded window at vertex 1" "$SOLVER" "$FIXTURES/bad/unbounded_main.sppg"
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+run_test "--write-sppg converts tiny.graph" \
+  expect_exit_and_output 0 "tiny.sppg" "$SOLVER" --write-sppg "$TMP" "$FIXTURES/tiny.graph"
+
+run_test "converted tiny.graph solves to cost=9.000" \
+  expect_exit_and_output 0 "cost=9.000" "$SOLVER" --theta 1e9 "$TMP/tiny.sppg"
+
+run_test "--write-sppg into a missing directory → exit 1" \
+  expect_exit 1 "$SOLVER" --write-sppg "$TMP/missing" "$FIXTURES/tiny.graph"
+
 # ── Summary ──
 
 echo ""

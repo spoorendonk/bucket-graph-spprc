@@ -107,7 +107,7 @@ Built-in resources:
 | `test_small_instance.cpp` | End-to-end solver on 5-10 vertex instances |
 | `test_stress.cpp` | Larger instances, 2D buckets, bidir, ng-paths, elimination, fixing, enumeration |
 | `test_benchmarks.cpp` | Solver vs benchmark instances, checks optimal values |
-| `test_instance_io.cpp` | Parser tests for `.sppcc` file format |
+| `test_instance_io.cpp` | CLI parser tests: `.sppcc`, `.vrp`, `.graph`, `.sppg` (read, write, errors) |
 
 ## C++
 

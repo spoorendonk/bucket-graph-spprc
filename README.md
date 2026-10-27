@@ -46,7 +46,11 @@ A-n54-k7-149                    sppcc  n=55    arcs=2862    theta=-1e-06  cost=-
   timing:  fw=5.570ms  bw=17.709ms  completion=1.009ms  concat=2.562ms  paths=1.167ms  sum=28.018ms
 ```
 
-Supported instance formats: `.sppcc` (SPPCC), `.vrp` (Roberti VRPTW), `.graph` (Solomon RCSPP).
+Supported instance formats: `.sppcc` (SPPCC), `.vrp` (Roberti VRPTW), `.graph` (Solomon RCSPP),
+`.sppg` (spp-graph's general format, shared by the flowty pricers). An `.sppg` file carries no
+ng sets (`--ng K` builds them from the K cheapest outgoing arcs), its main windows must be finite,
+and resources past the first two main ones are enforced as ordinary resources (up to 8).
+`--write-sppg DIR` converts any supported file to `.sppg` instead of solving it.
 Full flag reference in [CLI Reference](#cli-reference) below.
 
 ## Benchmarks
@@ -204,13 +208,14 @@ The [`examples/`](examples/) directory contains standalone programs, built by de
 Usage: bgspprc-solve [OPTIONS] <path>...
 
 Arguments:
-  <path>    Instance file or directory (recurse, detect type by extension)
+  <path>    Instance file or directory (recurse, detect type by extension:
+            .sppcc, .vrp, .graph, .sppg)
 
 Options:
   --version       Print version and build git hash, then exit
   --mono          Use mono solver (default: bidir)
   --stage STAGE   heuristic1|heuristic2|exact (default: exact)
-  --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp;
+  --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp/sppg;
                   from file or 8 for graph; 0 disables)
   --steps S1,S2   Bucket step sizes (default: per-type)
   --xi X          Derive steps from ξ = X buckets per vertex (BG2021 §6.3)
@@ -222,6 +227,7 @@ Options:
   --timing        Print phase timing breakdown
   --no-parallel   Use sequential executor (default: parallel)
   --no-parallel-bidir  Sequential fw/bw labeling
+  --write-sppg DIR  Write each instance to DIR/<stem>.sppg instead of solving
 ```
 
 ## Running Tests
