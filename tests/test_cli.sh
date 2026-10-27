@@ -124,6 +124,9 @@ run_test "--ng 2 tiny_side.sppg → cost=10.000" \
 run_test "malformed sppg → exit 1, error names the line" \
   expect_exit_and_output 1 "nan_cost.sppg: line 5: bad number" "$SOLVER" "$FIXTURES/bad/nan_cost.sppg"
 
+run_test "infinite arc consumption → exit 1" \
+  expect_exit_and_output 1 "non-finite consumption of resource 1" "$SOLVER" "$FIXTURES/bad/inf_consumption.sppg"
+
 run_test "unbounded main window → exit 1" \
   expect_exit_and_output 1 "unbounded window at vertex 1" "$SOLVER" "$FIXTURES/bad/unbounded_main.sppg"
 

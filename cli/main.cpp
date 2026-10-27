@@ -41,14 +41,13 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 using namespace bgspprc;
 namespace fs = std::filesystem;
 
 using NgPack = ResourcePack<NgPathResource>;
-using SidePack = ResourcePack<io::SideResources>;
-using NgSidePack = ResourcePack<NgPathResource, io::SideResources>;
 
 // ── Options & Result ──
 
@@ -418,6 +417,19 @@ static std::string sppg_unsupported(const ProblemView& pv) {
         return "more than " + std::to_string(io::kMaxSideResources) +
                " resources past the first two main ones";
     }
+    // inf is a valid sppg number, but an infinite cost is no solution, and
+    // -inf + inf in a resource is NaN, which passes every window check.
+    for (int a = 0; a < pv.n_arcs; ++a) {
+        if (!std::isfinite(pv.arc_base_cost[a])) {
+            return "arc " + std::to_string(a) + " has a non-finite cost";
+        }
+        for (int r = 0; r < pv.n_resources; ++r) {
+            if (!std::isfinite(pv.arc_resource[r][a])) {
+                return "arc " + std::to_string(a) + " has a non-finite consumption of resource " +
+                       std::to_string(r);
+            }
+        }
+    }
     for (int r = 0; r < n_main; ++r) {
         for (int v = 0; v < pv.n_vertices; ++v) {
             // The range too: [-1e308, 1e308] is finite, its width is not.
@@ -542,7 +554,16 @@ static std::string convert_to_sppg(const std::string& path, const std::string& d
     io::write_sppg(out, inst.problem_view());
     out.close();
     if (!out) {
+        // A partial file would block every rerun ("exists").
+        std::error_code ec;
+        fs::remove(out_path, ec);
         return "cannot write " + out_path.string();
+    }
+    if (ext == ".graph") {
+        std::fprintf(stderr,
+                     "%s: ng sets are not carried over; solve the .sppg with --ng K for "
+                     "ng-path\n",
+                     path.c_str());
     }
     std::printf("%s\n", out_path.string().c_str());
     return {};
