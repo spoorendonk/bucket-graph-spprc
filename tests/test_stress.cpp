@@ -2880,6 +2880,56 @@ TEST_CASE("Completion bounds stay lower bounds in a negative bucket cycle (#115)
     }
 }
 
+TEST_CASE("A negative bucket cycle gets a finite lap bound that still eliminates (#121)") {
+    // The #115 cycle 1 2 1 (cost -2, time 0.2, window 10) plus an arc
+    // 0 -> 2 costing 1000: any path over it costs more than 1000 - 2 * 50.
+    // The cycle laps at most 10 / 0.1 arcs of cost -1 each, so a finite
+    // bound eliminates the arc, where NEG_INF eliminated nothing.
+    int from[] = {0, 1, 2, 2, 0};
+    int to[] = {1, 2, 1, 3, 2};
+    double cost[] = {10.0, -1.0, -1.0, 0.0, 1000.0};
+    double time_d[] = {1.0, 0.1, 0.1, 0.0, 1.0};
+    double tw_lb[] = {0.0, 0.0, 0.0, 0.0};
+    double tw_ub[] = {10.0, 10.0, 10.0, 10.0};
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 4;
+    pv.source = 0;
+    pv.sink = 3;
+    pv.n_arcs = 5;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    auto run = [&]<typename Exec>(Exec, bool bidir) {
+        BucketGraph<EmptyPack, Exec> bg(pv, EmptyPack{},
+                                        {.bucket_steps = {20.0, 0.0}, .bidirectional = bidir});
+        bg.build();
+        for (int k = 0; k < 3; ++k) {
+            CAPTURE(k);
+            auto paths = bg.solve();
+            CHECK(bg.exact_complete());
+            CHECK(best_reduced_cost(paths) == doctest::Approx(-79.0));
+            bg.eliminate_arcs(-1e-6);
+            bg.fix_buckets(-1e-6);
+        }
+        CHECK(bg.eliminated_bucket_arcs() > 0);
+    };
+    for (bool bidir : {false, true}) {
+        CAPTURE(bidir);
+        run(SequentialExecutor{}, bidir);
+        run(StdThreadExecutor{}, bidir);
+    }
+}
+
 TEST_CASE("exact_complete is false after a label cap, and elimination waits (#115)") {
     RandomTwInstance inst(104, 1);
     for (bool bidir : {false, true}) {

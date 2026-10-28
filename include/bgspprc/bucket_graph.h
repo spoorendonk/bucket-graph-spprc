@@ -2709,6 +2709,151 @@ private:
 
     // ── Completion bound computation (cost-to-go) ──
 
+    /// Calls f(to, cost, resource) for each move of a label out of bucket bi
+    /// that the completion bounds cover: its bucket arcs, with the arc's main
+    /// resource consumption, and the jumps to the next bucket of its vertex,
+    /// with cost 0 and resource nullptr. Bound by the jumps here and not only
+    /// in the within-vertex pass after the SCCs: once elimination took arc a
+    /// out of bi, bi reaches a only by a jump arc (#115). The SCC graph has
+    /// these edges, so that bucket is final or in bi's SCC.
+    template <typename F>
+    void for_each_completion_edge(int bi, Direction dir, F&& f) const {
+        const auto& arcs =
+            (dir == Direction::Forward) ? buckets_[bi].bucket_arcs : buckets_[bi].bw_bucket_arcs;
+        for (const auto& ba : arcs) {
+            f(ba.to_bucket, ba.cost, ba.resource);
+        }
+        const int v = buckets_[bi].vertex;
+        const int start = vertex_bucket_start_[v];
+        const auto& vnb = vertex_n_buckets_[v];
+        const int k0 = (bi - start) / vnb[1];
+        const int k1 = (bi - start) % vnb[1];
+        if (dir == Direction::Forward) {
+            if (k0 + 1 < vnb[0]) {
+                f(bi + vnb[1], 0.0, nullptr);
+            }
+            if (k1 + 1 < vnb[1]) {
+                f(bi + 1, 0.0, nullptr);
+            }
+        } else {
+            if (k0 > 0) {
+                f(bi - vnb[1], 0.0, nullptr);
+            }
+            if (k1 > 0) {
+                f(bi - 1, 0.0, nullptr);
+            }
+        }
+    }
+
+    /// Finite completion bounds for an SCC holding a negative cycle (#121);
+    /// false, leaving them to NEG_INF, when no main resource bounds the laps.
+    ///
+    /// Take main resource r. Every arc inside the SCC (into one of its
+    /// buckets) must consume d ≥ 0 of it, so λ = min(0, min c/d over those
+    /// arcs with d > 0) is finite, and those with d = 0 must cost c ≥ 0. Then
+    /// c' = c − λd ≥ 0 inside the SCC: no negative cycle, and |SCC| passes
+    /// settle dist'(b), the cost-to-go with inside arcs priced c' (arcs out
+    /// of the SCC keep c, and the completion of their target).
+    ///
+    /// A real path from a label at b moves q[r] by at least d along each arc
+    /// (forward q' ≥ q + d, backward q' ≤ q − d; window clamps and jumps only
+    /// add to that), and its labels stay inside the SCC's buckets until it
+    /// leaves. So its inside arcs but the last consume at most
+    /// span(b) = max ub − lb(b) forward (ub(b) − min lb backward), and the
+    /// last at most d_max: the last inside arc's target bucket may lie in
+    /// the SCC while its label jumps out. Its cost is at least
+    /// Σc' + λΣd ≥ dist'(b) + λ (span(b) + d_max), the bound kept. With two
+    /// main resources each one gives a valid bound; take the one whose
+    /// worst lap term λ (max span + d_max) is smallest in magnitude.
+    bool lap_bounded_completion(int scc, Direction dir, std::vector<double>& completion) const {
+        const auto& scc_bs =
+            (dir == Direction::Forward) ? fw_scc_buckets_[scc] : bw_scc_buckets_[scc];
+        const auto& bucket_scc =
+            (dir == Direction::Forward) ? fw_bucket_scc_id_ : bw_bucket_scc_id_;
+        const bool fw = (dir == Direction::Forward);
+
+        int best_r = -1;
+        double best_lambda = 0.0;
+        double best_dmax = 0.0;
+        double best_term = NEG_INF;
+        for (int r = 0; r < n_main_; ++r) {
+            bool ok = true;
+            double lambda = 0.0;
+            double dmax = 0.0;
+            double lo = INF;
+            double hi = NEG_INF;
+            for (int bi : scc_bs) {
+                lo = std::min(lo, buckets_[bi].lb[r]);
+                hi = std::max(hi, buckets_[bi].ub[r]);
+                for_each_completion_edge(bi, dir, [&](int to, double cost, const double* res) {
+                    if (res == nullptr || bucket_scc[to] != scc) {
+                        return;
+                    }
+                    const double d = res[r];
+                    if (d > 0.0) {
+                        lambda = std::min(lambda, cost / d);
+                        dmax = std::max(dmax, d);
+                    } else if (d < 0.0 || cost < 0.0) {
+                        ok = false;
+                    }
+                });
+            }
+            if (!ok) {
+                continue;
+            }
+            const double term = lambda * (hi - lo + dmax);
+            if (term > best_term) {
+                best_r = r;
+                best_lambda = lambda;
+                best_dmax = dmax;
+                best_term = term;
+            }
+        }
+        if (best_r < 0) {
+            return false;
+        }
+
+        const int terminal = fw ? pv_.sink : pv_.source;
+        double hi = NEG_INF;
+        double lo = INF;
+        for (int bi : scc_bs) {
+            completion[bi] = (buckets_[bi].vertex == terminal) ? 0.0 : INF;
+            lo = std::min(lo, buckets_[bi].lb[best_r]);
+            hi = std::max(hi, buckets_[bi].ub[best_r]);
+        }
+        const int max_iters = static_cast<int>(scc_bs.size()) + 1;
+        bool changed = true;
+        for (int iter = 0; iter < max_iters && changed; ++iter) {
+            changed = false;
+            for (int bi : scc_bs) {
+                for_each_completion_edge(bi, dir, [&](int to, double cost, const double* res) {
+                    if (completion[to] >= INF) {
+                        return;
+                    }
+                    if (res != nullptr && bucket_scc[to] == scc) {
+                        cost -= best_lambda * res[best_r];
+                    }
+                    const double candidate = cost + completion[to];
+                    if (candidate < completion[bi] - EPS) {
+                        completion[bi] = candidate;
+                        changed = true;
+                    }
+                });
+            }
+        }
+        if (changed) {
+            return false;  // c' ≥ 0 inside, so only rounding gets here
+        }
+        for (int bi : scc_bs) {
+            if (completion[bi] < INF) {
+                const double span =
+                    fw ? hi - buckets_[bi].lb[best_r] : buckets_[bi].ub[best_r] - lo;
+                completion[bi] += best_lambda * (span + best_dmax);
+            }
+        }
+        return true;
+    }
+
     /// Compute backward completion bounds for arc elimination / bucket fixing.
     /// completion(b) = lower bound on cost from bucket b to the terminal
     ///   (sink for forward, source for backward).
@@ -2733,9 +2878,11 @@ private:
         // For SCCs with cycles, relax Bellman-Ford style: without a negative
         // cycle, |scc| passes settle every bucket, so a change in pass
         // |scc| + 1 means one (#115). Every bucket of the SCC reaches that
-        // cycle, so its cost-to-go over the bucket graph is unbounded below:
-        // NEG_INF, which the SCCs before it inherit and which prunes,
-        // eliminates and fixes nothing.
+        // cycle, so its cost-to-go over the bucket graph is unbounded below,
+        // but a real path laps it only as often as its main resource allows:
+        // lap_bounded_completion bounds that (#121). Where it cannot, the
+        // SCC gets NEG_INF, which the SCCs before it inherit and which
+        // prunes, eliminates and fixes nothing.
         for (int i = static_cast<int>(scc_topo.size()) - 1; i >= 0; --i) {
             int scc = scc_topo[i];
             auto& scc_bs = scc_buckets[scc];
@@ -2745,53 +2892,23 @@ private:
 
             for (int iter = 0; iter < max_iters; ++iter) {
                 bool changed = false;
-                auto relax = [&](int bi, int to, double cost) {
-                    if (completion[to] >= INF) {
-                        return;
-                    }
-                    double candidate = cost + completion[to];
-                    if (candidate < completion[bi] - EPS) {
-                        completion[bi] = candidate;
-                        changed = true;
-                    }
-                };
                 for (int bi : scc_bs) {
-                    auto& arcs = (dir == Direction::Forward) ? buckets_[bi].bucket_arcs
-                                                             : buckets_[bi].bw_bucket_arcs;
-                    for (const auto& ba : arcs) {
-                        relax(bi, ba.to_bucket, ba.cost);
-                    }
-                    // A label can jump to the next bucket of its vertex, so
-                    // bound by that bucket's cost-to-go too, here and not only
-                    // in the pass below: once elimination took arc a out of
-                    // bi, bi reaches a only by a jump arc (#115). The SCC
-                    // graph has these edges, so that bucket is final or in
-                    // this SCC.
-                    const int v = buckets_[bi].vertex;
-                    const int start = vertex_bucket_start_[v];
-                    const auto& vnb = vertex_n_buckets_[v];
-                    const int k0 = (bi - start) / vnb[1];
-                    const int k1 = (bi - start) % vnb[1];
-                    if (dir == Direction::Forward) {
-                        if (k0 + 1 < vnb[0]) {
-                            relax(bi, bi + vnb[1], 0.0);
+                    for_each_completion_edge(bi, dir, [&](int to, double cost, const double*) {
+                        if (completion[to] >= INF) {
+                            return;
                         }
-                        if (k1 + 1 < vnb[1]) {
-                            relax(bi, bi + 1, 0.0);
+                        double candidate = cost + completion[to];
+                        if (candidate < completion[bi] - EPS) {
+                            completion[bi] = candidate;
+                            changed = true;
                         }
-                    } else {
-                        if (k0 > 0) {
-                            relax(bi, bi - vnb[1], 0.0);
-                        }
-                        if (k1 > 0) {
-                            relax(bi, bi - 1, 0.0);
-                        }
-                    }
+                    });
                 }
                 if (!changed) {
                     break;
                 }
-                if (has_cycle && iter == max_iters - 1) {
+                if (has_cycle && iter == max_iters - 1 &&
+                    !lap_bounded_completion(scc, dir, completion)) {
                     for (int bi : scc_bs) {
                         completion[bi] = NEG_INF;
                     }
