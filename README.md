@@ -176,6 +176,11 @@ for more than `kMaxSideResources` of them.
 A view without a main resource makes the constructor throw
 `std::invalid_argument`.
 
+`solver.cost_of(arcs)` prices a given source-to-sink walk (arc ids in order)
+as labelling would, under the current reduced costs and resource states: an
+`optional` of its reduced and original cost, empty when the walk is
+infeasible. Use it to reprice a column the solver did not generate.
+
 ## Custom Resources
 
 Implement the `Resource` concept to define custom resource types:
@@ -250,7 +255,7 @@ ctest --test-dir build
 ./build/test_runner --test-case="Bucket construction"
 
 # Run tests matching a pattern
-./build/test_runner "*NgPath*"
+./build/test_runner -tc="*NgPath*"
 ```
 
 ## Citing

@@ -13,6 +13,7 @@
 #include <limits>
 #include <numbers>
 #include <numeric>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <stack>
@@ -234,6 +235,78 @@ public:
         double reduced_cost;
         double original_cost;
     };
+
+    struct WalkCost {
+        double reduced_cost;
+        double original_cost;
+    };
+
+    /// Reduced and original cost of a source-to-sink walk, given as its arc
+    /// ids in order: the forward extension of extend_label from the start
+    /// label of create_initial_label, without the grid. Main-resource windows,
+    /// then each resource's extend_along_arc and extend_to_vertex, under the
+    /// current reduced costs and resource states. Nullopt when the walk is
+    /// infeasible, does not run from source to sink, or uses an arc id out of
+    /// range or with an INF reduced cost. Arc elimination and bucket fixing
+    /// are pricing state, not feasibility, and are not consulted.
+    [[nodiscard]] std::optional<WalkCost> cost_of(std::span<const int> arcs) const {
+        if (arcs.empty() && pv_.source != pv_.sink) {
+            return std::nullopt;
+        }
+        int v = pv_.source;
+        std::array<double, 2> q{};
+        for (int r = 0; r < n_main_; ++r) {
+            q[r] = pv_.vertex_lb[r][v];
+        }
+        auto states = pack_.init_states(Direction::Forward);
+        double cost = 0.0;
+        if constexpr (Pack::size > 0) {
+            auto [vtx_states, vtx_cost] = pack_.extend_to_vertex(Direction::Forward, states, v);
+            if (vtx_cost >= INF) {
+                return std::nullopt;
+            }
+            states = vtx_states;
+            cost = vtx_cost;
+        }
+        double real_cost = 0.0;
+        for (int a : arcs) {
+            if (a < 0 || a >= pv_.n_arcs || pv_.arc_from[a] != v) {
+                return std::nullopt;
+            }
+            const double arc_cost = reduced_costs_ ? reduced_costs_[a] : pv_.arc_base_cost[a];
+            if (arc_cost >= INF) {
+                return std::nullopt;
+            }
+            v = pv_.arc_to[a];
+            for (int r = 0; r < n_main_; ++r) {
+                q[r] = std::max(q[r] + pv_.arc_resource[r][a], pv_.vertex_lb[r][v]);
+                if (q[r] > pv_.vertex_ub[r][v]) {
+                    return std::nullopt;
+                }
+            }
+            // In extend_label's order, so a forward label's cost is matched exactly.
+            cost += arc_cost;
+            real_cost += pv_.arc_base_cost[a];
+            if constexpr (Pack::size > 0) {
+                auto [arc_states, along_cost] =
+                    pack_.extend_along_arc(Direction::Forward, states, a);
+                if (along_cost >= INF) {
+                    return std::nullopt;
+                }
+                auto [vtx_states, vtx_cost] =
+                    pack_.extend_to_vertex(Direction::Forward, arc_states, v);
+                if (vtx_cost >= INF) {
+                    return std::nullopt;
+                }
+                states = vtx_states;
+                cost += along_cost + vtx_cost;
+            }
+        }
+        if (v != pv_.sink) {
+            return std::nullopt;
+        }
+        return WalkCost{.reduced_cost = cost, .original_cost = real_cost};
+    }
 
     /// Solve: returns paths with negative reduced cost.
     std::vector<Path> solve() {

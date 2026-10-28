@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
+#include <span>
 #include <vector>
 
 namespace bgspprc {
@@ -17,6 +19,7 @@ template <typename Pack, Executor Exec = SequentialExecutor>
 class Solver {
 public:
     using Path = typename BucketGraph<Pack, Exec>::Path;
+    using WalkCost = typename BucketGraph<Pack, Exec>::WalkCost;
 
     struct Options {
         // A step <= 0 is derived from xi (BG2021 §6.3); see BucketGraph::Options.
@@ -168,6 +171,12 @@ public:
     template <typename R>
     R& resource() {
         return bg_.template resource<R>();
+    }
+
+    /// Reduced and original cost of a source-to-sink walk of arc ids, or
+    /// nullopt when infeasible; see BucketGraph::cost_of().
+    [[nodiscard]] std::optional<WalkCost> cost_of(std::span<const int> arcs) const {
+        return bg_.cost_of(arcs);
     }
 
     /// Whether the last enumeration was complete (no caps hit).

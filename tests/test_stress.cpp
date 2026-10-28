@@ -2165,6 +2165,190 @@ static double best_reduced_cost(const Paths& paths) {
     return b;
 }
 
+// Every path the solve returns costs, under cost_of, what labelling gave it:
+// exactly for a forward label (mono), up to rounding for a bidir join.
+template <typename BG>
+static void check_cost_of_paths(const BG& bg, const std::vector<typename BG::Path>& paths,
+                                bool exact) {
+    for (const auto& p : paths) {
+        CAPTURE(p.arcs.size());
+        auto c = bg.cost_of(p.arcs);
+        REQUIRE(c.has_value());
+        const auto w = c.value_or(typename BG::WalkCost{.reduced_cost = INF, .original_cost = INF});
+        if (exact) {
+            CHECK(w.reduced_cost == p.reduced_cost);
+            CHECK(w.original_cost == p.original_cost);
+        } else {
+            CHECK(w.reduced_cost == doctest::Approx(p.reduced_cost).epsilon(1e-9));
+            CHECK(w.original_cost == doctest::Approx(p.original_cost).epsilon(1e-9));
+        }
+    }
+}
+
+TEST_CASE("cost_of matches labelling on random instances with ng-paths") {
+    using Pack = ResourcePack<NgPathResource>;
+    int checked = 0;
+    for (int n_main = 1; n_main <= 2; ++n_main) {
+        for (int seed = 0; seed < 150; ++seed) {
+            CAPTURE(n_main);
+            CAPTURE(seed);
+            RandomTwInstance inst(seed, n_main);
+            const int n = inst.pv.n_vertices;
+            std::vector<std::vector<int>> neighbors(n);
+            for (int v = 0; v < n; ++v) {
+                neighbors[v] = {v, (v + 1) % n, (v + 2) % n};
+            }
+            NgPathResource ng(n, inst.pv.n_arcs, inst.from_v.data(), inst.to_v.data(), neighbors);
+            // Duals on the customers make cycles negative, which ng must cut.
+            std::mt19937 rng(seed);
+            std::uniform_real_distribution<double> U(0, 1);
+            std::vector<double> dual(n, 0.0);
+            for (int v = 1; v < n - 1; ++v) {
+                dual[v] = U(rng) * 15;
+            }
+            std::vector<double> reduced(inst.cost_v);
+            for (int a = 0; a < inst.pv.n_arcs; ++a) {
+                reduced[a] -= dual[inst.to_v[a]];
+            }
+            for (bool bidir : {false, true}) {
+                CAPTURE(bidir);
+                BucketGraph<Pack> bg(inst.pv, Pack(ng),
+                                     {.bucket_steps = {2.0, n_main == 2 ? 2.0 : 0.0},
+                                      .theta = 1e9,
+                                      .bidirectional = bidir});
+                bg.build();
+                bg.update_arc_costs(reduced.data());
+                auto paths = bg.solve();
+                check_cost_of_paths(bg, paths, !bidir);
+                checked += static_cast<int>(paths.size());
+            }
+        }
+    }
+    CHECK(checked > 1000);
+}
+
+TEST_CASE("cost_of matches labelling with an R1C dual, through Solver") {
+    constexpr int N = 6;
+    int from[] = {0, 0, 1, 2, 3, 4, 1, 2};
+    int to[] = {1, 2, 3, 4, 5, 5, 4, 3};
+    double cost[] = {5.0, 3.0, 4.0, 6.0, 2.0, 1.0, 7.0, 8.0};
+    double time_d[] = {1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 3.0, 2.0};
+    double tw_lb[] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    double tw_ub[] = {20.0, 20.0, 20.0, 20.0, 20.0, 20.0};
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = N;
+    pv.source = 0;
+    pv.sink = N - 1;
+    pv.n_arcs = 8;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    using R1CPack = ResourcePack<R1CResource>;
+    // A 3-row subset cut over {1, 3, 4}, remembered on every arc: a path
+    // through two of them pays beta = 5.
+    R1Cut cut;
+    cut.base_set = {1, 3, 4};
+    cut.multipliers = {0.5, 0.5, 0.5};
+    for (int a = 0; a < 8; ++a) {
+        cut.memory_arcs.emplace_back(a, 0);
+    }
+    cut.dual_value = -5.0;
+
+    for (bool bidir : {false, true}) {
+        CAPTURE(bidir);
+        Solver<R1CPack> solver(pv, R1CPack{R1CResource{}},
+                               {.bucket_steps = {5.0, 0.0}, .bidirectional = bidir, .theta = 1e9});
+        solver.resource<R1CResource>().set_cuts({{cut}}, N, 8);
+        solver.build();
+        solver.set_stage(Stage::Exact);
+        auto paths = solver.solve();
+        REQUIRE(!paths.empty());
+        bool saw_cut = false;
+        for (const auto& p : paths) {
+            auto c = solver.cost_of(p.arcs);
+            REQUIRE(c.has_value());
+            const auto w =
+                c.value_or(Solver<R1CPack>::WalkCost{.reduced_cost = INF, .original_cost = INF});
+            CHECK(w.reduced_cost == doctest::Approx(p.reduced_cost).epsilon(1e-9));
+            CHECK(w.original_cost == doctest::Approx(p.original_cost).epsilon(1e-9));
+            saw_cut = saw_cut || w.reduced_cost > w.original_cost + 1.0;
+        }
+        CHECK(saw_cut);
+        // 0 -> 1 -> 3 -> 5 visits 1 and 3.
+        auto c = solver.cost_of(std::vector<int>{0, 2, 4});
+        REQUIRE(c.has_value());
+        const auto w =
+            c.value_or(Solver<R1CPack>::WalkCost{.reduced_cost = INF, .original_cost = INF});
+        CHECK(w.reduced_cost == doctest::Approx(16.0));
+        CHECK(w.original_cost == doctest::Approx(11.0));
+    }
+}
+
+TEST_CASE("cost_of refuses walks labelling would not produce") {
+    // 0 -> 1 -> 2 (sink), and 0 -> 2 directly; vertex 1 closes at 1.
+    int from[] = {0, 1, 0, 1};
+    int to[] = {1, 2, 2, 1};
+    double cost[] = {1.0, 2.0, 5.0, 0.5};
+    double time_d[] = {1.0, 1.0, 1.0, 1.0};
+    double tw_lb[] = {0.0, 0.0, 0.0};
+    double tw_ub[] = {10.0, 1.0, 10.0};
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 3;
+    pv.source = 0;
+    pv.sink = 2;
+    pv.n_arcs = 4;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    BucketGraph<EmptyPack> bg(pv, EmptyPack{}, {.bucket_steps = {1.0, 0.0}});
+    bg.build();
+
+    auto ok = bg.cost_of(std::vector<int>{0, 1});
+    REQUIRE(ok.has_value());
+    const auto w =
+        ok.value_or(BucketGraph<EmptyPack>::WalkCost{.reduced_cost = INF, .original_cost = INF});
+    CHECK(w.reduced_cost == 3.0);
+    CHECK(w.original_cost == 3.0);
+
+    CHECK_FALSE(bg.cost_of(std::vector<int>{}).has_value());         // never leaves the source
+    CHECK_FALSE(bg.cost_of(std::vector<int>{0}).has_value());        // ends short of the sink
+    CHECK_FALSE(bg.cost_of(std::vector<int>{1, 0}).has_value());     // not a walk from the source
+    CHECK_FALSE(bg.cost_of(std::vector<int>{0, 3, 1}).has_value());  // closes vertex 1's window
+    CHECK_FALSE(bg.cost_of(std::vector<int>{0, 4}).has_value());     // arc id out of range
+    CHECK_FALSE(bg.cost_of(std::vector<int>{-1}).has_value());
+
+    // Reduced costs replace the base ones; an INF one forbids its arc.
+    double reduced[] = {-4.0, 1.0, INF, 0.0};
+    bg.update_arc_costs(reduced);
+    auto rc = bg.cost_of(std::vector<int>{0, 1});
+    REQUIRE(rc.has_value());
+    const auto wr =
+        rc.value_or(BucketGraph<EmptyPack>::WalkCost{.reduced_cost = INF, .original_cost = INF});
+    CHECK(wr.reduced_cost == -3.0);
+    CHECK(wr.original_cost == 3.0);
+    CHECK_FALSE(bg.cost_of(std::vector<int>{2}).has_value());
+}
+
 TEST_CASE("Bidir finds the mono best at the default theta on random instances") {
     // Bidir at the default theta must return the mono best; a join skip that
     // took bw costs as non-negative lost it on seeds 936 and 1099 (1D) and
