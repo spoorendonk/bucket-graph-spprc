@@ -2896,6 +2896,8 @@ struct LapCycleInstance {
     std::array<const double*, 2> v_ub{};
     ProblemView pv;
 
+    LapCycleInstance(const LapCycleInstance&) = delete;  // pv points into this
+    LapCycleInstance& operator=(const LapCycleInstance&) = delete;
     LapCycleInstance(std::array<double, 5> d0, std::array<double, 5> d1, int n_main, double w)
         : d{d0, d1} {
         for (int r = 0; r < 2; ++r) {
@@ -2952,28 +2954,52 @@ TEST_CASE("A negative bucket cycle gets a finite lap bound that still eliminates
     };
     for (const auto& c : cases) {
         const LapCycleInstance inst({1.0, 0.1, 0.1, 0.0, 1.0}, c.d1, c.n_main, 10.0);
-        auto run = [&]<typename Exec>(Exec, bool bidir, double step) {
-            BucketGraph<EmptyPack, Exec> bg(
-                inst.pv, EmptyPack{},
-                {.bucket_steps = {step, c.n_main == 2 ? step : 0.0}, .bidirectional = bidir});
+        // Elimination and fixing must keep every path Enumerate finds below
+        // theta, not only the best: a bound too high cuts the paths with
+        // fewer laps first, and the tight theta leaves it no slack.
+        auto run = [&]<typename Exec>(Exec, bool bidir, double step, double theta) {
+            const typename BucketGraph<EmptyPack, Exec>::Options opts{
+                .bucket_steps = {step, c.n_main == 2 ? step : 0.0},
+                .theta = theta,
+                .bidirectional = bidir};
+            auto enumerate = [](BucketGraph<EmptyPack, Exec>& bg) {
+                bg.set_stage(Stage::Enumerate);
+                std::vector<std::vector<int>> v;
+                for (const auto& p : bg.solve()) {
+                    v.push_back(p.vertices);
+                }
+                CHECK(bg.enumeration_complete());
+                std::ranges::sort(v);
+                return v;
+            };
+            BucketGraph<EmptyPack, Exec> fresh(inst.pv, EmptyPack{}, opts);
+            fresh.build();
+            const auto all = enumerate(fresh);
+            CHECK(!all.empty());
+
+            BucketGraph<EmptyPack, Exec> bg(inst.pv, EmptyPack{}, opts);
             bg.build();
             for (int k = 0; k < 3; ++k) {
                 CAPTURE(k);
                 auto paths = bg.solve();
                 CHECK(bg.exact_complete());
                 CHECK(best_reduced_cost(paths) == doctest::Approx(c.best));
-                bg.eliminate_arcs(-1e-6);
-                bg.fix_buckets(-1e-6);
+                bg.eliminate_arcs(theta);
+                bg.fix_buckets(theta);
             }
             CHECK_FALSE(source_keeps_arc4(bg));
+            CHECK(enumerate(bg) == all);
         };
         for (double step : {20.0, 1.0, 0.3}) {
             for (bool bidir : {false, true}) {
-                CAPTURE(c.n_main);
-                CAPTURE(step);
-                CAPTURE(bidir);
-                run(SequentialExecutor{}, bidir, step);
-                run(StdThreadExecutor{}, bidir, step);
+                for (double theta : {-1e-6, c.best + 2.5}) {
+                    CAPTURE(c.n_main);
+                    CAPTURE(step);
+                    CAPTURE(bidir);
+                    CAPTURE(theta);
+                    run(SequentialExecutor{}, bidir, step, theta);
+                    run(StdThreadExecutor{}, bidir, step, theta);
+                }
             }
         }
     }
