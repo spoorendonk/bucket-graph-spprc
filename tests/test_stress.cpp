@@ -2880,53 +2880,134 @@ TEST_CASE("Completion bounds stay lower bounds in a negative bucket cycle (#115)
     }
 }
 
-TEST_CASE("A negative bucket cycle gets a finite lap bound that still eliminates (#121)") {
-    // The #115 cycle 1 2 1 (cost -2, time 0.2, window 10) plus an arc
-    // 0 -> 2 costing 1000: any path over it costs more than 1000 - 2 * 50.
-    // The cycle laps at most 10 / 0.1 arcs of cost -1 each, so a finite
-    // bound eliminates the arc, where NEG_INF eliminated nothing.
-    int from[] = {0, 1, 2, 2, 0};
-    int to[] = {1, 2, 1, 3, 2};
-    double cost[] = {10.0, -1.0, -1.0, 0.0, 1000.0};
-    double time_d[] = {1.0, 0.1, 0.1, 0.0, 1.0};
-    double tw_lb[] = {0.0, 0.0, 0.0, 0.0};
-    double tw_ub[] = {10.0, 10.0, 10.0, 10.0};
-    const double* arc_res[] = {time_d};
-    const double* v_lb[] = {tw_lb};
-    const double* v_ub[] = {tw_ub};
+namespace {
 
+/// The #115 cycle 0 -> 1 <-> 2 -> 3 plus an arc 0 -> 2 (arc 4) costing 1000,
+/// with the arcs' consumption of up to two main resources given.
+struct LapCycleInstance {
+    int from[5] = {0, 1, 2, 2, 0};
+    int to[5] = {1, 2, 1, 3, 2};
+    double cost[5] = {10.0, -1.0, -1.0, 0.0, 1000.0};
+    std::array<std::array<double, 5>, 2> d{};
+    std::array<std::array<double, 4>, 2> lb{};
+    std::array<std::array<double, 4>, 2> ub{};
+    std::array<const double*, 2> arc_res{};
+    std::array<const double*, 2> v_lb{};
+    std::array<const double*, 2> v_ub{};
     ProblemView pv;
-    pv.n_vertices = 4;
-    pv.source = 0;
-    pv.sink = 3;
-    pv.n_arcs = 5;
-    pv.arc_from = from;
-    pv.arc_to = to;
-    pv.arc_base_cost = cost;
-    pv.n_resources = 1;
-    pv.arc_resource = arc_res;
-    pv.vertex_lb = v_lb;
-    pv.vertex_ub = v_ub;
-    pv.n_main_resources = 1;
 
-    auto run = [&]<typename Exec>(Exec, bool bidir) {
-        BucketGraph<EmptyPack, Exec> bg(pv, EmptyPack{},
-                                        {.bucket_steps = {20.0, 0.0}, .bidirectional = bidir});
+    LapCycleInstance(std::array<double, 5> d0, std::array<double, 5> d1, int n_main, double w)
+        : d{d0, d1} {
+        for (int r = 0; r < 2; ++r) {
+            ub[r].fill(w);
+            arc_res[r] = d[r].data();
+            v_lb[r] = lb[r].data();
+            v_ub[r] = ub[r].data();
+        }
+        pv.n_vertices = 4;
+        pv.source = 0;
+        pv.sink = 3;
+        pv.n_arcs = 5;
+        pv.arc_from = from;
+        pv.arc_to = to;
+        pv.arc_base_cost = cost;
+        pv.n_resources = n_main;
+        pv.arc_resource = arc_res.data();
+        pv.vertex_lb = v_lb.data();
+        pv.vertex_ub = v_ub.data();
+        pv.n_main_resources = n_main;
+    }
+};
+
+/// True when some bucket of the source still has arc 4 (0 -> 2).
+template <typename BG>
+bool source_keeps_arc4(const BG& bg) {
+    for (int bi = 0; bi < bg.n_buckets(); ++bi) {
+        const auto& b = bg.bucket(bi);
+        if (b.vertex == 0 && std::ranges::contains(b.bucket_arcs, 4, &BucketArc::arc_id)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST_CASE("A negative bucket cycle gets a finite lap bound that still eliminates (#121)") {
+    // Any path over arc 4 costs more than 1000 minus what the cycle can
+    // give back in the windows, so a finite bound eliminates the arc from
+    // every source bucket, where NEG_INF eliminated it from none. Finer
+    // steps let labels jump out of the cycle's SCCs, and in 2D the second
+    // resource bounds the laps more tightly than the first.
+    struct Case {
+        int n_main;
+        std::array<double, 5> d1;
+        double best;
+    };
+    const Case cases[] = {
+        // 1D: 45 laps of cost -2 fit time 10.
+        {.n_main = 1, .d1 = {}, .best = -79.0},
+        // 2D: a load of 0.5 per cycle arc fits 19 of them in 10.
+        {.n_main = 2, .d1 = {0.0, 0.5, 0.5, 0.0, 0.0}, .best = -9.0},
+    };
+    for (const auto& c : cases) {
+        const LapCycleInstance inst({1.0, 0.1, 0.1, 0.0, 1.0}, c.d1, c.n_main, 10.0);
+        auto run = [&]<typename Exec>(Exec, bool bidir, double step) {
+            BucketGraph<EmptyPack, Exec> bg(
+                inst.pv, EmptyPack{},
+                {.bucket_steps = {step, c.n_main == 2 ? step : 0.0}, .bidirectional = bidir});
+            bg.build();
+            for (int k = 0; k < 3; ++k) {
+                CAPTURE(k);
+                auto paths = bg.solve();
+                CHECK(bg.exact_complete());
+                CHECK(best_reduced_cost(paths) == doctest::Approx(c.best));
+                bg.eliminate_arcs(-1e-6);
+                bg.fix_buckets(-1e-6);
+            }
+            CHECK_FALSE(source_keeps_arc4(bg));
+        };
+        for (double step : {20.0, 1.0, 0.3}) {
+            for (bool bidir : {false, true}) {
+                CAPTURE(c.n_main);
+                CAPTURE(step);
+                CAPTURE(bidir);
+                run(SequentialExecutor{}, bidir, step);
+                run(StdThreadExecutor{}, bidir, step);
+            }
+        }
+    }
+}
+
+TEST_CASE("A negative bucket cycle no resource bounds keeps NEG_INF (#121)") {
+    // Arc 1 -> 2 takes no time at cost -1, so time gives no lap bound for
+    // the cycle and its SCC stays NEG_INF: mono elimination keeps arc 4
+    // (only bidir's labels can rule it out). The cycle still laps 90 times
+    // in the window, through 2 -> 1: best 10 - 1 - 2 * 90.
+    const LapCycleInstance inst({1.0, 0.0, 0.1, 0.0, 1.0}, {}, 1, 10.05);
+    auto run = [&]<typename Exec>(Exec, bool bidir, double step) {
+        BucketGraph<EmptyPack, Exec> bg(inst.pv, EmptyPack{},
+                                        {.bucket_steps = {step, 0.0}, .bidirectional = bidir});
         bg.build();
         for (int k = 0; k < 3; ++k) {
             CAPTURE(k);
             auto paths = bg.solve();
             CHECK(bg.exact_complete());
-            CHECK(best_reduced_cost(paths) == doctest::Approx(-79.0));
+            CHECK(best_reduced_cost(paths) == doctest::Approx(-171.0));
             bg.eliminate_arcs(-1e-6);
             bg.fix_buckets(-1e-6);
         }
-        CHECK(bg.eliminated_bucket_arcs() > 0);
+        if (!bidir) {
+            CHECK(source_keeps_arc4(bg));
+        }
     };
-    for (bool bidir : {false, true}) {
-        CAPTURE(bidir);
-        run(SequentialExecutor{}, bidir);
-        run(StdThreadExecutor{}, bidir);
+    for (double step : {20.0, 1.0}) {
+        for (bool bidir : {false, true}) {
+            CAPTURE(step);
+            CAPTURE(bidir);
+            run(SequentialExecutor{}, bidir, step);
+            run(StdThreadExecutor{}, bidir, step);
+        }
     }
 }
 

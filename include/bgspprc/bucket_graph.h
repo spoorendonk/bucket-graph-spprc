@@ -2765,9 +2765,8 @@ private:
     /// Σc' + λΣd ≥ dist'(b) + λ (span(b) + d_max), the bound kept. With two
     /// main resources each one gives a valid bound; take the one whose
     /// worst lap term λ (max span + d_max) is smallest in magnitude.
-    bool lap_bounded_completion(int scc, Direction dir, std::vector<double>& completion) const {
-        const auto& scc_bs =
-            (dir == Direction::Forward) ? fw_scc_buckets_[scc] : bw_scc_buckets_[scc];
+    bool lap_bounded_completion(int scc, const std::vector<int>& scc_bs, Direction dir,
+                                std::vector<double>& completion) {
         const auto& bucket_scc =
             (dir == Direction::Forward) ? fw_bucket_scc_id_ : bw_bucket_scc_id_;
         const bool fw = (dir == Direction::Forward);
@@ -2776,6 +2775,8 @@ private:
         double best_lambda = 0.0;
         double best_dmax = 0.0;
         double best_term = NEG_INF;
+        double best_lo = INF;
+        double best_hi = NEG_INF;
         for (int r = 0; r < n_main_; ++r) {
             bool ok = true;
             double lambda = 0.0;
@@ -2783,6 +2784,9 @@ private:
             double lo = INF;
             double hi = NEG_INF;
             for (int bi : scc_bs) {
+                if (!ok) {
+                    break;
+                }
                 lo = std::min(lo, buckets_[bi].lb[r]);
                 hi = std::max(hi, buckets_[bi].ub[r]);
                 for_each_completion_edge(bi, dir, [&](int to, double cost, const double* res) {
@@ -2807,6 +2811,8 @@ private:
                 best_lambda = lambda;
                 best_dmax = dmax;
                 best_term = term;
+                best_lo = lo;
+                best_hi = hi;
             }
         }
         if (best_r < 0) {
@@ -2814,12 +2820,8 @@ private:
         }
 
         const int terminal = fw ? pv_.sink : pv_.source;
-        double hi = NEG_INF;
-        double lo = INF;
         for (int bi : scc_bs) {
             completion[bi] = (buckets_[bi].vertex == terminal) ? 0.0 : INF;
-            lo = std::min(lo, buckets_[bi].lb[best_r]);
-            hi = std::max(hi, buckets_[bi].ub[best_r]);
         }
         const int max_iters = static_cast<int>(scc_bs.size()) + 1;
         bool changed = true;
@@ -2847,7 +2849,7 @@ private:
         for (int bi : scc_bs) {
             if (completion[bi] < INF) {
                 const double span =
-                    fw ? hi - buckets_[bi].lb[best_r] : buckets_[bi].ub[best_r] - lo;
+                    fw ? best_hi - buckets_[bi].lb[best_r] : buckets_[bi].ub[best_r] - best_lo;
                 completion[bi] += best_lambda * (span + best_dmax);
             }
         }
@@ -2908,7 +2910,7 @@ private:
                     break;
                 }
                 if (has_cycle && iter == max_iters - 1 &&
-                    !lap_bounded_completion(scc, dir, completion)) {
+                    !lap_bounded_completion(scc, scc_bs, dir, completion)) {
                     for (int bi : scc_bs) {
                         completion[bi] = NEG_INF;
                     }
