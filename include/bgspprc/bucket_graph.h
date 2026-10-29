@@ -246,11 +246,12 @@ public:
     /// label of create_initial_label, without the grid. Main-resource windows,
     /// then each resource's extend_along_arc and extend_to_vertex, under the
     /// current reduced costs and resource states. Nullopt when the walk is
-    /// infeasible, does not run from source to sink, or uses an arc id out of
+    /// infeasible, does not run from source to sink, leaves a depot that is
+    /// only the empty path (depot_is_empty_path), or uses an arc id out of
     /// range or with an INF reduced cost. Arc elimination and bucket fixing
     /// are pricing state, not feasibility, and are not consulted.
     [[nodiscard]] std::optional<WalkCost> cost_of(std::span<const int> arcs) const {
-        if (arcs.empty() && pv_.source != pv_.sink) {
+        if (arcs.empty() ? pv_.source != pv_.sink : depot_is_empty_path()) {
             return std::nullopt;
         }
         int v = pv_.source;
@@ -751,6 +752,11 @@ private:
 
     // ── SoA label storage ──
 
+    /// source == sink outside symmetric mode: the only path is the empty one,
+    /// with no arcs (#110). A depot tour is modelled by splitting the depot
+    /// into a source and a sink copy. Symmetric mode keeps its depot tours.
+    bool depot_is_empty_path() const { return pv_.source == pv_.sink && !opts_.symmetric; }
+
     static constexpr bool has_ng_ = detail::NgResourceIndex<Pack>::has_ng;
     static constexpr std::size_t ng_idx_ = detail::NgResourceIndex<Pack>::value;
     static constexpr bool has_r1c_ = detail::R1CResourceIndex<Pack>::has_r1c;
@@ -932,6 +938,11 @@ private:
             ba_vec.clear();
             auto& ja_vec = (dir == Direction::Forward) ? b.jump_arcs : b.bw_jump_arcs;
             ja_vec.clear();
+            // No label leaves a depot that is only the empty path, in either
+            // direction; with no bucket arc it gets no jump arc either.
+            if (depot_is_empty_path() && v == pv_.source) {
+                return;
+            }
 
             // Count feasible arcs for this bucket, then reserve and fill.
             int count = 0;
@@ -4015,10 +4026,13 @@ private:
                 int i = pv_.arc_from[a];
                 int j = pv_.arc_to[a];
                 // fw labels at the sink are finished paths, and no path enters
-                // the source. With source == sink the depot holds both start
-                // labels and finished tours; the guards below join only labels
-                // whose whole chain stayed at the depot.
-                if ((i == pv_.sink && i != pv_.source) || (j == pv_.source && j != pv_.sink)) {
+                // the source. With source == sink outside symmetric mode no
+                // path leaves the depot (depot_is_empty_path). In symmetric
+                // mode the depot holds both start labels and finished tours;
+                // the guards below join only labels whose whole chain stayed
+                // at the depot.
+                if ((i == pv_.sink && i != pv_.source) || (j == pv_.source && j != pv_.sink) ||
+                    (depot_is_empty_path() && (i == pv_.source || j == pv_.sink))) {
                     continue;
                 }
                 const bool from_source = i == pv_.source;

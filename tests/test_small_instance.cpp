@@ -411,12 +411,14 @@ static auto solve_mono_bidir(const ProblemView& pv) {
     return std::pair{solve(false), solve(true)};
 }
 
-TEST_CASE("Bidirectional: finds a depot tour whose first arc crosses the midpoint") {
-    // source == sink == 0: 0 → 1 → 0, first arc past the midpoint 5.
+TEST_CASE("source == sink is the empty path in mono and bidirectional (#110)") {
+    // A depot with one tour 0 → 1 → 0 of cost -4, repeatable while time
+    // lasts. Outside symmetric mode no path leaves the depot: no tour, and
+    // no multi-trip tour, only the empty path of cost 0.
     int from[] = {0, 1};
     int to[] = {1, 0};
     double cost[] = {-5.0, 1.0};
-    double time_d[] = {6.0, 1.0};
+    double time_d[] = {1.0, 1.0};
     double tw_lb[] = {0.0, 0.0};
     double tw_ub[] = {10.0, 10.0};
     const double* arc_res[] = {time_d};
@@ -437,10 +439,67 @@ TEST_CASE("Bidirectional: finds a depot tour whose first arc crosses the midpoin
     pv.vertex_ub = v_ub;
     pv.n_main_resources = 1;
 
+    // Default theta < 0: the empty path is not improving, so nothing.
+    auto [mono, bidir] = solve_mono_bidir<SequentialExecutor>(pv);
+    CHECK(mono.empty());
+    CHECK(bidir.empty());
+    auto [par_mono, par_bidir] = solve_mono_bidir<StdThreadExecutor>(pv);
+    CHECK(par_mono.empty());
+    CHECK(par_bidir.empty());
+
+    // theta > 0 admits the empty path, and it is the only one.
+    for (bool bidir_mode : {false, true}) {
+        CAPTURE(bidir_mode);
+        Solver<EmptyPack> s(pv, EmptyPack{}, {.bidirectional = bidir_mode, .theta = 1.0});
+        s.set_stage(Stage::Exact);
+        s.build();
+        auto paths = s.solve();
+        REQUIRE(paths.size() == 1);
+        CHECK(paths[0].reduced_cost == doctest::Approx(0.0));
+        CHECK(paths[0].arcs.empty());
+        CHECK(paths[0].vertices == std::vector<int>{0});
+
+        // cost_of agrees: the empty walk is the path, a tour is not one.
+        auto empty = s.cost_of(std::vector<int>{});
+        REQUIRE(empty.has_value());
+        const auto w =
+            empty.value_or(Solver<EmptyPack>::WalkCost{.reduced_cost = INF, .original_cost = INF});
+        CHECK(w.reduced_cost == doctest::Approx(0.0));
+        CHECK_FALSE(s.cost_of(std::vector<int>{0, 1}).has_value());
+    }
+}
+
+TEST_CASE("Bidirectional: finds a split-depot tour whose first arc crosses the midpoint") {
+    // The depot split into source 0 and sink copy 2: 0 → 1 → 2, first arc
+    // past the midpoint 5.
+    int from[] = {0, 1};
+    int to[] = {1, 2};
+    double cost[] = {-5.0, 1.0};
+    double time_d[] = {6.0, 1.0};
+    double tw_lb[] = {0.0, 0.0, 0.0};
+    double tw_ub[] = {10.0, 10.0, 10.0};
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 3;
+    pv.source = 0;
+    pv.sink = 2;
+    pv.n_arcs = 2;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
     auto check = [](const auto& paths) {
         REQUIRE(paths.size() == 1);
         CHECK(paths[0].reduced_cost == doctest::Approx(-4.0));
-        CHECK(paths[0].vertices == std::vector<int>{0, 1, 0});
+        CHECK(paths[0].vertices == std::vector<int>{0, 1, 2});
     };
     auto [mono, bidir] = solve_mono_bidir<SequentialExecutor>(pv);
     check(mono);

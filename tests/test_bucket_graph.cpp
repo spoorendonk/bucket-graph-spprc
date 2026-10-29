@@ -1756,6 +1756,45 @@ struct LargerSymmetricGraph {
     }
 };
 
+// A one-resource depot graph with its depot split into source 0 and a sink
+// copy n, which takes the arcs into the depot and the depot's window. Outside
+// symmetric mode source == sink is only the empty path (#110), so mono and
+// bidir find the depot tours here.
+struct SplitDepot {
+    std::vector<int> to;
+    std::vector<double> lb;
+    std::vector<double> ub;
+    const double* v_lb[1];
+    const double* v_ub[1];
+    ProblemView pv;
+
+    explicit SplitDepot(const ProblemView& depot)
+        : to(depot.arc_to, depot.arc_to + depot.n_arcs),
+          lb(depot.vertex_lb[0], depot.vertex_lb[0] + depot.n_vertices),
+          ub(depot.vertex_ub[0], depot.vertex_ub[0] + depot.n_vertices),
+          pv(depot) {
+        REQUIRE(depot.source == depot.sink);
+        REQUIRE(depot.n_resources == 1);
+        const int n = depot.n_vertices;
+        for (int& v : to) {
+            if (v == depot.source) {
+                v = n;
+            }
+        }
+        lb.push_back(lb[depot.source]);
+        ub.push_back(ub[depot.source]);
+        v_lb[0] = lb.data();
+        v_ub[0] = ub.data();
+        pv.n_vertices = n + 1;
+        pv.sink = n;
+        pv.arc_to = to.data();
+        pv.vertex_lb = v_lb;
+        pv.vertex_ub = v_ub;
+    }
+    SplitDepot(const SplitDepot&) = delete;
+    SplitDepot& operator=(const SplitDepot&) = delete;
+};
+
 // Every path runs from the source to the sink along contiguous arcs, and its
 // costs are the sums over its arcs of `red` and of the base costs.
 template <typename Paths>
@@ -1780,12 +1819,12 @@ void check_paths_against_arcs(const Paths& paths, const ProblemView& pv, const d
 }
 
 // Solve under `first`, save every label and solve again, under `first` and
-// under `second`; mono, bidir and, when source == sink, symmetric.
+// under `second`; mono and bidir, or symmetric only when source == sink.
 template <typename Exec>
 void check_warm_restart(const ProblemView& pv, const double* first, const double* second,
                         double theta) {
-    const int n_modes = pv.source == pv.sink ? 3 : 2;
-    for (int mode = 0; mode < n_modes; ++mode) {
+    const bool depot = pv.source == pv.sink;
+    for (int mode = depot ? 2 : 0; mode < (depot ? 3 : 2); ++mode) {
         for (const double* duals : {first, second}) {
             CAPTURE(mode);
             CAPTURE(duals == second);
@@ -1855,64 +1894,75 @@ TEST_CASE("Warm starting: paths run from the source under the current duals") {
 }
 
 TEST_CASE("Warm starting: depot tours run from the depot under the current duals") {
-    // source == sink, so a saved tour back at the depot must not be taken
-    // for the depot start label. Duals make the tours negative: the depot
-    // start label dominates a tour that costs more.
+    // Symmetric on the depot, where source == sink, so a saved tour back at
+    // the depot must not be taken for the depot start label; mono and bidir
+    // on the split depot. Duals make the tours negative: the depot start
+    // label dominates a tour that costs more.
     SymmetricGraph g;
+    SplitDepot split(g.pv);
     double red1[12];
     double red2[12];
     for (int a = 0; a < 12; ++a) {
         red1[a] = g.cost[a] - 3.0;
         red2[a] = g.cost[a] - 4.0;
     }
-    check_warm_restart<SequentialExecutor>(g.pv, red1, red2, -1e-6);
-    check_warm_restart<StdThreadExecutor>(g.pv, red1, red2, -1e-6);
+    for (const ProblemView* pv : {&g.pv, &split.pv}) {
+        check_warm_restart<SequentialExecutor>(*pv, red1, red2, -1e-6);
+        check_warm_restart<StdThreadExecutor>(*pv, red1, red2, -1e-6);
+    }
 
     LargerSymmetricGraph lg;
+    SplitDepot lsplit(lg.pv);
     double lred1[16];
     double lred2[16];
     for (int a = 0; a < 16; ++a) {
         lred1[a] = lg.cost[a] - 4.0;
         lred2[a] = lg.cost[a] - 5.0;
     }
-    check_warm_restart<SequentialExecutor>(lg.pv, lred1, lred2, -1e-6);
-    check_warm_restart<StdThreadExecutor>(lg.pv, lred1, lred2, -1e-6);
+    for (const ProblemView* pv : {&lg.pv, &lsplit.pv}) {
+        check_warm_restart<SequentialExecutor>(*pv, lred1, lred2, -1e-6);
+        check_warm_restart<StdThreadExecutor>(*pv, lred1, lred2, -1e-6);
+    }
+}
+
+// Symmetric on a depot graph against bidir on its split depot (#110), under
+// duals `red` that make the tours negative, so the best path is a tour.
+static void check_symmetric_matches_bidir(const ProblemView& depot, const double* red) {
+    SplitDepot split(depot);
+    BucketGraph<EmptyPack> bidir(split.pv, EmptyPack{},
+                                 {.bucket_steps = {5.0, 1.0}, .theta = 1e9, .bidirectional = true});
+    bidir.build();
+    bidir.update_arc_costs(red);
+    auto bidir_paths = bidir.solve();
+
+    BucketGraph<EmptyPack> sym(depot, EmptyPack{},
+                               {.bucket_steps = {5.0, 1.0}, .theta = 1e9, .symmetric = true});
+    sym.build();
+    sym.update_arc_costs(red);
+    auto sym_paths = sym.solve();
+
+    REQUIRE(!bidir_paths.empty());
+    REQUIRE(!sym_paths.empty());
+    CHECK(bidir_paths[0].reduced_cost < 0.0);
+    CHECK(sym_paths[0].reduced_cost == doctest::Approx(bidir_paths[0].reduced_cost));
 }
 
 TEST_CASE("Symmetric: matches bidir on small graph") {
     SymmetricGraph g;
-
-    BucketGraph<EmptyPack> bidir(g.pv, EmptyPack{},
-                                 {.bucket_steps = {5.0, 1.0}, .theta = 1e9, .bidirectional = true});
-    bidir.build();
-    auto bidir_paths = bidir.solve();
-
-    BucketGraph<EmptyPack> sym(g.pv, EmptyPack{},
-                               {.bucket_steps = {5.0, 1.0}, .theta = 1e9, .symmetric = true});
-    sym.build();
-    auto sym_paths = sym.solve();
-
-    REQUIRE(!bidir_paths.empty());
-    REQUIRE(!sym_paths.empty());
-    CHECK(sym_paths[0].reduced_cost == doctest::Approx(bidir_paths[0].reduced_cost));
+    double red[12];
+    for (int a = 0; a < 12; ++a) {
+        red[a] = g.cost[a] - 3.0;
+    }
+    check_symmetric_matches_bidir(g.pv, red);
 }
 
 TEST_CASE("Symmetric: matches bidir on larger graph") {
     LargerSymmetricGraph g;
-
-    BucketGraph<EmptyPack> bidir(g.pv, EmptyPack{},
-                                 {.bucket_steps = {5.0, 1.0}, .theta = 1e9, .bidirectional = true});
-    bidir.build();
-    auto bidir_paths = bidir.solve();
-
-    BucketGraph<EmptyPack> sym(g.pv, EmptyPack{},
-                               {.bucket_steps = {5.0, 1.0}, .theta = 1e9, .symmetric = true});
-    sym.build();
-    auto sym_paths = sym.solve();
-
-    REQUIRE(!bidir_paths.empty());
-    REQUIRE(!sym_paths.empty());
-    CHECK(sym_paths[0].reduced_cost == doctest::Approx(bidir_paths[0].reduced_cost));
+    double red[16];
+    for (int a = 0; a < 16; ++a) {
+        red[a] = g.cost[a] - 4.0;
+    }
+    check_symmetric_matches_bidir(g.pv, red);
 }
 
 // Paths with distinct arc sequences: each path is returned once (#109).
@@ -1929,19 +1979,27 @@ static bool each_path_once(const Paths& paths) {
 
 TEST_CASE("Symmetric: depot tours come back once, bidir and symmetric") {
     // Tours of up to ten arcs cross the midpoint 5 anywhere, including on
-    // the arc into the depot.
-    auto check = [](const ProblemView& pv) {
-        BucketGraph<EmptyPack> mono(pv, EmptyPack{}, {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
+    // the arc into the depot. Bidir on the split depot, symmetric on the
+    // depot (#110), both against mono on the split depot; duals make the
+    // tours negative, so the best path is a tour, not the empty depot path.
+    auto check = [](const ProblemView& depot, const double* red) {
+        SplitDepot split(depot);
+        BucketGraph<EmptyPack> mono(split.pv, EmptyPack{},
+                                    {.bucket_steps = {5.0, 1.0}, .theta = 1e9});
         mono.build();
+        mono.update_arc_costs(red);
         auto mono_paths = mono.solve();
+        REQUIRE(!mono_paths.empty());
+        CHECK(mono_paths[0].reduced_cost < 0.0);
         for (bool sym : {false, true}) {
             CAPTURE(sym);
-            BucketGraph<EmptyPack> bg(pv, EmptyPack{},
+            BucketGraph<EmptyPack> bg(sym ? depot : split.pv, EmptyPack{},
                                       {.bucket_steps = {5.0, 1.0},
                                        .theta = 1e9,
                                        .bidirectional = !sym,
                                        .symmetric = sym});
             bg.build();
+            bg.update_arc_costs(red);
             auto paths = bg.solve();
             REQUIRE(!paths.empty());
             CHECK(each_path_once(paths));
@@ -1949,9 +2007,17 @@ TEST_CASE("Symmetric: depot tours come back once, bidir and symmetric") {
         }
     };
     SymmetricGraph g;
-    check(g.pv);
+    double red[12];
+    for (int a = 0; a < 12; ++a) {
+        red[a] = g.cost[a] - 3.0;
+    }
+    check(g.pv, red);
     LargerSymmetricGraph lg;
-    check(lg.pv);
+    double lred[16];
+    for (int a = 0; a < 16; ++a) {
+        lred[a] = lg.cost[a] - 4.0;
+    }
+    check(lg.pv, lred);
 }
 
 TEST_CASE("Warm starting: labels are injected, and not when enumerating") {
@@ -2084,8 +2150,15 @@ TEST_CASE("Symmetric: with reduced costs") {
     // Symmetric reduced costs (same for arc and its reverse)
     double red_cost[16] = {-10.0, 3.0, 4.0, 6.0, 2.0, 3.0, 4.0, 1.0,
                            -10.0, 3.0, 4.0, 6.0, 2.0, 3.0, 4.0, 1.0};
+    // Windows of 3 fit one tour 0-1-0 and no second lap: symmetric mode
+    // still extends labels out of the depot after a return, which the split
+    // depot does not.
+    for (double& ub : g.tw_ub) {
+        ub = 3.0;
+    }
 
-    BucketGraph<EmptyPack> bidir(g.pv, EmptyPack{},
+    SplitDepot split(g.pv);  // bidir needs the depot split (#110)
+    BucketGraph<EmptyPack> bidir(split.pv, EmptyPack{},
                                  {.bucket_steps = {5.0, 1.0}, .theta = 0.0, .bidirectional = true});
     bidir.build();
     bidir.update_arc_costs(red_cost);
@@ -2105,19 +2178,28 @@ TEST_CASE("Symmetric: with reduced costs") {
 TEST_CASE("Symmetric: fine bucket steps exercise mirror_bucket") {
     LargerSymmetricGraph g;
 
-    // step=1 → 10 buckets per vertex (window [0,10]), exercises mirror indexing
-    BucketGraph<EmptyPack> bidir(g.pv, EmptyPack{},
+    // step=1 → 10 buckets per vertex (window [0,10]), exercises mirror indexing.
+    // Bidir on the split depot (#110); duals make the best path a tour.
+    double red[16];
+    for (int a = 0; a < 16; ++a) {
+        red[a] = g.cost[a] - 4.0;
+    }
+    SplitDepot split(g.pv);
+    BucketGraph<EmptyPack> bidir(split.pv, EmptyPack{},
                                  {.bucket_steps = {1.0, 1.0}, .theta = 1e9, .bidirectional = true});
     bidir.build();
+    bidir.update_arc_costs(red);
     auto bidir_paths = bidir.solve();
 
     BucketGraph<EmptyPack> sym(g.pv, EmptyPack{},
                                {.bucket_steps = {1.0, 1.0}, .theta = 1e9, .symmetric = true});
     sym.build();
+    sym.update_arc_costs(red);
     auto sym_paths = sym.solve();
 
     REQUIRE(!bidir_paths.empty());
     REQUIRE(!sym_paths.empty());
+    CHECK(bidir_paths[0].reduced_cost < 0.0);
     CHECK(sym_paths[0].reduced_cost == doctest::Approx(bidir_paths[0].reduced_cost));
 
     // Verify path validity with fine steps
