@@ -527,8 +527,8 @@ TEST_CASE("a path ends at the sink in mono and bidirectional (#124)") {
 }
 
 // The best path, mono and bidirectional under both executors, on one main
-// resource with windows [0, 10]; no path returned passes the sink before
-// its end.
+// resource with windows [0, 10]; no path returned comes back to the source
+// or passes the sink before its end.
 static void check_best_path(int n_vertices, int source, int sink, std::vector<int> from,
                             std::vector<int> to, std::vector<double> cost,
                             std::vector<double> time_d, double best_cost,
@@ -560,6 +560,7 @@ static void check_best_path(int n_vertices, int source, int sink, std::vector<in
         CHECK(best->reduced_cost == doctest::Approx(best_cost));
         CHECK(best->arcs == best_arcs);
         for (const auto& p : paths) {
+            CHECK(std::ranges::count(p.vertices, source) == 1);
             CHECK(std::ranges::count(p.vertices, sink) == 1);
             CHECK(p.vertices.back() == sink);
         }
@@ -579,11 +580,50 @@ TEST_CASE("bidirectional labels do not walk back through the sink (#124)") {
                     {6.0, 0.5, 0.5, 0.5, 0.5}, -1.0, {0, 1, 2});
 }
 
-TEST_CASE("a path may come back to the source in mono and bidirectional (#124)") {
-    // Source 0, sink 2: 0 → 3 → 1 → 0 → 2 at -4, first arc past the
-    // midpoint, so bidir finds it only by labelling bw through the source.
+TEST_CASE("a path leaves the source once in mono and bidirectional (#125)") {
+    // Source 0, sink 2: the walk 0 → 3 → 1 → 0 → 2 costs -4, but a path
+    // leaves the source once, so the best is 0 → 2 at -1. The arc 1 → 0
+    // crosses the midpoint 5.
     check_best_path(4, 0, 2, {0, 3, 1, 0}, {3, 1, 0, 2}, {-1.0, -1.0, -1.0, -1.0},
-                    {6.0, 1.0, 1.0, 1.0}, -4.0, {0, 1, 2, 3});
+                    {1.0, 1.0, 4.0, 1.0}, -1.0, {3});
+    // Source 0, sink 2: 0 → 3 → 0 → 2 costs -3; the fw label at 3 is past
+    // the midpoint and would be joined across 3 → 0.
+    check_best_path(4, 0, 2, {0, 3, 0}, {3, 0, 2}, {-1.0, -1.0, -1.0}, {6.0, 1.0, 1.0}, -1.0, {2});
+
+    // cost_of agrees: the path is one, the walk back through the source is
+    // not.
+    int from[] = {0, 3, 1, 0};
+    int to[] = {3, 1, 0, 2};
+    double cost[] = {-1.0, -1.0, -1.0, -1.0};
+    double time_d[] = {1.0, 1.0, 4.0, 1.0};
+    double tw_lb[] = {0.0, 0.0, 0.0, 0.0};
+    double tw_ub[] = {10.0, 10.0, 10.0, 10.0};
+    const double* arc_res[] = {time_d};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    ProblemView pv;
+    pv.n_vertices = 4;
+    pv.source = 0;
+    pv.sink = 2;
+    pv.n_arcs = 4;
+    pv.arc_from = from;
+    pv.arc_to = to;
+    pv.arc_base_cost = cost;
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    Solver<EmptyPack> s(pv, EmptyPack{});
+    s.build();
+    auto path = s.cost_of(std::vector<int>{3});
+    REQUIRE(path.has_value());
+    const auto w =
+        path.value_or(Solver<EmptyPack>::WalkCost{.reduced_cost = INF, .original_cost = INF});
+    CHECK(w.reduced_cost == doctest::Approx(-1.0));
+    CHECK_FALSE(s.cost_of(std::vector<int>{0, 1, 2, 3}).has_value());
 }
 
 TEST_CASE("Bidirectional: finds a split-depot tour whose first arc crosses the midpoint") {

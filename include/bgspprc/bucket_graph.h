@@ -246,9 +246,10 @@ public:
     /// label of create_initial_label, without the grid. Main-resource windows,
     /// then each resource's extend_along_arc and extend_to_vertex, under the
     /// current reduced costs and resource states. Nullopt when the walk is
-    /// infeasible, does not run from source to sink, leaves the sink outside
-    /// symmetric mode (a path ends there, and a depot that is the sink too is
-    /// only the empty path), comes back to a symmetric depot before its last
+    /// infeasible, does not run from source to sink, leaves the sink or comes
+    /// back to the source outside symmetric mode (a path ends at the sink and
+    /// leaves the source once, and a depot that is both is only the empty
+    /// path), comes back to a symmetric depot before its last
     /// arc (a depot tour is single), or uses an arc id out of
     /// range or with an INF reduced cost. Arc elimination and bucket fixing
     /// are pricing state, not feasibility, and are not consulted.
@@ -274,10 +275,12 @@ public:
         double real_cost = 0.0;
         bool left = false;  // the walk has been off the source, as in never_left
         for (int a : arcs) {
-            // A path ends where it first reaches the sink (#124), a symmetric
-            // depot tour where it first comes back (#123).
+            // A path ends where it first reaches the sink (#124) and never
+            // comes back to the source (#125), a symmetric depot tour ends
+            // where it first comes back (#123).
             if (a < 0 || a >= pv_.n_arcs || pv_.arc_from[a] != v ||
-                (v == pv_.sink && (!opts_.symmetric || (left && pv_.source == pv_.sink)))) {
+                (v == pv_.sink && (!opts_.symmetric || (left && pv_.source == pv_.sink))) ||
+                (!opts_.symmetric && pv_.arc_to[a] == pv_.source)) {
                 return std::nullopt;
             }
             const double arc_cost = reduced_costs_ ? reduced_costs_[a] : pv_.arc_base_cost[a];
@@ -950,17 +953,19 @@ private:
             if (depot_is_empty_path() && v == pv_.source) {
                 return;
             }
-            // An s-t path ends where it first reaches the sink (#124):
-            // outside symmetric mode no label, forward or backward, takes an
-            // arc out of the sink. Symmetric mode keeps its depot tours (#123).
-            const auto leaves_sink = [&](int a) {
-                return !opts_.symmetric && pv_.arc_from[a] == pv_.sink;
+            // An s-t path ends where it first reaches the sink (#124) and
+            // leaves the source once (#125): outside symmetric mode no label,
+            // forward or backward, takes an arc out of the sink or into the
+            // source. Symmetric mode keeps its depot tours (#123).
+            const auto off_path = [&](int a) {
+                return !opts_.symmetric &&
+                       (pv_.arc_from[a] == pv_.sink || pv_.arc_to[a] == pv_.source);
             };
 
             // Count feasible arcs for this bucket, then reserve and fill.
             int count = 0;
             for (int a : arcs_by_vertex[v]) {
-                if (leaves_sink(a)) {
+                if (off_path(a)) {
                     continue;
                 }
                 int other_v = (dir == Direction::Forward) ? pv_.arc_to[a] : pv_.arc_from[a];
@@ -991,7 +996,7 @@ private:
 
             // Fill: same iteration, now constructing BucketArcs.
             for (int a : arcs_by_vertex[v]) {
-                if (leaves_sink(a)) {
+                if (off_path(a)) {
                     continue;
                 }
                 int other_v = (dir == Direction::Forward) ? pv_.arc_to[a] : pv_.arc_from[a];
@@ -4066,7 +4071,7 @@ private:
             for (int a = c_begin; a < c_end; ++a) {
                 int i = pv_.arc_from[a];
                 int j = pv_.arc_to[a];
-                // No path leaves the sink or enters the source (#124; with
+                // No path leaves the sink or enters the source (#124, #125; with
                 // source == sink outside symmetric mode, depot_is_empty_path).
                 // A symmetric depot holds both start labels and finished
                 // tours; the guards below join only labels whose whole chain
