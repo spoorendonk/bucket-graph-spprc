@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <doctest/doctest.h>
 #include <numbers>
+#include <set>
 #include <type_traits>
 #include <vector>
 #ifndef _WIN32
@@ -2213,6 +2214,64 @@ TEST_CASE("Symmetric: a saved depot tour does not replace the depot start label"
     REQUIRE(!paths.empty());
     CHECK(paths[0].reduced_cost == doctest::Approx(-20.0));
     CHECK(paths[0].vertices == std::vector<int>{0, 2, 0});
+}
+
+TEST_CASE("Symmetric: a depot tour does not dominate the depot start label") {
+    // 0-1-0 takes no time, so the tour back at the depot is no later than the
+    // start label and cheaper. Were it to dominate the start label, the join
+    // would lose its bw partner for every arc into the depot, and with it
+    // 0-2-4-0 (#123). Bidir on the split depot finds that path.
+    LargerSymmetricGraph g;
+    g.time_d[0] = g.time_d[8] = 0.0;   // 0 <-> 1
+    g.time_d[1] = g.time_d[9] = 2.0;   // 0 <-> 2
+    g.time_d[6] = g.time_d[14] = 4.0;  // 2 <-> 4
+    double red[16];
+    for (int a = 0; a < 16; ++a) {
+        red[a] = g.cost[a];
+    }
+    red[0] = red[8] = -10.0;
+    red[1] = red[9] = red[6] = red[14] = -15.0;
+
+    SplitDepot split(g.pv);
+    BucketGraph<EmptyPack> bidir(split.pv, EmptyPack{},
+                                 {.bucket_steps = {5.0, 1.0}, .bidirectional = true});
+    bidir.build();
+    bidir.update_arc_costs(red);
+    auto bidir_paths = bidir.solve();
+
+    REQUIRE(!bidir_paths.empty());
+    CHECK(bidir_paths[0].reduced_cost < -20.0 - 1e-6);
+
+    BucketGraph<EmptyPack> sym(g.pv, EmptyPack{}, {.bucket_steps = {5.0, 1.0}, .symmetric = true});
+    sym.build();
+    sym.update_arc_costs(red);
+    auto sym_paths = sym.solve();
+    REQUIRE(!sym_paths.empty());
+    CHECK(sym_paths[0].reduced_cost == doctest::Approx(bidir_paths[0].reduced_cost));
+    // Every path bidir finds is found in one of its directions, among them
+    // 0-2-4-0 and 0-1-2-4-3-0, which only the join into the depot finds.
+    std::set<std::vector<int>> sym_tours;
+    for (const auto& p : sym_paths) {
+        sym_tours.insert(p.vertices);
+    }
+    for (const auto& p : bidir_paths) {
+        auto tour = p.vertices;
+        tour.back() = 0;  // the sink copy is the depot
+        auto reversed = std::vector<int>(tour.rbegin(), tour.rend());
+        CAPTURE(p.reduced_cost);
+        CHECK((sym_tours.contains(tour) || sym_tours.contains(reversed)));
+    }
+
+    // Heuristic1 keeps one label per bucket, but never a tour in place of the
+    // start label: it still finds a path that beats 0-1-0.
+    BucketGraph<EmptyPack> heur(
+        g.pv, EmptyPack{},
+        {.bucket_steps = {5.0, 1.0}, .symmetric = true, .stage = Stage::Heuristic1});
+    heur.build();
+    heur.update_arc_costs(red);
+    auto heur_paths = heur.solve();
+    REQUIRE(!heur_paths.empty());
+    CHECK(heur_paths[0].reduced_cost < -20.0 - 1e-6);
 }
 
 TEST_CASE("Symmetric: fine bucket steps exercise mirror_bucket") {

@@ -1426,8 +1426,19 @@ private:
 
     // ── Dominance (direction-aware) ──
 
+    /// L is at the depot of a graph whose source is its sink (symmetric
+    /// mode, #110). There the start label and a tour back at the depot never
+    /// dominate each other (#123): the start label is the join's bw partner
+    /// for every arc into the depot, and a tour is a finished path.
+    bool at_shared_depot(const Label<Pack>* L) const {
+        return pv_.source == pv_.sink && L->vertex == pv_.source;
+    }
+
     bool dominates(const Label<Pack>* L1, const Label<Pack>* L2, Direction dir) const {
         if (L1->vertex != L2->vertex) {
+            return false;
+        }
+        if (at_shared_depot(L1) && never_left(L1, pv_.source) != never_left(L2, pv_.source)) {
             return false;
         }
 
@@ -1900,8 +1911,10 @@ private:
             return true;
         }
 
-        // BG2021 §5 Stage 1: keep only the cheapest label per bucket.
-        if (opts_.stage == Stage::Heuristic1) {
+        // BG2021 §5 Stage 1: keep only the cheapest label per bucket. A
+        // shared depot's buckets take the dominance path instead, which
+        // keeps a tour from replacing the start label (#123).
+        if (opts_.stage == Stage::Heuristic1 && !at_shared_depot(new_label)) {
             auto& bucket = bl.labels[actual_bi];
             if (bucket.empty()) {
                 insert_sorted(bl, actual_bi, new_label);
