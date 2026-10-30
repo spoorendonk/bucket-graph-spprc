@@ -526,6 +526,66 @@ TEST_CASE("a path ends at the sink in mono and bidirectional (#124)") {
     }
 }
 
+// The best path, mono and bidirectional under both executors, on one main
+// resource with windows [0, 10]; no path returned passes the sink before
+// its end.
+static void check_best_path(int n_vertices, int source, int sink, std::vector<int> from,
+                            std::vector<int> to, std::vector<double> cost,
+                            std::vector<double> time_d, double best_cost,
+                            const std::vector<int>& best_arcs) {
+    std::vector<double> tw_lb(n_vertices, 0.0);
+    std::vector<double> tw_ub(n_vertices, 10.0);
+    const double* arc_res[] = {time_d.data()};
+    const double* v_lb[] = {tw_lb.data()};
+    const double* v_ub[] = {tw_ub.data()};
+
+    ProblemView pv;
+    pv.n_vertices = n_vertices;
+    pv.source = source;
+    pv.sink = sink;
+    pv.n_arcs = static_cast<int>(from.size());
+    pv.arc_from = from.data();
+    pv.arc_to = to.data();
+    pv.arc_base_cost = cost.data();
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    auto check = [&](const auto& paths) {
+        REQUIRE_FALSE(paths.empty());
+        const auto best =
+            std::ranges::min_element(paths, {}, [](const auto& p) { return p.reduced_cost; });
+        CHECK(best->reduced_cost == doctest::Approx(best_cost));
+        CHECK(best->arcs == best_arcs);
+        for (const auto& p : paths) {
+            CHECK(std::ranges::count(p.vertices, sink) == 1);
+            CHECK(p.vertices.back() == sink);
+        }
+    };
+    auto [mono, bidir] = solve_mono_bidir<SequentialExecutor>(pv);
+    check(mono);
+    check(bidir);
+    auto [par_mono, par_bidir] = solve_mono_bidir<StdThreadExecutor>(pv);
+    check(par_mono);
+    check(par_bidir);
+}
+
+TEST_CASE("bidirectional labels do not walk back through the sink (#124)") {
+    // Source 0, sink 3. A bw label could go 3 → 1 → 3 at -10 and on to 4,
+    // and join the fw label at 5, past the midpoint, across 5 → 4.
+    check_best_path(6, 0, 3, {0, 5, 4, 3, 1}, {5, 4, 3, 1, 3}, {-1.0, 0.0, 0.0, -10.0, 0.0},
+                    {6.0, 0.5, 0.5, 0.5, 0.5}, -1.0, {0, 1, 2});
+}
+
+TEST_CASE("a path may come back to the source in mono and bidirectional (#124)") {
+    // Source 0, sink 2: 0 → 3 → 1 → 0 → 2 at -4, first arc past the
+    // midpoint, so bidir finds it only by labelling bw through the source.
+    check_best_path(4, 0, 2, {0, 3, 1, 0}, {3, 1, 0, 2}, {-1.0, -1.0, -1.0, -1.0},
+                    {6.0, 1.0, 1.0, 1.0}, -4.0, {0, 1, 2, 3});
+}
+
 TEST_CASE("Bidirectional: finds a split-depot tour whose first arc crosses the midpoint") {
     // The depot split into source 0 and sink copy 2: 0 → 1 → 2, first arc
     // past the midpoint 5.

@@ -945,18 +945,24 @@ private:
             ba_vec.clear();
             auto& ja_vec = (dir == Direction::Forward) ? b.jump_arcs : b.bw_jump_arcs;
             ja_vec.clear();
-            // An s-t path ends where it first reaches its terminal: outside
-            // symmetric mode no forward label leaves the sink and no backward
-            // one the source (#124). That covers a depot that is only the
-            // empty path too (#110). With no bucket arc a bucket gets no jump
-            // arc either. Symmetric mode keeps its depot tours (#123).
-            if (!opts_.symmetric && v == (dir == Direction::Forward ? pv_.sink : pv_.source)) {
+            // No label leaves a depot that is only the empty path, in either
+            // direction; with no bucket arc it gets no jump arc either.
+            if (depot_is_empty_path() && v == pv_.source) {
                 return;
             }
+            // An s-t path ends where it first reaches the sink (#124):
+            // outside symmetric mode no label, forward or backward, takes an
+            // arc out of the sink. Symmetric mode keeps its depot tours (#123).
+            const auto leaves_sink = [&](int a) {
+                return !opts_.symmetric && pv_.arc_from[a] == pv_.sink;
+            };
 
             // Count feasible arcs for this bucket, then reserve and fill.
             int count = 0;
             for (int a : arcs_by_vertex[v]) {
+                if (leaves_sink(a)) {
+                    continue;
+                }
                 int other_v = (dir == Direction::Forward) ? pv_.arc_to[a] : pv_.arc_from[a];
                 bool feasible = true;
                 for (int r = 0; r < n_main_; ++r) {
@@ -985,6 +991,9 @@ private:
 
             // Fill: same iteration, now constructing BucketArcs.
             for (int a : arcs_by_vertex[v]) {
+                if (leaves_sink(a)) {
+                    continue;
+                }
                 int other_v = (dir == Direction::Forward) ? pv_.arc_to[a] : pv_.arc_from[a];
                 std::array<double, 2> q_target;
                 bool feasible = true;
