@@ -247,7 +247,8 @@ public:
     /// then each resource's extend_along_arc and extend_to_vertex, under the
     /// current reduced costs and resource states. Nullopt when the walk is
     /// infeasible, does not run from source to sink, leaves a depot that is
-    /// only the empty path (depot_is_empty_path), or uses an arc id out of
+    /// only the empty path (depot_is_empty_path), comes back to a depot
+    /// before its last arc (a depot tour is single), or uses an arc id out of
     /// range or with an INF reduced cost. Arc elimination and bucket fixing
     /// are pricing state, not feasibility, and are not consulted.
     [[nodiscard]] std::optional<WalkCost> cost_of(std::span<const int> arcs) const {
@@ -270,8 +271,11 @@ public:
             cost = vtx_cost;
         }
         double real_cost = 0.0;
-        for (int a : arcs) {
-            if (a < 0 || a >= pv_.n_arcs || pv_.arc_from[a] != v) {
+        for (std::size_t k = 0; k < arcs.size(); ++k) {
+            const int a = arcs[k];
+            // A depot tour ends where it first comes back (#123).
+            if (a < 0 || a >= pv_.n_arcs || pv_.arc_from[a] != v ||
+                (k > 0 && v == pv_.sink && pv_.source == pv_.sink)) {
                 return std::nullopt;
             }
             const double arc_cost = reduced_costs_ ? reduced_costs_[a] : pv_.arc_base_cost[a];
@@ -754,7 +758,7 @@ private:
 
     /// source == sink outside symmetric mode: the only path is the empty one,
     /// with no arcs (#110). A depot tour is modelled by splitting the depot
-    /// into a source and a sink copy. Symmetric mode keeps its depot tours.
+    /// into a source and a sink copy. Symmetric mode keeps single depot tours (#123).
     bool depot_is_empty_path() const { return pv_.source == pv_.sink && !opts_.symmetric; }
 
     static constexpr bool has_ng_ = detail::NgResourceIndex<Pack>::has_ng;
@@ -2433,6 +2437,15 @@ private:
                             label->extended = true;
                             continue;
                         }
+                    }
+
+                    // A depot tour is single (#123): a label back at the depot
+                    // is a finished path, not a start for another trip. Only
+                    // symmetric mode has bucket arcs out of a depot.
+                    if (pv_.source == pv_.sink && label->vertex == pv_.source &&
+                        !never_left(label, pv_.source)) {
+                        label->extended = true;
+                        continue;
                     }
 
                     // Exact completion bound pruning (§5): discard fw labels

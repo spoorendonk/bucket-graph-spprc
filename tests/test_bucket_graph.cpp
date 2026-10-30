@@ -2147,15 +2147,11 @@ TEST_CASE("Symmetric: label-based elimination falls back to bound-based") {
 
 TEST_CASE("Symmetric: with reduced costs") {
     LargerSymmetricGraph g;
-    // Symmetric reduced costs (same for arc and its reverse)
+    // Symmetric reduced costs (same for arc and its reverse). Only 0-1 is
+    // negative, so a second lap of 0-1-0 would pay; windows of 10 fit five.
+    // A depot tour is single (#123): the best is one lap, -20.
     double red_cost[16] = {-10.0, 3.0, 4.0, 6.0, 2.0, 3.0, 4.0, 1.0,
                            -10.0, 3.0, 4.0, 6.0, 2.0, 3.0, 4.0, 1.0};
-    // Windows of 3 fit one tour 0-1-0 and no second lap: symmetric mode
-    // still extends labels out of the depot after a return, which the split
-    // depot does not.
-    for (double& ub : g.tw_ub) {
-        ub = 3.0;
-    }
 
     SplitDepot split(g.pv);  // bidir needs the depot split (#110)
     BucketGraph<EmptyPack> bidir(split.pv, EmptyPack{},
@@ -2172,7 +2168,21 @@ TEST_CASE("Symmetric: with reduced costs") {
 
     REQUIRE(!bidir_paths.empty());
     REQUIRE(!sym_paths.empty());
+    CHECK(bidir_paths[0].reduced_cost == doctest::Approx(-20.0));
     CHECK(sym_paths[0].reduced_cost == doctest::Approx(bidir_paths[0].reduced_cost));
+    for (const auto& p : sym_paths) {
+        // The depot only at the two ends.
+        REQUIRE(p.vertices.size() >= 2);
+        CHECK(std::count(p.vertices.begin(), p.vertices.end(), 0) == 2);
+    }
+
+    // cost_of agrees: one lap 0-1-0 (arcs 0, 8) is a path, two are not.
+    auto lap = sym.cost_of(std::vector<int>{0, 8});
+    REQUIRE(lap.has_value());
+    const auto w =
+        lap.value_or(BucketGraph<EmptyPack>::WalkCost{.reduced_cost = INF, .original_cost = INF});
+    CHECK(w.reduced_cost == doctest::Approx(-20.0));
+    CHECK_FALSE(sym.cost_of(std::vector<int>{0, 8, 0, 8}).has_value());
 }
 
 TEST_CASE("Symmetric: fine bucket steps exercise mirror_bucket") {
