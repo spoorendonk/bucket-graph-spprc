@@ -2315,6 +2315,19 @@ TEST_CASE("Symmetric: fine bucket steps exercise mirror_bucket") {
     }
 }
 
+TEST_CASE("Symmetric: a source that is not the sink is refused") {
+    // Symmetric mode is the depot convention (#126): on a split depot the
+    // labels and the join would read the terminal rules of #124/#125 apart.
+    LargerSymmetricGraph g;
+    SplitDepot split(g.pv);
+    using Graph = BucketGraph<EmptyPack>;
+    CHECK_THROWS_AS(Graph(split.pv, EmptyPack{}, {.symmetric = true}), std::invalid_argument);
+    CHECK_THROWS_AS(Solver<EmptyPack>(split.pv, EmptyPack{}, {.symmetric = true}),
+                    std::invalid_argument);
+    CHECK_NOTHROW(Graph(split.pv, EmptyPack{}, {.bidirectional = true}));
+    CHECK_NOTHROW(Graph(g.pv, EmptyPack{}, {.symmetric = true}));
+}
+
 TEST_CASE("Symmetric: solver wiring") {
     SymmetricGraph g;
     Solver<EmptyPack> solver(g.pv, EmptyPack{},

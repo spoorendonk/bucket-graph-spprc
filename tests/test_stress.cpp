@@ -1937,21 +1937,23 @@ TEST_CASE("Parallel bidir: with R1CResource") {
 }
 
 TEST_CASE("Parallel bidir: symmetric + StdThreadExecutor falls back to sequential") {
-    int from[] = {0, 0, 1, 2};
-    int to[] = {1, 2, 3, 3};
-    double cost[] = {5.0, 3.0, 4.0, 6.0};
-    double time_d[] = {1.0, 2.0, 2.0, 1.0};
-    double tw_lb[] = {0.0, 0.0, 0.0, 0.0};
-    double tw_ub[] = {20.0, 20.0, 20.0, 20.0};
+    // Symmetric mode is the depot convention (#126): depot 0, every arc with
+    // its opposite.
+    int from[] = {0, 1, 0, 2, 1, 2};
+    int to[] = {1, 0, 2, 0, 2, 1};
+    double cost[] = {5.0, 5.0, 3.0, 3.0, 4.0, 4.0};
+    double time_d[] = {1.0, 1.0, 2.0, 2.0, 2.0, 2.0};
+    double tw_lb[] = {0.0, 0.0, 0.0};
+    double tw_ub[] = {20.0, 20.0, 20.0};
     const double* arc_res[] = {time_d};
     const double* v_lb[] = {tw_lb};
     const double* v_ub[] = {tw_ub};
 
     ProblemView pv;
-    pv.n_vertices = 4;
+    pv.n_vertices = 3;
     pv.source = 0;
-    pv.sink = 3;
-    pv.n_arcs = 4;
+    pv.sink = 0;
+    pv.n_arcs = 6;
     pv.arc_from = from;
     pv.arc_to = to;
     pv.arc_base_cost = cost;

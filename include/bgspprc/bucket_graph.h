@@ -133,7 +133,7 @@ public:
         int max_paths = 0;  // 0 = unlimited
         double theta = -1e-6;
         bool bidirectional = false;
-        bool symmetric = false;      // skip backward labeling, use fw labels as bw
+        bool symmetric = false;      // skip backward labeling, use fw labels as bw; source == sink
         bool no_jump_arcs = false;   // disable jump arcs (for ablation studies)
         bool parallel_bidir = true;  // concurrent fw/bw labeling (requires parallel executor)
         Stage stage = Stage::Exact;
@@ -145,6 +145,11 @@ public:
 
     BucketGraph(const ProblemView& pv, Pack pack, Options opts = {}, Exec executor = {})
         : pv_(pv), pack_(std::move(pack)), opts_(opts), executor_(std::move(executor)) {
+        // Symmetric mode is the depot convention: single depot tours from a
+        // source that is also the sink (#126).
+        if (opts_.symmetric && pv_.source != pv_.sink) {
+            throw std::invalid_argument("BucketGraph: symmetric mode needs source == sink");
+        }
         if (opts_.symmetric) {
             opts_.bidirectional = true;
             if constexpr (Pack::size > 0) {
@@ -279,7 +284,7 @@ public:
             // comes back to the source (#125), a symmetric depot tour ends
             // where it first comes back (#123).
             if (a < 0 || a >= pv_.n_arcs || pv_.arc_from[a] != v ||
-                (v == pv_.sink && (!opts_.symmetric || (left && pv_.source == pv_.sink))) ||
+                (v == pv_.sink && (!opts_.symmetric || left)) ||
                 (!opts_.symmetric && pv_.arc_to[a] == pv_.source)) {
                 return std::nullopt;
             }
@@ -4073,11 +4078,10 @@ private:
                 int j = pv_.arc_to[a];
                 // No path leaves the sink or enters the source (#124, #125; with
                 // source == sink outside symmetric mode, depot_is_empty_path).
-                // A symmetric depot holds both start labels and finished
-                // tours; the guards below join only labels whose whole chain
-                // stayed at the depot.
-                const bool symmetric_depot = opts_.symmetric && pv_.source == pv_.sink;
-                if (!symmetric_depot && (i == pv_.sink || j == pv_.source)) {
+                // A symmetric depot (source == sink, #126) holds both start
+                // labels and finished tours; the guards below join only labels
+                // whose whole chain stayed at the depot.
+                if (!opts_.symmetric && (i == pv_.sink || j == pv_.source)) {
                     continue;
                 }
                 const bool from_source = i == pv_.source;
