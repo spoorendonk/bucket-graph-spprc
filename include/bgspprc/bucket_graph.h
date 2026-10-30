@@ -271,11 +271,11 @@ public:
             cost = vtx_cost;
         }
         double real_cost = 0.0;
-        for (std::size_t k = 0; k < arcs.size(); ++k) {
-            const int a = arcs[k];
+        bool left = false;  // the walk has been off the source, as in never_left
+        for (int a : arcs) {
             // A depot tour ends where it first comes back (#123).
             if (a < 0 || a >= pv_.n_arcs || pv_.arc_from[a] != v ||
-                (k > 0 && v == pv_.sink && pv_.source == pv_.sink)) {
+                (left && v == pv_.sink && pv_.source == pv_.sink)) {
                 return std::nullopt;
             }
             const double arc_cost = reduced_costs_ ? reduced_costs_[a] : pv_.arc_base_cost[a];
@@ -283,6 +283,7 @@ public:
                 return std::nullopt;
             }
             v = pv_.arc_to[a];
+            left = left || v != pv_.source;
             for (int r = 0; r < n_main_; ++r) {
                 q[r] = std::max(q[r] + pv_.arc_resource[r][a], pv_.vertex_lb[r][v]);
                 if (q[r] > pv_.vertex_ub[r][v]) {
@@ -4543,6 +4544,11 @@ private:
             const auto* L = all_labels[i];
             if (L->parent_arc == -1) {
                 continue;  // the source label, which every solve starts from
+            }
+            // A finished depot tour (#123): injected, it could replace the
+            // depot start label before that is extended.
+            if (pv_.source == pv_.sink && L->vertex == pv_.source && !never_left(L, pv_.source)) {
+                continue;
             }
             chain.clear();
             const auto* cur = L;

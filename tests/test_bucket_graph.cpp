@@ -2185,6 +2185,36 @@ TEST_CASE("Symmetric: with reduced costs") {
     CHECK_FALSE(sym.cost_of(std::vector<int>{0, 8, 0, 8}).has_value());
 }
 
+TEST_CASE("Symmetric: a saved depot tour does not replace the depot start label") {
+    // 0-1-0 takes no time, so the tour back at the depot is no later than
+    // the start label and, cheaper, would dominate it if it were injected
+    // (#123). Only the cheapest label is saved: that tour.
+    LargerSymmetricGraph g;
+    g.time_d[0] = 0.0;  // 0 -> 1
+    g.time_d[8] = 0.0;  // 1 -> 0
+    double red1[16];
+    double red2[16];
+    for (int a = 0; a < 16; ++a) {
+        red1[a] = red2[a] = g.cost[a];
+    }
+    red1[0] = red1[8] = -10.0;  // 0-1-0 at -20
+    red2[0] = red2[8] = -1.0;   // 0-1-0 at -2
+    red2[1] = red2[9] = -10.0;  // 0-2-0 at -20
+
+    BucketGraph<EmptyPack> sym(g.pv, EmptyPack{}, {.bucket_steps = {5.0, 1.0}, .symmetric = true});
+    sym.build();
+    sym.update_arc_costs(red1);
+    auto paths = sym.solve();
+    REQUIRE(!paths.empty());
+    CHECK(paths[0].reduced_cost == doctest::Approx(-20.0));
+    sym.save_warm_labels(1e-9);
+    sym.update_arc_costs(red2);
+    paths = sym.solve();
+    REQUIRE(!paths.empty());
+    CHECK(paths[0].reduced_cost == doctest::Approx(-20.0));
+    CHECK(paths[0].vertices == std::vector<int>{0, 2, 0});
+}
+
 TEST_CASE("Symmetric: fine bucket steps exercise mirror_bucket") {
     LargerSymmetricGraph g;
 
