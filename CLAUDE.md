@@ -248,9 +248,9 @@ git push --atomic origin HEAD "refs/reviews/$(git rev-parse HEAD)"
 ```
 
 The receipt is a ref named by the reviewed commit, `refs/reviews/<sha>`, and it
-travels with the push, so a CI step can check every commit that reaches the
-trunk — including one pushed with `--no-verify`, or from a clone whose hooks
-never ran. wcp's README has the step to paste into the project's CI.
+travels with the push. wcp's README has a CI step that checks it on every push;
+this repo deliberately has none (#122: no GitHub Actions on push), so pre-push
+is the only check and a `--no-verify` push or an ungated clone gets past it.
 `--atomic` lands the branch and its receipt together or not at all.
 
 Plain git, on purpose. No wcp, no harness, nothing installed — so a reviewer on
