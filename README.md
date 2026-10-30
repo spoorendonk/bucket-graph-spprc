@@ -1,6 +1,5 @@
 # bucket-graph-spprc
 
-[![CI](https://github.com/spoorendonk/bucket-graph-spprc/actions/workflows/ci.yml/badge.svg)](https://github.com/spoorendonk/bucket-graph-spprc/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)
 [![arXiv](https://img.shields.io/badge/arXiv-2606.30847-b31b1b.svg)](https://arxiv.org/abs/2606.30847)
