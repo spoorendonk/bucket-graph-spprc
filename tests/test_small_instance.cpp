@@ -469,6 +469,63 @@ TEST_CASE("source == sink is the empty path in mono and bidirectional (#110)") {
     }
 }
 
+TEST_CASE("a path ends at the sink in mono and bidirectional (#124)") {
+    // Source 0, sink 2: the walk 0 → 2 → 1 → 2 costs -5, but a path ends
+    // where it first reaches the sink, so the best is 0 → 2 at -1. With the
+    // first arc's time t at or past the midpoint 5, bidir would first reach
+    // the sink past it.
+    int from[] = {0, 2, 1};
+    int to[] = {2, 1, 2};
+    double cost[] = {-1.0, -5.0, 1.0};
+    double tw_lb[] = {0.0, 0.0, 0.0};
+    double tw_ub[] = {10.0, 10.0, 10.0};
+    const double* v_lb[] = {tw_lb};
+    const double* v_ub[] = {tw_ub};
+
+    for (double t : {1.0, 5.0, 6.0, 8.0}) {
+        CAPTURE(t);
+        double time_d[] = {t, 1.0, 1.0};
+        const double* arc_res[] = {time_d};
+
+        ProblemView pv;
+        pv.n_vertices = 3;
+        pv.source = 0;
+        pv.sink = 2;
+        pv.n_arcs = 3;
+        pv.arc_from = from;
+        pv.arc_to = to;
+        pv.arc_base_cost = cost;
+        pv.n_resources = 1;
+        pv.arc_resource = arc_res;
+        pv.vertex_lb = v_lb;
+        pv.vertex_ub = v_ub;
+        pv.n_main_resources = 1;
+
+        auto check = [](const auto& paths) {
+            REQUIRE(paths.size() == 1);
+            CHECK(paths[0].reduced_cost == doctest::Approx(-1.0));
+            CHECK(paths[0].arcs == std::vector<int>{0});
+            CHECK(paths[0].vertices == std::vector<int>{0, 2});
+        };
+        auto [mono, bidir] = solve_mono_bidir<SequentialExecutor>(pv);
+        check(mono);
+        check(bidir);
+        auto [par_mono, par_bidir] = solve_mono_bidir<StdThreadExecutor>(pv);
+        check(par_mono);
+        check(par_bidir);
+
+        // cost_of agrees: the path is one, the walk through the sink is not.
+        Solver<EmptyPack> s(pv, EmptyPack{});
+        s.build();
+        auto path = s.cost_of(std::vector<int>{0});
+        REQUIRE(path.has_value());
+        const auto w =
+            path.value_or(Solver<EmptyPack>::WalkCost{.reduced_cost = INF, .original_cost = INF});
+        CHECK(w.reduced_cost == doctest::Approx(-1.0));
+        CHECK_FALSE(s.cost_of(std::vector<int>{0, 1, 2}).has_value());
+    }
+}
+
 TEST_CASE("Bidirectional: finds a split-depot tour whose first arc crosses the midpoint") {
     // The depot split into source 0 and sink copy 2: 0 → 1 → 2, first arc
     // past the midpoint 5.

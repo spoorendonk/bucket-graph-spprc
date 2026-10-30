@@ -246,9 +246,10 @@ public:
     /// label of create_initial_label, without the grid. Main-resource windows,
     /// then each resource's extend_along_arc and extend_to_vertex, under the
     /// current reduced costs and resource states. Nullopt when the walk is
-    /// infeasible, does not run from source to sink, leaves a depot that is
-    /// only the empty path (depot_is_empty_path), comes back to a depot
-    /// before its last arc (a depot tour is single), or uses an arc id out of
+    /// infeasible, does not run from source to sink, leaves the sink outside
+    /// symmetric mode (a path ends there, and a depot that is the sink too is
+    /// only the empty path), comes back to a symmetric depot before its last
+    /// arc (a depot tour is single), or uses an arc id out of
     /// range or with an INF reduced cost. Arc elimination and bucket fixing
     /// are pricing state, not feasibility, and are not consulted.
     [[nodiscard]] std::optional<WalkCost> cost_of(std::span<const int> arcs) const {
@@ -273,9 +274,10 @@ public:
         double real_cost = 0.0;
         bool left = false;  // the walk has been off the source, as in never_left
         for (int a : arcs) {
-            // A depot tour ends where it first comes back (#123).
+            // A path ends where it first reaches the sink (#124), a symmetric
+            // depot tour where it first comes back (#123).
             if (a < 0 || a >= pv_.n_arcs || pv_.arc_from[a] != v ||
-                (left && v == pv_.sink && pv_.source == pv_.sink)) {
+                (v == pv_.sink && (!opts_.symmetric || (left && pv_.source == pv_.sink)))) {
                 return std::nullopt;
             }
             const double arc_cost = reduced_costs_ ? reduced_costs_[a] : pv_.arc_base_cost[a];
@@ -943,9 +945,12 @@ private:
             ba_vec.clear();
             auto& ja_vec = (dir == Direction::Forward) ? b.jump_arcs : b.bw_jump_arcs;
             ja_vec.clear();
-            // No label leaves a depot that is only the empty path, in either
-            // direction; with no bucket arc it gets no jump arc either.
-            if (depot_is_empty_path() && v == pv_.source) {
+            // An s-t path ends where it first reaches its terminal: outside
+            // symmetric mode no forward label leaves the sink and no backward
+            // one the source (#124). That covers a depot that is only the
+            // empty path too (#110). With no bucket arc a bucket gets no jump
+            // arc either. Symmetric mode keeps its depot tours (#123).
+            if (!opts_.symmetric && v == (dir == Direction::Forward ? pv_.sink : pv_.source)) {
                 return;
             }
 
@@ -4052,14 +4057,13 @@ private:
             for (int a = c_begin; a < c_end; ++a) {
                 int i = pv_.arc_from[a];
                 int j = pv_.arc_to[a];
-                // fw labels at the sink are finished paths, and no path enters
-                // the source. With source == sink outside symmetric mode no
-                // path leaves the depot (depot_is_empty_path). In symmetric
-                // mode the depot holds both start labels and finished tours;
-                // the guards below join only labels whose whole chain stayed
-                // at the depot.
-                if ((i == pv_.sink && i != pv_.source) || (j == pv_.source && j != pv_.sink) ||
-                    (depot_is_empty_path() && (i == pv_.source || j == pv_.sink))) {
+                // No path leaves the sink or enters the source (#124; with
+                // source == sink outside symmetric mode, depot_is_empty_path).
+                // A symmetric depot holds both start labels and finished
+                // tours; the guards below join only labels whose whole chain
+                // stayed at the depot.
+                const bool symmetric_depot = opts_.symmetric && pv_.source == pv_.sink;
+                if (!symmetric_depot && (i == pv_.sink || j == pv_.source)) {
                     continue;
                 }
                 const bool from_source = i == pv_.source;
