@@ -18,8 +18,8 @@ namespace bgspprc {
 template <typename Pack, Executor Exec = SequentialExecutor>
 class Solver {
 public:
-    using Path = typename BucketGraph<Pack, Exec>::Path;
-    using WalkCost = typename BucketGraph<Pack, Exec>::WalkCost;
+    using Path = BucketGraph<Pack, Exec>::Path;
+    using WalkCost = BucketGraph<Pack, Exec>::WalkCost;
 
     struct Options {
         // A step <= 0 is derived from xi (BG2021 §6.3); see BucketGraph::Options.

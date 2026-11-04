@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <bgspprc/problem_view.h>
 #include <cassert>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -15,9 +16,59 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <system_error>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace bgspprc::io {
+
+namespace detail {
+
+/// Read one whitespace- or ':'-separated token of line, from pos, into out:
+/// a number by std::from_chars, which must take the whole token and fit the
+/// type, or a std::string as it is.
+template <typename T>
+bool scan_token(std::string_view line, std::size_t& pos, T& out) {
+    const auto sep = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == ':'; };
+    while (pos < line.size() && sep(line[pos])) {
+        ++pos;
+    }
+    const std::size_t begin = pos;
+    while (pos < line.size() && !sep(line[pos])) {
+        ++pos;
+    }
+    if (pos == begin) {
+        return false;
+    }
+    const std::string_view tok = line.substr(begin, pos - begin);
+    if constexpr (std::is_same_v<T, std::string>) {
+        out = tok;
+        return true;
+    } else {
+        const auto [end, ec] = std::from_chars(tok.data(), tok.data() + tok.size(), out);
+        return ec == std::errc{} && end == tok.data() + tok.size();
+    }
+}
+
+/// Skip the first `skip` tokens of line (keywords such as "DIMENSION" or the
+/// record tag "v"), then read one token into each of out, in order. True
+/// when all of them were read; tokens after the last are ignored. Unlike
+/// sscanf, a number that is malformed or out of range is reported.
+template <typename... Ts>
+bool scan_fields(std::string_view line, int skip, Ts&... out) {
+    std::size_t pos = 0;
+    std::string ignored;
+    for (int k = 0; k < skip; ++k) {
+        if (!scan_token(line, pos, ignored)) {
+            return false;
+        }
+    }
+    return (scan_token(line, pos, out) && ...);
+}
+
+}  // namespace detail
 
 /// Fully-owned instance data (parsers fill this, then we build a ProblemView).
 struct Instance {
@@ -136,9 +187,9 @@ inline Instance load_sppcc(const std::string& path) {
                 inst.name = line.substr(pos + 2);
             }
         } else if (line.starts_with("DIMENSION")) {
-            std::sscanf(line.c_str(), "DIMENSION : %d", &dimension);
+            detail::scan_fields(line, 1, dimension);
         } else if (line.starts_with("CAPACITY")) {
-            std::sscanf(line.c_str(), "CAPACITY : %lf", &capacity);
+            detail::scan_fields(line, 1, capacity);
         } else if (line.starts_with("EDGE_WEIGHT_SECTION")) {
             dist_matrix.resize(dimension);
             for (int i = 0; i < dimension; ++i) {
@@ -266,13 +317,13 @@ inline Instance load_roberti_vrp(const std::string& path) {
                 }
             }
         } else if (line.starts_with("DIMENSION")) {
-            std::sscanf(line.c_str(), "DIMENSION : %d", &dimension);
+            detail::scan_fields(line, 1, dimension);
             x.resize(dimension);
             y.resize(dimension);
             demands.resize(dimension, 0);
             profits.resize(dimension, 0);
         } else if (line.starts_with("CAPACITY")) {
-            std::sscanf(line.c_str(), "CAPACITY : %lf", &capacity);
+            detail::scan_fields(line, 1, capacity);
         } else if (line.starts_with("NODE_COORD_SECTION")) {
             section = COORDS;
         } else if (line.starts_with("DEMAND_SECTION")) {
@@ -287,25 +338,25 @@ inline Instance load_roberti_vrp(const std::string& path) {
             int id;
             double cx;
             double cy;
-            if (std::sscanf(line.c_str(), "%d %lf %lf", &id, &cx, &cy) == 3) {
+            if (detail::scan_fields(line, 0, id, cx, cy)) {
                 x[id - 1] = cx;
                 y[id - 1] = cy;
             }
         } else if (section == DEMANDS) {
             int id;
             double d;
-            if (std::sscanf(line.c_str(), "%d %lf", &id, &d) == 2) {
+            if (detail::scan_fields(line, 0, id, d)) {
                 demands[id - 1] = d;
             }
         } else if (section == DEPOT) {
             int d;
-            if (std::sscanf(line.c_str(), "%d", &d) == 1 && d > 0) {
+            if (detail::scan_fields(line, 0, d) && d > 0) {
                 depot = d;
             }
         } else if (section == PROFIT) {
             int id;
             double p;
-            if (std::sscanf(line.c_str(), "%d %lf", &id, &p) == 2) {
+            if (detail::scan_fields(line, 0, id, p)) {
                 profits[id - 1] = p;
             }
         }
@@ -515,9 +566,9 @@ inline Instance load_rcspp_graph(const std::string& path) {
 
         if (line[0] == 'p') {
             // p name n_vertices n_edges ng_size
-            char name[256];
-            std::sscanf(line.c_str(), "p %255s %d %d %d", name, &n_vertices, &n_edges, &ng_size);
-            inst.name = name;
+            std::string name;
+            detail::scan_fields(line, 1, name, n_vertices, n_edges, ng_size);
+            inst.name = std::move(name);
             vertices.resize(n_vertices);
             inst.ng_neighbors.resize(n_vertices);
         } else if (line[0] == 'v') {
@@ -527,7 +578,7 @@ inline Instance load_rcspp_graph(const std::string& path) {
             double b;
             double d;
             double Q;
-            std::sscanf(line.c_str(), "v %d %lf %lf %lf %lf", &id, &a, &b, &d, &Q);
+            detail::scan_fields(line, 1, id, a, b, d, Q);
             assert(id >= 0 && id < n_vertices);
             vertices[id] = {.a = a, .b = b, .d = d, .Q = Q};
         } else if (line[0] == 'e') {
@@ -537,7 +588,7 @@ inline Instance load_rcspp_graph(const std::string& path) {
             int tgt;
             double cost;
             double time;
-            std::sscanf(line.c_str(), "e %d %d %d %lf %lf", &eid, &src, &tgt, &cost, &time);
+            detail::scan_fields(line, 1, eid, src, tgt, cost, time);
             inst.arc_from.push_back(src);
             inst.arc_to.push_back(tgt);
             inst.arc_cost.push_back(cost);

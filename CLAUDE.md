@@ -145,7 +145,7 @@ project — there is no `pyproject.toml` and no venv by default.
 - Built-in generics (`list[int]`, `dict[str, Any]`) and `|` unions.
 - `ruff` for format and lint; `test_<module>.py` for tests, run with pytest.
 - ctest runs the pytest suite as `python_tests` when it finds a Python with
-  pytest (`.venv/bin` first: `uv venv && uv pip install pytest`); without one
+  pytest (`.venv/bin` first: `uv venv && uv pip install -r requirements-dev.txt`); without one
   configure warns and the gate skips it. No hook runs `ruff` or `mypy`; run
   them yourself on Python changes.
 
@@ -176,12 +176,19 @@ hooks.localCiCpus 0-3` makes the fences' `-j"$(nproc)"` see four CPUs.
 Disabling a check is a decision, not a way out of a finding. `.clang-tidy`
 records a reason per disabled check, and there are only two acceptable ones:
 the check fights a convention this codebase holds on purpose, or it is a defect
-in clang-tidy itself (two currently are — see the notes above `Checks:`).
+in clang-tidy itself (one currently is — see the notes above `Checks:`; one
+more, `modernize-use-std-print`, waits only on #131 converting the CLI).
+On macOS the lint passes the SDK to clang-tidy (`-isysroot`, from
+`xcrun`), since LLVM's clang-tidy does not find it as Apple's clang does.
 
-Use clang-format and clang-tidy **18 or newer**; 18 and 21 were verified to
-format this tree byte-identically. Nothing checks this: pre-commit runs
-whatever clang-format is first on PATH (or in `.venv/bin`), so an older one
-refuses commits of correctly formatted files.
+Use clang-format and clang-tidy **22.1.8**, the group toolchain (one version
+on every machine and in every repo; a bump is made for all of them together).
+`.clang-format-version` pins it and `requirements-dev.txt` installs it from
+PyPI: `uv venv && uv pip install -r requirements-dev.txt`. The hooks and
+`cmake/Lint.cmake` look in `.venv/bin` (the worktree's, then the main
+checkout's) before PATH. pre-commit skips the format check, loudly, for a
+clang-format of another major; configure warns for another major and drops
+that tool's lint tests, so a push from such a machine is not linted.
 
 There are deliberately **no Claude Code hooks**. The rules they used to enforce
 are now conventions, stated here:

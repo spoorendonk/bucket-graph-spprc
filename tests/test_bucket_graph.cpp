@@ -2025,7 +2025,7 @@ TEST_CASE("Warm starting: labels are injected, and not when enumerating") {
     LargerGraph g;
     for (bool bidir : {false, true}) {
         CAPTURE(bidir);
-        typename BucketGraph<EmptyPack>::Options opts{
+        BucketGraph<EmptyPack>::Options opts{
             .bucket_steps = {1.0, 1.0}, .theta = 1e9, .bidirectional = bidir};
         BucketGraph<EmptyPack> cold(g.pv, EmptyPack{}, opts);
         BucketGraph<EmptyPack> warm(g.pv, EmptyPack{}, opts);

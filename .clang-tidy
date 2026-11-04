@@ -28,10 +28,17 @@
 #                                      Low signal on numeric interfaces, where
 #                                      adjacent same-typed parameters are the
 #                                      normal shape.
-#   modernize-use-std-print            Segfaults clang-tidy 21.1.8 on
-#                                      cli/main.cpp's fprintf calls. A
-#                                      crash analyses nothing, so this
-#                                      stays off until upstream fixes it.
+#   modernize-use-std-print            Segfaulted clang-tidy 21.1.8 on
+#                                      cli/main.cpp's fprintf calls. 22.1.8
+#                                      runs it and reports the CLI's 32
+#                                      printf-family calls; converting them
+#                                      (output byte-identical) is #131,
+#                                      which turns it back on.
+#   bugprone-random-generator-seed     Tests seed their generators with
+#                                      constants on purpose, so a failing
+#                                      instance is the same on every run.
+#                                      The library itself draws no random
+#                                      numbers.
 #   readability-function-cognitive-complexity
 #                                      The labeling hot paths score 60-265
 #                                      against a threshold of 25, and they
@@ -55,7 +62,8 @@
 #                                      stateless resource and a stateful one
 #                                      would spell the same hook differently.
 #   modernize-use-integer-sign-comparison
-#                                      False positive in clang-tidy 21.1.8:
+#                                      False positive in clang-tidy 21.1.8,
+#                                      still in 22.1.8 (re-tested):
 #                                      it flags `i < static_cast<int>(v.size())`
 #                                      — both operands already int — and
 #                                      proposes std::cmp_less over the cast
@@ -79,9 +87,14 @@ Checks: >
   -modernize-use-std-print,
   -readability-function-cognitive-complexity,
   -readability-convert-member-functions-to-static,
-  -modernize-use-integer-sign-comparison
+  -modernize-use-integer-sign-comparison,
+  -bugprone-random-generator-seed
 
 CheckOptions:
+  # doctest's CHECK_THROWS_AS and TEST_CASE_TEMPLATE expand to
+  # std::is_same<...>::value style traits; ours are all _v/_t already.
+  - key: modernize-type-traits.IgnoreMacros
+    value: true
   - key: readability-identifier-naming.ClassCase
     value: CamelCase
   - key: readability-identifier-naming.StructCase

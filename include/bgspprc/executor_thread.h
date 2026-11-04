@@ -52,7 +52,7 @@ public:
         {
             std::scoped_lock lock(mutex_);
             for (int i = 0; i < n_tasks; ++i) {
-                queue_.push_back({&tasks[i], &batch});
+                queue_.push_back({.fn = &tasks[i], .batch = &batch});
             }
         }
         if (n_tasks >= n_workers_) {

@@ -236,7 +236,7 @@ if(BGSPPRC_BUILD_TESTS)
     else()
         message(WARNING "No Python with pytest found: python_tests is not "
                         "registered, so the gate skips the benchmark tooling's "
-                        "tests. Install with: uv venv && uv pip install pytest")
+                        "tests. Install with: uv venv && uv pip install -r requirements-dev.txt")
     endif()
 endif()
 

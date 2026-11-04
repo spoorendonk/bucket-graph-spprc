@@ -34,14 +34,17 @@
 #include <bgspprc/resources/ng_path.h>
 #include <bgspprc/resources/side.h>
 #include <bgspprc/solver.h>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -104,7 +107,7 @@ struct Result {
 // ── Helpers ──
 
 template <typename Pack, Executor Exec>
-typename Solver<Pack, Exec>::Options make_solver_opts(double s1, double s2, const Options& opts) {
+Solver<Pack, Exec>::Options make_solver_opts(double s1, double s2, const Options& opts) {
     typename Solver<Pack, Exec>::Options so{
         .bucket_steps = {s1, s2},
         .bidirectional = opts.bidir,
@@ -710,14 +713,25 @@ static Stage parse_stage(const char* s) {
     return Stage::Exact;
 }
 
+/// Whether all of s is one number of out's type, read into out. Unlike atoi
+/// and atof, a malformed or out-of-range value is reported, not read as 0.
+template <typename T>
+static bool parse_number(std::string_view s, T& out) {
+    const auto [end, ec] = std::from_chars(s.data(), s.data() + s.size(), out);
+    return ec == std::errc{} && end == s.data() + s.size();
+}
+
 static void parse_steps(const char* s, double& s1, double& s2) {
-    if (std::sscanf(s, "%lf,%lf", &s1, &s2) != 2) {
+    const std::string_view v(s);
+    const std::size_t comma = v.find(',');
+    if (comma == std::string_view::npos || !parse_number(v.substr(0, comma), s1) ||
+        !parse_number(v.substr(comma + 1), s2)) {
         std::fprintf(stderr, "Invalid steps: %s (expected S1,S2)\n", s);
         s1 = s2 = 0;
     }
 }
 
-int main(int argc, char** argv) {
+static int run_main(int argc, char** argv) {
     Options opts;
     std::vector<std::string> paths;
 
@@ -731,7 +745,10 @@ int main(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--stage") == 0 && i + 1 < argc) {
             opts.stage = parse_stage(argv[++i]);
         } else if (std::strcmp(argv[i], "--ng") == 0 && i + 1 < argc) {
-            opts.ng = std::atoi(argv[++i]);
+            if (!parse_number(argv[++i], opts.ng)) {
+                std::fprintf(stderr, "Invalid ng: %s (expected an integer)\n", argv[i]);
+                return 1;
+            }
         } else if (std::strcmp(argv[i], "--ng-metric") == 0 && i + 1 < argc) {
             ++i;
             if (std::strcmp(argv[i], "distance") == 0) {
@@ -756,9 +773,15 @@ int main(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--no-jump-arcs") == 0) {
             opts.no_jump_arcs = true;
         } else if (std::strcmp(argv[i], "--theta") == 0 && i + 1 < argc) {
-            opts.theta = std::atof(argv[++i]);
+            if (!parse_number(argv[++i], opts.theta)) {
+                std::fprintf(stderr, "Invalid theta: %s (expected a number)\n", argv[i]);
+                return 1;
+            }
         } else if (std::strcmp(argv[i], "--max-paths") == 0 && i + 1 < argc) {
-            opts.max_paths = std::atoi(argv[++i]);
+            if (!parse_number(argv[++i], opts.max_paths)) {
+                std::fprintf(stderr, "Invalid max-paths: %s (expected an integer)\n", argv[i]);
+                return 1;
+            }
         } else if (std::strcmp(argv[i], "--stats") == 0) {
             opts.stats = true;
         } else if (std::strcmp(argv[i], "--csv") == 0) {
@@ -845,4 +868,17 @@ int main(int argc, char** argv) {
         failed += run_path(p, opts);
     }
     return failed > 0 ? 1 : 0;
+}
+
+// Whatever escapes (an allocation failure, a reader's or the solver's
+// std::invalid_argument) is reported and exits 1, rather than terminating.
+int main(int argc, char** argv) {
+    try {
+        return run_main(argc, argv);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "error: %s\n", e.what());
+    } catch (...) {
+        std::fprintf(stderr, "error: unknown exception\n");
+    }
+    return 1;
 }

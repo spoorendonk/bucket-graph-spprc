@@ -36,7 +36,7 @@ struct Label {
     bool dominated = false;
 
     // Compile-time resource states
-    typename Pack::StatesTuple resource_states{};
+    Pack::StatesTuple resource_states{};
 
     /// Reconstruct path from source to this label (forward labels).
     void get_path(std::vector<int>& vertices, std::vector<int>& arcs) const {

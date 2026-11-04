@@ -28,7 +28,7 @@
 // libc++ ships the header but declares nothing in it without
 // -fexperimental-library, and even then it lacks reductions and operators the
 // dominance checks use. Fall back to the scalar path on any libc++.
-#if !defined(_LIBCPP_VERSION)
+#ifndef _LIBCPP_VERSION
 #define BGSPPRC_HAS_SIMD 1
 #endif
 #endif
@@ -48,7 +48,7 @@ namespace detail {
 
 // Detect a resource with compress_state(uint32_t, int) → uint32_t
 template <typename R>
-concept HasCompressState = requires(const R& r, typename R::State s, int v) {
+concept HasCompressState = requires(const R& r, R::State s, int v) {
     { r.compress_state(s, v) } -> std::same_as<uint32_t>;
 };
 
@@ -475,7 +475,7 @@ public:
 
     /// Total labels allocated by the pool(s) during the last solve.
     int64_t labels_created() const {
-        return static_cast<int64_t>(pool_.count() + bw_pool_.count());
+        return static_cast<int64_t>(pool_.count()) + static_cast<int64_t>(bw_pool_.count());
     }
 
     /// Number of bucket arcs eliminated since last build.
@@ -3306,7 +3306,7 @@ private:
             int arr_v = buckets_[arr_bi].vertex;
             auto [vs, ve] = vertex_bucket_range(arr_v);
             int nbv = ve - vs;
-            std::fill_n(scratch_visited_.data(), nbv, uint8_t(0));
+            std::fill_n(scratch_visited_.data(), nbv, static_cast<uint8_t>(0));
             update_buckets_set(theta, L, arc_id, get_bbar(arc_id), arr_bi, dir, vs, nbv,
                                scratch_visited_.data());
         };
@@ -3406,7 +3406,7 @@ private:
             int n_arcs_v = static_cast<int>(arcs_from_v.size());
             int n_entries = n_arcs_v * n_bv;
             int flat_size = n_entries * n_words;
-            std::fill_n(scratch_b_bar_.data(), flat_size, uint64_t(0));
+            std::fill_n(scratch_b_bar_.data(), flat_size, static_cast<uint64_t>(0));
             auto b_bar = [&](int idx) -> std::span<uint64_t> {
                 return {scratch_b_bar_.data() + static_cast<std::ptrdiff_t>(idx) * n_words,
                         static_cast<size_t>(n_words)};

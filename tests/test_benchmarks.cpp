@@ -28,7 +28,7 @@ static std::map<std::string, double> load_optimal_csv(const std::string& path) {
         if (line.empty() || line[0] == '#') {
             continue;
         }
-        if (line.find("instance") != std::string::npos) {
+        if (line.contains("instance")) {
             continue;
         }
 

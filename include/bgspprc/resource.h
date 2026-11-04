@@ -17,8 +17,8 @@ namespace bgspprc {
 ///  - domination_cost: extra cost penalty when L1's state is "worse" than L2's
 ///  - concatenation_cost: cost adjustment when joining fw/bw labels at a vertex
 template <typename R>
-concept Resource = requires(const R& r, Direction dir, Symmetry sym, typename R::State s,
-                            typename R::State s2, int arc_id, int vertex) {
+concept Resource = requires(const R& r, Direction dir, Symmetry sym, R::State s, R::State s2,
+                            int arc_id, int vertex) {
     typename R::State;
     { r.symmetric() } -> std::same_as<bool>;
     { r.init_state(dir) } -> std::same_as<typename R::State>;

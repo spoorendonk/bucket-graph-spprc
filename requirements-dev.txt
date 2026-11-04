@@ -1,0 +1,13 @@
+# The tools the gates run, installed into .venv, which the hooks and
+# cmake/Lint.cmake search before PATH:
+#
+#   uv venv && uv pip install -r requirements-dev.txt
+#
+# clang-format and clang-tidy come from PyPI rather than the system, pinned
+# exactly to the group toolchain (22.1.8, every machine and repo): their output
+# and finding sets change between major releases, so a system copy would format
+# and lint differently from everyone else's. Keep the version in step with
+# .clang-format-version; a bump is made for all repos together.
+clang-format==22.1.8
+clang-tidy==22.1.8
+pytest
