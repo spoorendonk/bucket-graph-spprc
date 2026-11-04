@@ -14,6 +14,7 @@
 #include <numbers>
 #include <numeric>
 #include <optional>
+#include <queue>
 #include <ranges>
 #include <span>
 #include <stack>
@@ -21,6 +22,7 @@
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #if !defined(BGSPPRC_DISABLE_SIMD) && __has_include(<experimental/simd>)
@@ -2835,9 +2837,10 @@ private:
     /// Take main resource r. Every arc inside the SCC (into one of its
     /// buckets) must consume d ≥ 0 of it, so λ = min(0, min c/d over those
     /// arcs with d > 0) is finite, and those with d = 0 must cost c ≥ 0. Then
-    /// c' = c − λd ≥ 0 inside the SCC: no negative cycle, and |SCC| passes
-    /// settle dist'(b), the cost-to-go with inside arcs priced c' (arcs out
-    /// of the SCC keep c, and the completion of their target).
+    /// c' = c − λd ≥ 0 inside the SCC: no negative cycle, and Dijkstra
+    /// (lap_shortest_paths) gives dist'(b), the cost-to-go with inside arcs
+    /// priced c' (arcs out of the SCC keep c, and the completion of their
+    /// target).
     ///
     /// A real path from a label at b moves q[r] by at least d along each arc
     /// (forward q' ≥ q + d, backward q' ≤ q − d; window clamps and jumps only
@@ -2903,33 +2906,7 @@ private:
             return false;
         }
 
-        const int terminal = fw ? pv_.sink : pv_.source;
-        for (int bi : scc_bs) {
-            completion[bi] = (buckets_[bi].vertex == terminal) ? 0.0 : INF;
-        }
-        const int max_iters = static_cast<int>(scc_bs.size()) + 1;
-        bool changed = true;
-        for (int iter = 0; iter < max_iters && changed; ++iter) {
-            changed = false;
-            for (int bi : scc_bs) {
-                for_each_completion_edge(bi, dir, [&](int to, double cost, const double* res) {
-                    if (completion[to] >= INF) {
-                        return;
-                    }
-                    if (res != nullptr && bucket_scc[to] == scc) {
-                        cost -= best_lambda * res[best_r];
-                    }
-                    const double candidate = cost + completion[to];
-                    if (candidate < completion[bi] - EPS) {
-                        completion[bi] = candidate;
-                        changed = true;
-                    }
-                });
-            }
-        }
-        if (changed) {
-            return false;  // c' ≥ 0 inside, so only rounding gets here
-        }
+        lap_shortest_paths(scc, scc_bs, dir, best_r, best_lambda, completion);
         for (int bi : scc_bs) {
             if (completion[bi] < INF) {
                 const double span =
@@ -2938,6 +2915,121 @@ private:
             }
         }
         return true;
+    }
+
+    /// dist'(b) for lap_bounded_completion: the cost-to-go from b with arcs
+    /// inside the SCC priced c' = c − λ·d[r] ≥ 0 and arcs out of it at c plus
+    /// their target's completion, which is settled (a later SCC in the
+    /// topological order). Each bucket is seeded with its best exit (0 at the
+    /// terminal), then Dijkstra runs over the reversed inside arcs: c' ≥ 0
+    /// makes that exact in O(E log V), where Bellman-Ford took |SCC| passes
+    /// over every arc and was most of compute_completion_bounds (#121).
+    /// c' is clamped at 0, so a rounding-level negative c' cannot reopen a
+    /// settled bucket; the bound moves by that rounding only.
+    void lap_shortest_paths(int scc, const std::vector<int>& scc_bs, Direction dir, int r,
+                            double lambda, std::vector<double>& completion) {
+        const auto& bucket_scc =
+            (dir == Direction::Forward) ? fw_bucket_scc_id_ : bw_bucket_scc_id_;
+        const int terminal = (dir == Direction::Forward) ? pv_.sink : pv_.source;
+        const int n = static_cast<int>(scc_bs.size());
+        if (lap_local_.size() != buckets_.size()) {
+            lap_local_.assign(buckets_.size(), -1);
+        }
+        for (int i = 0; i < n; ++i) {
+            lap_local_[scc_bs[i]] = i;
+        }
+
+        // Reversed inside arcs as CSR: for inside target t, the (source,
+        // c') pairs of the arcs into it. Exits seed the source's distance.
+        lap_rev_start_.assign(n + 1, 0);
+        lap_rev_.clear();
+        lap_dist_.assign(n, INF);
+        for (int i = 0; i < n; ++i) {
+            const int bi = scc_bs[i];
+            if (buckets_[bi].vertex == terminal) {
+                lap_dist_[i] = 0.0;
+            }
+            for_each_completion_edge(bi, dir, [&](int to, double cost, const double*) {
+                if (bucket_scc[to] == scc) {
+                    ++lap_rev_start_[lap_local_[to] + 1];
+                } else if (completion[to] < INF) {
+                    lap_dist_[i] = std::min(lap_dist_[i], cost + completion[to]);
+                }
+            });
+        }
+        for (int i = 0; i < n; ++i) {
+            lap_rev_start_[i + 1] += lap_rev_start_[i];
+        }
+        lap_rev_.resize(lap_rev_start_[n]);
+        lap_rev_fill_.assign(lap_rev_start_.begin(), lap_rev_start_.end() - 1);
+        for (int i = 0; i < n; ++i) {
+            for_each_completion_edge(scc_bs[i], dir, [&](int to, double cost, const double* res) {
+                if (bucket_scc[to] != scc) {
+                    return;
+                }
+                const double c = (res != nullptr) ? cost - lambda * res[r] : cost;
+                lap_rev_[lap_rev_fill_[lap_local_[to]]++] = {i, std::max(0.0, c)};
+            });
+        }
+
+        using Entry = std::pair<double, int>;
+        std::priority_queue<Entry, std::vector<Entry>, std::greater<>> heap;
+        lap_settled_.assign(n, 0);
+        for (int i = 0; i < n; ++i) {
+            if (lap_dist_[i] < INF) {
+                heap.emplace(lap_dist_[i], i);
+            }
+        }
+        while (!heap.empty()) {
+            const auto [d, t] = heap.top();
+            heap.pop();
+            if (lap_settled_[t] != 0 || d > lap_dist_[t]) {
+                continue;
+            }
+            lap_settled_[t] = 1;
+            for (int k = lap_rev_start_[t]; k < lap_rev_start_[t + 1]; ++k) {
+                const auto [s, c] = lap_rev_[k];
+                if (lap_settled_[s] == 0 && d + c < lap_dist_[s]) {
+                    lap_dist_[s] = d + c;
+                    heap.emplace(lap_dist_[s], s);
+                }
+            }
+        }
+
+        for (int i = 0; i < n; ++i) {
+            completion[scc_bs[i]] = lap_dist_[i];
+            lap_local_[scc_bs[i]] = -1;
+        }
+    }
+
+    /// Whether the predecessor graph compute_completion_bounds keeps over
+    /// scc_bs (cb_parent_: the arc each bucket's value came over, -1 for
+    /// none) has a cycle. One that does has negative total cost: on each of
+    /// its arcs b → p, completion(b) ≥ c + completion(p), since p only
+    /// improved after b took the arc, and strictly on the arc into the
+    /// bucket whose arc closed it (Cherkassky & Goldberg 1999, "Negative-
+    /// cycle detection algorithms", the walk-to-root test). A NEG_INF bucket
+    /// never takes a new arc, so it closes none. O(|scc|): each bucket is
+    /// walked once, a walk stopping at a bucket seen before or outside the
+    /// SCC (whose pointer is another SCC's, stale).
+    bool parent_cycle(int scc, const std::vector<int>& scc_bs, const std::vector<int>& bucket_scc) {
+        const std::int64_t base = cb_walk_ + 1;
+        for (int b0 : scc_bs) {
+            if (cb_mark_[b0] >= base) {
+                continue;
+            }
+            const std::int64_t walk = ++cb_walk_;
+            for (int b = b0; b >= 0 && bucket_scc[b] == scc; b = cb_parent_[b]) {
+                if (cb_mark_[b] == walk) {
+                    return true;
+                }
+                if (cb_mark_[b] >= base) {
+                    break;  // walked from an earlier start: no cycle there
+                }
+                cb_mark_[b] = walk;
+            }
+        }
+        return false;
     }
 
     /// Compute backward completion bounds for arc elimination / bucket fixing.
@@ -2958,6 +3050,12 @@ private:
 
         auto& scc_topo = (dir == Direction::Forward) ? fw_scc_topo_order_ : bw_scc_topo_order_;
         auto& scc_buckets = (dir == Direction::Forward) ? fw_scc_buckets_ : bw_scc_buckets_;
+        const auto& bucket_scc =
+            (dir == Direction::Forward) ? fw_bucket_scc_id_ : bw_bucket_scc_id_;
+        if (cb_parent_.size() != completion.size()) {
+            cb_parent_.assign(completion.size(), -1);
+            cb_mark_.assign(completion.size(), 0);
+        }
 
         // Process SCCs in reverse topological order (from sink toward source).
         // For DAG SCCs (single bucket), one pass suffices.
@@ -2975,6 +3073,9 @@ private:
 
             bool has_cycle = (scc_bs.size() > 1);
             int max_iters = has_cycle ? static_cast<int>(scc_bs.size()) + 1 : 1;
+            for (int bi : scc_bs) {
+                cb_parent_[bi] = -1;
+            }
 
             for (int iter = 0; iter < max_iters; ++iter) {
                 bool changed = false;
@@ -2986,6 +3087,7 @@ private:
                         double candidate = cost + completion[to];
                         if (candidate < completion[bi] - EPS) {
                             completion[bi] = candidate;
+                            cb_parent_[bi] = to;
                             changed = true;
                         }
                     });
@@ -2993,11 +3095,16 @@ private:
                 if (!changed) {
                     break;
                 }
-                if (has_cycle && iter == max_iters - 1 &&
-                    !lap_bounded_completion(scc, scc_bs, dir, completion)) {
-                    for (int bi : scc_bs) {
-                        completion[bi] = NEG_INF;
+                // A negative cycle is certain once the last pass changed and
+                // the predecessor graph has a cycle; without the check, every
+                // SCC holding one ran all |scc| + 1 passes to show it (#121).
+                if (has_cycle && (iter == max_iters - 1 || parent_cycle(scc, scc_bs, bucket_scc))) {
+                    if (!lap_bounded_completion(scc, scc_bs, dir, completion)) {
+                        for (int bi : scc_bs) {
+                            completion[bi] = NEG_INF;
+                        }
                     }
+                    break;
                 }
             }
         }
@@ -4559,6 +4666,21 @@ private:
     std::vector<int> bw_scc_topo_order_;
     std::vector<int> bw_bucket_scc_id_;
     std::vector<std::vector<int>> bw_scc_vertices_;
+
+    // lap_shortest_paths scratch, kept to reuse its allocations. lap_local_
+    // maps a bucket to its index in the SCC, -1 outside a call.
+    std::vector<int> lap_local_;
+    std::vector<int> lap_rev_start_;
+    std::vector<int> lap_rev_fill_;
+    std::vector<std::pair<int, double>> lap_rev_;
+    std::vector<double> lap_dist_;
+    std::vector<char> lap_settled_;
+
+    // compute_completion_bounds' predecessor graph and parent_cycle's walk
+    // marks (a walk id per bucket; cb_walk_ only grows, so no reset).
+    std::vector<int> cb_parent_;
+    std::vector<std::int64_t> cb_mark_;
+    std::int64_t cb_walk_ = 0;
 
     // Label storage (forward and backward)
     BucketLabels fw_labels_;

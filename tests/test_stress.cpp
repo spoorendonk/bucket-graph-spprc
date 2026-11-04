@@ -3039,6 +3039,94 @@ TEST_CASE("A negative bucket cycle no resource bounds keeps NEG_INF (#121)") {
     }
 }
 
+TEST_CASE("A long negative ring stops Bellman-Ford early and keeps the lap bound (#129)") {
+    // Source 0 -> ring 1 -> 2 -> ... -> kRing -> 1, exit 1 -> sink, and an
+    // arc 0 -> 2 costing 1000 to eliminate. Every ring arc costs -1 and
+    // takes 0.1 of time 10, so the ring's buckets form one SCC holding a
+    // negative cycle, which the predecessor graph shows long before
+    // |SCC| + 1 passes. The lap bound it then gets must still eliminate the
+    // costly arc and keep every path below theta: 11 laps fit after 0 -> 1.
+    constexpr int kRing = 8;
+    constexpr int kSink = kRing + 1;
+    std::vector<int> from{0, 0, 1};
+    std::vector<int> to{1, 2, kSink};
+    std::vector<double> cost{10.0, 1000.0, 0.0};
+    std::vector<double> time{1.0, 1.0, 0.0};
+    for (int v = 1; v <= kRing; ++v) {
+        from.push_back(v);
+        to.push_back(v == kRing ? 1 : v + 1);
+        cost.push_back(-1.0);
+        time.push_back(0.1);
+    }
+    const std::vector<double> lb(kSink + 1, 0.0);
+    const std::vector<double> ub(kSink + 1, 10.0);
+    const double* arc_res[] = {time.data()};
+    const double* v_lb[] = {lb.data()};
+    const double* v_ub[] = {ub.data()};
+    ProblemView pv;
+    pv.n_vertices = kSink + 1;
+    pv.source = 0;
+    pv.sink = kSink;
+    pv.n_arcs = static_cast<int>(from.size());
+    pv.arc_from = from.data();
+    pv.arc_to = to.data();
+    pv.arc_base_cost = cost.data();
+    pv.n_resources = 1;
+    pv.arc_resource = arc_res;
+    pv.vertex_lb = v_lb;
+    pv.vertex_ub = v_ub;
+    pv.n_main_resources = 1;
+
+    auto run = [&]<typename Exec>(Exec, bool bidir, double step, double theta) {
+        const typename BucketGraph<EmptyPack, Exec>::Options opts{
+            .bucket_steps = {step, 0.0}, .theta = theta, .bidirectional = bidir};
+        auto enumerate = [](BucketGraph<EmptyPack, Exec>& bg) {
+            bg.set_stage(Stage::Enumerate);
+            std::vector<std::vector<int>> v;
+            for (const auto& p : bg.solve()) {
+                v.push_back(p.vertices);
+            }
+            CHECK(bg.enumeration_complete());
+            std::ranges::sort(v);
+            return v;
+        };
+        BucketGraph<EmptyPack, Exec> fresh(pv, EmptyPack{}, opts);
+        fresh.build();
+        const auto all = enumerate(fresh);
+        CHECK(!all.empty());
+
+        BucketGraph<EmptyPack, Exec> bg(pv, EmptyPack{}, opts);
+        bg.build();
+        for (int k = 0; k < 3; ++k) {
+            CAPTURE(k);
+            auto paths = bg.solve();
+            CHECK(bg.exact_complete());
+            CHECK(best_reduced_cost(paths) == doctest::Approx(10.0 - (kRing * 11.0)));
+            bg.eliminate_arcs(theta);
+            bg.fix_buckets(theta);
+        }
+        bool keeps_arc1 = false;
+        for (int bi = 0; bi < bg.n_buckets(); ++bi) {
+            const auto& b = bg.bucket(bi);
+            keeps_arc1 = keeps_arc1 || (b.vertex == 0 && std::ranges::contains(b.bucket_arcs, 1,
+                                                                               &BucketArc::arc_id));
+        }
+        CHECK_FALSE(keeps_arc1);
+        CHECK(enumerate(bg) == all);
+    };
+    for (double step : {20.0, 1.0}) {
+        for (bool bidir : {false, true}) {
+            for (double theta : {-1e-6, -69.0}) {
+                CAPTURE(step);
+                CAPTURE(bidir);
+                CAPTURE(theta);
+                run(SequentialExecutor{}, bidir, step, theta);
+                run(StdThreadExecutor{}, bidir, step, theta);
+            }
+        }
+    }
+}
+
 TEST_CASE(
     "exact_complete is false and label_cap_hit true after a label cap, and elimination waits "
     "(#115, #96)") {
