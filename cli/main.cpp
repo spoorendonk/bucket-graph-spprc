@@ -42,6 +42,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <print>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -564,23 +565,22 @@ static std::string convert_to_sppg(const std::string& path, const std::string& d
         return "cannot write " + out_path.string();
     }
     if (ext == ".graph") {
-        std::fprintf(stderr,
-                     "%s: ng sets are not carried over; solve the .sppg with --ng K for "
-                     "ng-path\n",
-                     path.c_str());
+        std::println(stderr,
+                     "{}: ng sets are not carried over; solve the .sppg with --ng K for ng-path",
+                     path);
     }
-    std::printf("%s\n", out_path.string().c_str());
+    std::println("{}", out_path.string());
     return {};
 }
 
 static void print_csv_header() {
-    std::printf(
+    std::println(
         "name,type,n_verts,n_arcs,theta,cost,n_paths,ms,"
         "n_buckets,n_labels_created,n_dominance_checks,"
         "n_non_dominated,n_fixed_buckets,n_eliminated_arcs,"
         "label_state_bytes,"
         "n_dominance_checks_fw,n_dominance_checks_bw,"
-        "n_non_dominated_fw,n_non_dominated_bw\n");
+        "n_non_dominated_fw,n_non_dominated_bw");
 }
 
 static void print_result(const Result& r, const Options& opts) {
@@ -589,51 +589,40 @@ static void print_result(const Result& r, const Options& opts) {
     }
 
     if (opts.csv) {
-        std::printf(
-            "%s,%s,%d,%d,%.3g,%.3f,%d,%.1f,"
-            "%d,%lld,%lld,%lld,%d,%lld,%zu,"
-            "%lld,%lld,%lld,%lld\n",
-            r.name.c_str(), r.type.c_str(), r.n_verts, r.n_arcs, r.theta, r.cost, r.n_paths, r.ms,
-            r.n_buckets, static_cast<long long>(r.n_labels_created),
-            static_cast<long long>(r.n_dominance_checks), static_cast<long long>(r.n_non_dominated),
-            r.n_fixed_buckets, static_cast<long long>(r.n_eliminated_arcs), r.label_state_bytes,
-            static_cast<long long>(r.n_dom_fw), static_cast<long long>(r.n_dom_bw),
-            static_cast<long long>(r.n_nondom_fw), static_cast<long long>(r.n_nondom_bw));
+        std::println("{},{},{},{},{:.3g},{:.3f},{},{:.1f},{},{},{},{},{},{},{},{},{},{},{}", r.name,
+                     r.type, r.n_verts, r.n_arcs, r.theta, r.cost, r.n_paths, r.ms, r.n_buckets,
+                     r.n_labels_created, r.n_dominance_checks, r.n_non_dominated, r.n_fixed_buckets,
+                     r.n_eliminated_arcs, r.label_state_bytes, r.n_dom_fw, r.n_dom_bw,
+                     r.n_nondom_fw, r.n_nondom_bw);
         return;
     }
 
-    std::printf("%-30s  %-5s  n=%-4d  arcs=%-6d  theta=%.3g  cost=%.3f  paths=%-3d  %.1fms\n",
-                r.name.c_str(), r.type.c_str(), r.n_verts, r.n_arcs, r.theta, r.cost, r.n_paths,
-                r.ms);
+    std::println(
+        "{:<30}  {:<5}  n={:<4}  arcs={:<6}  theta={:.3g}  cost={:.3f}  paths={:<3}  {:.1f}ms",
+        r.name, r.type, r.n_verts, r.n_arcs, r.theta, r.cost, r.n_paths, r.ms);
     if (!r.best_path.empty()) {
-        std::printf(" ");
+        std::print(" ");
         for (int v : r.best_path) {
-            std::printf(" %d", v);
+            std::print(" {}", v);
         }
-        std::printf("\n");
+        std::println("");
     }
     if (opts.stats) {
-        std::printf(
-            "  n_buckets=%d  n_labels_created=%lld  "
-            "n_dominance_checks=%lld  n_non_dominated=%lld\n",
-            r.n_buckets, static_cast<long long>(r.n_labels_created),
-            static_cast<long long>(r.n_dominance_checks),
-            static_cast<long long>(r.n_non_dominated));
-        std::printf(
-            "  n_dominance_checks_fw=%lld  n_dominance_checks_bw=%lld  "
-            "n_non_dominated_fw=%lld  n_non_dominated_bw=%lld\n",
-            static_cast<long long>(r.n_dom_fw), static_cast<long long>(r.n_dom_bw),
-            static_cast<long long>(r.n_nondom_fw), static_cast<long long>(r.n_nondom_bw));
-        std::printf(
-            "  n_fixed_buckets=%d  n_eliminated_arcs=%lld  "
-            "label_state_bytes=%zu\n",
-            r.n_fixed_buckets, static_cast<long long>(r.n_eliminated_arcs), r.label_state_bytes);
+        std::println(
+            "  n_buckets={}  n_labels_created={}  n_dominance_checks={}  n_non_dominated={}",
+            r.n_buckets, r.n_labels_created, r.n_dominance_checks, r.n_non_dominated);
+        std::println(
+            "  n_dominance_checks_fw={}  n_dominance_checks_bw={}  "
+            "n_non_dominated_fw={}  n_non_dominated_bw={}",
+            r.n_dom_fw, r.n_dom_bw, r.n_nondom_fw, r.n_nondom_bw);
+        std::println("  n_fixed_buckets={}  n_eliminated_arcs={}  label_state_bytes={}",
+                     r.n_fixed_buckets, r.n_eliminated_arcs, r.label_state_bytes);
     }
     if (opts.timing) {
         const auto& t = r.timings;
-        std::printf(
-            "  timing:  fw=%.3fms  bw=%.3fms  completion=%.3fms"
-            "  concat=%.3fms  paths=%.3fms  sum=%.3fms\n",
+        std::println(
+            "  timing:  fw={:.3f}ms  bw={:.3f}ms  completion={:.3f}ms"
+            "  concat={:.3f}ms  paths={:.3f}ms  sum={:.3f}ms",
             t.forward_labeling.count(), t.backward_labeling.count(), t.completion_bounds.count(),
             t.concatenation.count(), t.path_extraction.count(), t.total().count());
     }
@@ -644,13 +633,13 @@ template <Executor Exec>
 static bool run_file(const std::string& path, const Options& opts, Exec executor) {
     // The .sppcc/.vrp/.graph loaders only assert that the file opened.
     if (!std::ifstream(path).is_open()) {
-        std::fprintf(stderr, "%s: cannot open\n", path.c_str());
+        std::println(stderr, "{}: cannot open", path);
         return false;
     }
     if (!opts.write_sppg_dir.empty()) {
         auto error = convert_to_sppg(path, opts.write_sppg_dir);
         if (!error.empty()) {
-            std::fprintf(stderr, "%s: %s\n", path.c_str(), error.c_str());
+            std::println(stderr, "{}: {}", path, error);
             return false;
         }
         return true;
@@ -662,7 +651,7 @@ static bool run_file(const std::string& path, const Options& opts, Exec executor
         r.error = e.what();
     }
     if (!r.error.empty()) {
-        std::fprintf(stderr, "%s: %s\n", path.c_str(), r.error.c_str());
+        std::println(stderr, "{}: {}", path, r.error);
         return false;
     }
     print_result(r, opts);
@@ -709,7 +698,7 @@ static Stage parse_stage(const char* s) {
     if (std::strcmp(s, "exact") == 0) {
         return Stage::Exact;
     }
-    std::fprintf(stderr, "Unknown stage: %s (using exact)\n", s);
+    std::println(stderr, "Unknown stage: {} (using exact)", s);
     return Stage::Exact;
 }
 
@@ -726,7 +715,7 @@ static void parse_steps(const char* s, double& s1, double& s2) {
     const std::size_t comma = v.find(',');
     if (comma == std::string_view::npos || !parse_number(v.substr(0, comma), s1) ||
         !parse_number(v.substr(comma + 1), s2)) {
-        std::fprintf(stderr, "Invalid steps: %s (expected S1,S2)\n", s);
+        std::println(stderr, "Invalid steps: {} (expected S1,S2)", s);
         s1 = s2 = 0;
     }
 }
@@ -737,7 +726,7 @@ static int run_main(int argc, char** argv) {
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
-            std::printf("bgspprc %s (%s)\n", BGSPPRC_VERSION, BGSPPRC_GIT_HASH);
+            std::println("bgspprc {} ({})", BGSPPRC_VERSION, BGSPPRC_GIT_HASH);
             return 0;
         }
         if (std::strcmp(argv[i], "--mono") == 0) {
@@ -746,7 +735,7 @@ static int run_main(int argc, char** argv) {
             opts.stage = parse_stage(argv[++i]);
         } else if (std::strcmp(argv[i], "--ng") == 0 && i + 1 < argc) {
             if (!parse_number(argv[++i], opts.ng)) {
-                std::fprintf(stderr, "Invalid ng: %s (expected an integer)\n", argv[i]);
+                std::println(stderr, "Invalid ng: {} (expected an integer)", argv[i]);
                 return 1;
             }
         } else if (std::strcmp(argv[i], "--ng-metric") == 0 && i + 1 < argc) {
@@ -756,7 +745,7 @@ static int run_main(int argc, char** argv) {
             } else if (std::strcmp(argv[i], "cost") == 0) {
                 opts.ng_metric = 0;
             } else {
-                std::fprintf(stderr, "Unknown ng-metric: %s (use distance|cost)\n", argv[i]);
+                std::println(stderr, "Unknown ng-metric: {} (use distance|cost)", argv[i]);
                 return 1;
             }
         } else if (std::strcmp(argv[i], "--steps") == 0 && i + 1 < argc) {
@@ -765,7 +754,7 @@ static int run_main(int argc, char** argv) {
             char* end = nullptr;
             opts.xi = std::strtod(argv[++i], &end);
             if (end == argv[i] || *end != '\0' || !(opts.xi > 0) || !std::isfinite(opts.xi)) {
-                std::fprintf(stderr, "Invalid xi: %s (expected a positive number)\n", argv[i]);
+                std::println(stderr, "Invalid xi: {} (expected a positive number)", argv[i]);
                 return 1;
             }
         } else if (std::strcmp(argv[i], "--auto-steps") == 0) {
@@ -774,12 +763,12 @@ static int run_main(int argc, char** argv) {
             opts.no_jump_arcs = true;
         } else if (std::strcmp(argv[i], "--theta") == 0 && i + 1 < argc) {
             if (!parse_number(argv[++i], opts.theta)) {
-                std::fprintf(stderr, "Invalid theta: %s (expected a number)\n", argv[i]);
+                std::println(stderr, "Invalid theta: {} (expected a number)", argv[i]);
                 return 1;
             }
         } else if (std::strcmp(argv[i], "--max-paths") == 0 && i + 1 < argc) {
             if (!parse_number(argv[++i], opts.max_paths)) {
-                std::fprintf(stderr, "Invalid max-paths: %s (expected an integer)\n", argv[i]);
+                std::println(stderr, "Invalid max-paths: {} (expected an integer)", argv[i]);
                 return 1;
             }
         } else if (std::strcmp(argv[i], "--stats") == 0) {
@@ -797,7 +786,7 @@ static int run_main(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--write-sppg") == 0 && i + 1 < argc) {
             opts.write_sppg_dir = argv[++i];
         } else if (argv[i][0] == '-') {
-            std::fprintf(stderr, "Unknown option: %s\n", argv[i]);
+            std::println(stderr, "Unknown option: {}", argv[i]);
             return 1;
         } else {
             paths.emplace_back(argv[i]);
@@ -805,12 +794,12 @@ static int run_main(int argc, char** argv) {
     }
 
     if (opts.xi > 0 && (opts.step1 > 0 || opts.step2 > 0 || opts.auto_steps)) {
-        std::fprintf(stderr, "--xi derives the steps: drop --steps and --auto-steps\n");
+        std::println(stderr, "--xi derives the steps: drop --steps and --auto-steps");
         return 1;
     }
 
     if (paths.empty()) {
-        std::fprintf(stderr,
+        std::println(stderr,
                      "Usage: bgspprc-solve [OPTIONS] <path>...\n"
                      "Options:\n"
                      "  --version       Print version and build git hash, then exit\n"
@@ -831,17 +820,17 @@ static int run_main(int argc, char** argv) {
                      "  --parallel      Use parallel executor (default: on)\n"
                      "  --no-parallel   Use sequential executor\n"
                      "  --no-parallel-bidir  Data-parallel only, sequential fw/bw labeling\n"
-                     "  --write-sppg DIR  Write each instance to DIR/<stem>.sppg, no solve\n");
+                     "  --write-sppg DIR  Write each instance to DIR/<stem>.sppg, no solve");
         return 1;
     }
 
-    std::fprintf(stderr, "bgspprc %s (%s)\n", BGSPPRC_VERSION, BGSPPRC_GIT_HASH);
+    std::println(stderr, "bgspprc {} ({})", BGSPPRC_VERSION, BGSPPRC_GIT_HASH);
 
     // Validate: parallel_bidir without parallel executor is meaningless.
     if (!opts.parallel && opts.parallel_bidir) {
-        std::fprintf(stderr,
+        std::println(stderr,
                      "bgspprc: warning: parallel_bidir has no effect without --parallel, "
-                     "falling back to sequential\n");
+                     "falling back to sequential");
         opts.parallel_bidir = false;
     }
 
@@ -852,11 +841,11 @@ static int run_main(int argc, char** argv) {
         if (opts.bidir) {
             bidir_mode = opts.parallel && opts.parallel_bidir ? "parallel" : "sequential";
         }
-        std::fprintf(stderr, "bgspprc: executor=%s  bidir=%s\n", exec_name, bidir_mode);
+        std::println(stderr, "bgspprc: executor={}  bidir={}", exec_name, bidir_mode);
     }
 
     if (!opts.write_sppg_dir.empty() && !fs::is_directory(opts.write_sppg_dir)) {
-        std::fprintf(stderr, "--write-sppg: %s is not a directory\n", opts.write_sppg_dir.c_str());
+        std::println(stderr, "--write-sppg: {} is not a directory", opts.write_sppg_dir);
         return 1;
     }
 
@@ -876,9 +865,12 @@ int main(int argc, char** argv) {
     try {
         return run_main(argc, argv);
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "error: %s\n", e.what());
+        // Not std::println: it may throw, and nothing may escape main.
+        std::fputs("error: ", stderr);
+        std::fputs(e.what(), stderr);
+        std::fputc('\n', stderr);
     } catch (...) {
-        std::fprintf(stderr, "error: unknown exception\n");
+        std::fputs("error: unknown exception\n", stderr);
     }
     return 1;
 }

@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <print>
 #include <string>
 
 using namespace bgspprc;
@@ -101,11 +102,11 @@ TEST_CASE("spprclib instances") {
             ++passed;
         } else {
             ++failed;
-            std::printf("  FAIL: %s expected=%.0f got=%.0f\n", name.c_str(), expected, best);
+            std::println("  FAIL: {} expected={:.0f} got={:.0f}", name, expected, best);
         }
     }
 
-    std::printf("spprclib: %d tested, %d passed, %d failed\n", tested, passed, failed);
+    std::println("spprclib: {} tested, {} passed, {} failed", tested, passed, failed);
     CHECK(tested > 0);
     CHECK(failed == 0);
 }
@@ -153,7 +154,7 @@ TEST_CASE("rcspp_dataset R1 instances") {
         }
     }
 
-    std::printf("rcspp R1: %d tested, %d found negative-cost paths\n", tested, solved);
+    std::println("rcspp R1: {} tested, {} found negative-cost paths", tested, solved);
     CHECK(tested > 0);
 }
 
@@ -195,6 +196,6 @@ TEST_CASE("rcspp_dataset RC1 instances") {
         }
     }
 
-    std::printf("rcspp RC1: %d tested, %d found negative-cost paths\n", tested, solved);
+    std::println("rcspp RC1: {} tested, {} found negative-cost paths", tested, solved);
     CHECK(tested > 0);
 }

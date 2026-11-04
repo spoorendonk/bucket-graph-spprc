@@ -10,6 +10,7 @@
 #include <bgspprc/solver.h>
 #include <cstdio>
 #include <exception>
+#include <print>
 #include <utility>
 
 // A capacity resource: tracks accumulated demand consumed along the path.
@@ -124,12 +125,12 @@ int main() try {
         solver.build();
         auto paths = solver.solve();
 
-        std::printf("Without capacity constraint:\n");
-        std::printf("  Optimal: cost=%.2f  vertices:", paths[0].reduced_cost);
+        std::println("Without capacity constraint:");
+        std::print("  Optimal: cost={:.2f}  vertices:", paths[0].reduced_cost);
         for (size_t j = 0; j < paths[0].vertices.size(); ++j) {
-            std::printf("%s%d", j == 0 ? " " : " -> ", paths[0].vertices[j]);
+            std::print("{}{}", j == 0 ? " " : " -> ", paths[0].vertices[j]);
         }
-        std::printf("\n\n");
+        std::println("\n");
     }
 
     // --- Solve with capacity constraint (Q=6) ---
@@ -145,19 +146,22 @@ int main() try {
         solver.build();
         auto paths = solver.solve();
 
-        std::printf("With capacity constraint (Q=6):\n");
-        std::printf("  Found %zu feasible paths\n", paths.size());
+        std::println("With capacity constraint (Q=6):");
+        std::println("  Found {} feasible paths", paths.size());
         for (size_t i = 0; i < paths.size(); ++i) {
-            std::printf("  Path %zu: cost=%.2f  vertices:", i, paths[i].reduced_cost);
+            std::print("  Path {}: cost={:.2f}  vertices:", i, paths[i].reduced_cost);
             for (size_t j = 0; j < paths[i].vertices.size(); ++j) {
-                std::printf("%s%d", j == 0 ? " " : " -> ", paths[i].vertices[j]);
+                std::print("{}{}", j == 0 ? " " : " -> ", paths[i].vertices[j]);
             }
-            std::printf("\n");
+            std::println("");
         }
     }
 
     return 0;
 } catch (const std::exception& e) {  // e.g. a view the solver refuses
-    std::fprintf(stderr, "error: %s\n", e.what());
+    // Not std::println: it may throw, and nothing may escape this handler.
+    std::fputs("error: ", stderr);
+    std::fputs(e.what(), stderr);
+    std::fputc('\n', stderr);
     return 1;
 }

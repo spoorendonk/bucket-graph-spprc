@@ -176,8 +176,7 @@ hooks.localCiCpus 0-3` makes the fences' `-j"$(nproc)"` see four CPUs.
 Disabling a check is a decision, not a way out of a finding. `.clang-tidy`
 records a reason per disabled check, and there are only two acceptable ones:
 the check fights a convention this codebase holds on purpose, or it is a defect
-in clang-tidy itself (one currently is — see the notes above `Checks:`; one
-more, `modernize-use-std-print`, waits only on #131 converting the CLI).
+in clang-tidy itself (one currently is — see the notes above `Checks:`).
 On macOS the lint passes the SDK to clang-tidy (`-isysroot`, from
 `xcrun`), since LLVM's clang-tidy does not find it as Apple's clang does.
 

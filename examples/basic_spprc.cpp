@@ -12,6 +12,7 @@
 #include <bgspprc/solver.h>
 #include <cstdio>
 #include <exception>
+#include <print>
 
 int main() try {
     using namespace bgspprc;
@@ -57,17 +58,20 @@ int main() try {
 
     auto paths = solver.solve();
 
-    std::printf("Found %zu paths\n", paths.size());
+    std::println("Found {} paths", paths.size());
     for (size_t i = 0; i < paths.size(); ++i) {
-        std::printf("  Path %zu: cost=%.2f  vertices:", i, paths[i].reduced_cost);
+        std::print("  Path {}: cost={:.2f}  vertices:", i, paths[i].reduced_cost);
         for (size_t j = 0; j < paths[i].vertices.size(); ++j) {
-            std::printf("%s%d", j == 0 ? " " : " -> ", paths[i].vertices[j]);
+            std::print("{}{}", j == 0 ? " " : " -> ", paths[i].vertices[j]);
         }
-        std::printf("\n");
+        std::println("");
     }
 
     return paths.empty() ? 1 : 0;
 } catch (const std::exception& e) {  // e.g. a view the solver refuses
-    std::fprintf(stderr, "error: %s\n", e.what());
+    // Not std::println: it may throw, and nothing may escape this handler.
+    std::fputs("error: ", stderr);
+    std::fputs(e.what(), stderr);
+    std::fputc('\n', stderr);
     return 1;
 }

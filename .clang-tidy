@@ -28,12 +28,6 @@
 #                                      Low signal on numeric interfaces, where
 #                                      adjacent same-typed parameters are the
 #                                      normal shape.
-#   modernize-use-std-print            Segfaulted clang-tidy 21.1.8 on
-#                                      cli/main.cpp's fprintf calls. 22.1.8
-#                                      runs it and reports the CLI's 32
-#                                      printf-family calls; converting them
-#                                      (output byte-identical) is #131,
-#                                      which turns it back on.
 #   bugprone-random-generator-seed     Tests seed their generators with
 #                                      constants on purpose, so a failing
 #                                      instance is the same on every run.
@@ -84,7 +78,6 @@ Checks: >
   -readability-math-missing-parentheses,
   -readability-uppercase-literal-suffix,
   -bugprone-easily-swappable-parameters,
-  -modernize-use-std-print,
   -readability-function-cognitive-complexity,
   -readability-convert-member-functions-to-static,
   -modernize-use-integer-sign-comparison,

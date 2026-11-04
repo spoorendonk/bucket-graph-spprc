@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <fstream>
 #include <memory>
+#include <print>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -458,9 +459,9 @@ inline void compute_ng_neighbors(Instance& inst, int k = 8, bool use_distance = 
     inst.ng_neighbors.resize(nv);
 
     if (use_distance && inst.ng_dist.empty()) {
-        std::fprintf(stderr,
+        std::println(stderr,
                      "Error: --ng-metric distance requested but instance has no "
-                     "coordinate data (only sppcc/vrp formats support distance)\n");
+                     "coordinate data (only sppcc/vrp formats support distance)");
         std::exit(1);
     }
 
