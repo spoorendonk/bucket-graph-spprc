@@ -23,7 +23,10 @@ than that, CMake picks up an installed `g++-15`/`g++-14` automatically — stock
 Ubuntu 24.04 defaults to GCC 13 but packages 14, and the commands below are run
 verbatim by `pre-push`, so they have to work there unattended. Setting `CXX` or
 passing `-DCMAKE_CXX_COMPILER=` always overrides. Anything still too old fails
-with an explicit message rather than a wall of template errors.
+with an explicit message rather than a wall of template errors. The CLI, tests
+and examples also need `<print>` (libstdc++ >= 14, libc++ >= 17), which
+configure checks for when it builds any of them: Clang 18 on a libstdc++ 13
+passes the compiler check and fails this one.
 
 ```clean
 rm -rf build

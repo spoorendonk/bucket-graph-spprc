@@ -119,8 +119,29 @@ if(BGSPPRC_HAS_MARCH_NATIVE)
     list(APPEND BGSPPRC_PROJECT_FLAGS -march=native)
 endif()
 
-# CLI solver (opt-in, off by default when consumed as submodule)
+# CLI, tests and examples (opt-in, off by default when consumed as submodule)
 option(BGSPPRC_BUILD_CLI "Build bgspprc-solve CLI" ${PROJECT_IS_TOP_LEVEL})
+option(BGSPPRC_BUILD_TESTS "Build unit tests" ${PROJECT_IS_TOP_LEVEL})
+option(BGSPPRC_BUILD_EXAMPLES "Build examples" ${PROJECT_IS_TOP_LEVEL})
+
+# The CLI, tests and examples print with <print>, which the library headers do
+# not use. A Clang new enough for the check above can still sit on an older
+# libstdc++ (Clang 18 on stock Ubuntu 24.04 finds GCC 13's), whose missing
+# <print> would otherwise surface as a compile error mid-build.
+if(BGSPPRC_BUILD_CLI OR BGSPPRC_BUILD_TESTS OR BGSPPRC_BUILD_EXAMPLES)
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS ${CMAKE_CXX23_STANDARD_COMPILE_OPTION})
+    check_cxx_source_compiles("#include <print>\nint main() { std::println(\"\"); }"
+        BGSPPRC_HAS_STD_PRINT)
+    unset(CMAKE_REQUIRED_FLAGS)
+    if(NOT BGSPPRC_HAS_STD_PRINT)
+        message(FATAL_ERROR
+            "The C++ standard library has no <print>; the CLI, tests and examples "
+            "need libstdc++ >= 14 or libc++ >= 17. Install a newer one (e.g. g++-14 "
+            "for libstdc++), or turn off BGSPPRC_BUILD_CLI, BGSPPRC_BUILD_TESTS and "
+            "BGSPPRC_BUILD_EXAMPLES to build the library alone.")
+    endif()
+endif()
 
 if(BGSPPRC_BUILD_CLI)
     # Regenerate version.h on every build so the embedded git hash tracks HEAD
@@ -159,9 +180,6 @@ if(BGSPPRC_BUILD_CLI)
         -Wall -Wextra -Wpedantic -O2 ${BGSPPRC_PROJECT_FLAGS})
     target_compile_definitions(bgspprc-solve-nosimd PRIVATE BGSPPRC_DISABLE_SIMD)
 endif()
-
-# Tests (opt-in, off by default when consumed as submodule)
-option(BGSPPRC_BUILD_TESTS "Build unit tests" ${PROJECT_IS_TOP_LEVEL})
 
 if(BGSPPRC_BUILD_TESTS)
     include(FetchContent)
@@ -239,9 +257,6 @@ if(BGSPPRC_BUILD_TESTS)
                         "tests. Install with: uv venv && uv pip install -r requirements-dev.txt")
     endif()
 endif()
-
-# Examples (opt-in, off by default when consumed as submodule)
-option(BGSPPRC_BUILD_EXAMPLES "Build examples" ${PROJECT_IS_TOP_LEVEL})
 
 if(BGSPPRC_BUILD_EXAMPLES)
     add_subdirectory(examples)
