@@ -345,10 +345,17 @@ public:
     void set_theta(double t) { opts_.theta = t; }
     bool enumeration_complete() const { return enum_complete_; }
 
+    /// True when the last solve() stopped labelling an SCC at its label cap
+    /// (Options::max_scc_labels; 2,000,000 in Stage::Enumerate) with labels
+    /// there still to extend, in any stage, so its result may miss paths.
+    /// A cap reached only by labels inserted into later SCCs cuts nothing
+    /// and leaves it false. Enumeration's own caps are enumeration_complete().
+    bool label_cap_hit() const { return label_cap_hit_.load(std::memory_order_relaxed); }
+
     /// True when the last solve() ran Stage::Exact or Stage::Enumerate and
     /// hit no label cap, so it returned every path within theta (up to
     /// max_paths): an empty result proves there is none. False after a
-    /// heuristic stage, or when an SCC reached max_scc_labels or enumeration
+    /// heuristic stage, or when an SCC's label cap cut it (label_cap_hit()) or enumeration
     /// stopped short (enumeration_complete()), and before the first solve
     /// after build(). Arc elimination and bucket fixing do nothing unless
     /// labelling was exact_complete(); an Enumerate whose result alone was
@@ -2597,7 +2604,9 @@ private:
         }
         // The cap counts labels inserted downstream too, so it truncated the
         // solve only if it left a label here that the passes would extend.
-        if (at_label_cap() && has_unextended_label(scc_bs, dir, bl)) {
+        // Only scc_cap sets label_cap_hit_ (label_cap_hit()): the enumeration
+        // caps already clear enum_complete_.
+        if (label_count >= scc_cap && has_unextended_label(scc_bs, dir, bl)) {
             label_cap_hit_.store(true, std::memory_order_relaxed);
         }
 
@@ -4662,7 +4671,7 @@ private:
 
     int total_enum_labels_ = 0;  // global label counter for enumeration
     std::atomic<bool> enum_complete_ = true;
-    std::atomic<bool> label_cap_hit_ = false;  // an SCC reached max_scc_labels
+    std::atomic<bool> label_cap_hit_ = false;  // label_cap_hit()
     Stage solved_stage_ = Stage::Exact;        // stage of the last solve()
     bool solved_ = false;                      // solve() ran since build()
     int enum_sink_labels_ = 0;                 // labels that landed in sink buckets

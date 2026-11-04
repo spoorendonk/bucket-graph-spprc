@@ -98,6 +98,7 @@ public:
         }
 
         exact_complete_ = bg_.exact_complete();
+        label_cap_hit_ = bg_.label_cap_hit();
         labelled_gap_ = NEG_INF;
         update_stage(paths);
         return paths;
@@ -186,6 +187,11 @@ public:
     /// result proves no path within theta exists; see BucketGraph::exact_complete().
     [[nodiscard]] bool exact_complete() const { return exact_complete_; }
 
+    /// Whether the last solve() or enumerate() stopped labelling an SCC at
+    /// Options::max_scc_labels with labels left to extend; see
+    /// BucketGraph::label_cap_hit().
+    [[nodiscard]] bool label_cap_hit() const { return label_cap_hit_; }
+
     /// Phase timing breakdown accumulated across all solve iterations
     /// (including A+ refinement retries).
     [[nodiscard]] const SolveTimings& solve_timings() const { return accumulated_timings_; }
@@ -202,6 +208,7 @@ public:
         bg_.set_theta(opts_.theta);
         bg_.set_stage(stage_);
         exact_complete_ = bg_.exact_complete();
+        label_cap_hit_ = bg_.label_cap_hit();
         labelled_gap_ = NEG_INF;
         return paths;
     }
@@ -300,9 +307,11 @@ private:
     int64_t total_nondom_labels_ = 0;
     int exact_pricing_calls_ = 0;
 
-    // exact_complete() of the last solve() or enumerate(), which the labelling
-    // behind elimination and fixing (cover_gap) leaves as it was.
+    // exact_complete() and label_cap_hit() of the last solve() or enumerate(),
+    // which the labelling behind elimination and fixing (cover_gap) leaves as
+    // they were.
     bool exact_complete_ = false;
+    bool label_cap_hit_ = false;
     // Largest gap cover_gap labelled at since the last solve, enumerate,
     // build or reset_elimination; NEG_INF when none.
     double labelled_gap_ = NEG_INF;

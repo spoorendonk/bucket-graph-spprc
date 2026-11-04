@@ -3039,7 +3039,9 @@ TEST_CASE("A negative bucket cycle no resource bounds keeps NEG_INF (#121)") {
     }
 }
 
-TEST_CASE("exact_complete is false after a label cap, and elimination waits (#115)") {
+TEST_CASE(
+    "exact_complete is false and label_cap_hit true after a label cap, and elimination waits "
+    "(#115, #96)") {
     RandomTwInstance inst(104, 1);
     for (bool bidir : {false, true}) {
         CAPTURE(bidir);
@@ -3053,11 +3055,13 @@ TEST_CASE("exact_complete is false after a label cap, and elimination waits (#11
         CHECK_FALSE(bg.exact_complete());  // nothing solved yet
         bg.solve();
         CHECK(bg.exact_complete());
+        CHECK_FALSE(bg.label_cap_hit());
 
         auto capped = make(1);
         capped.build();
         capped.solve();
         CHECK_FALSE(capped.exact_complete());
+        CHECK(capped.label_cap_hit());  // #96
         capped.eliminate_arcs(-1e9);
         CHECK(capped.eliminated_bucket_arcs() == 0);
         CHECK(capped.fix_buckets(-1e9) == 0);
@@ -3067,12 +3071,34 @@ TEST_CASE("exact_complete is false after a label cap, and elimination waits (#11
         bg.set_stage(Stage::Heuristic1);
         bg.solve();
         CHECK_FALSE(bg.exact_complete());
+        CHECK_FALSE(bg.label_cap_hit());
         bg.eliminate_arcs(-1e9);
         CHECK(bg.eliminated_bucket_arcs() == 0);
         CHECK(bg.fix_buckets(-1e9) == 0);
         bg.set_stage(Stage::Exact);
         bg.solve();
         CHECK(bg.exact_complete());
+
+        // The cap cuts a heuristic solve too, and nothing is set before a solve (#96).
+        capped.set_stage(Stage::Heuristic1);
+        capped.solve();
+        CHECK(capped.label_cap_hit());
+        auto fresh = make(500000);
+        fresh.build();
+        CHECK_FALSE(fresh.label_cap_hit());
+
+        // Enumeration's own caps clear enumeration_complete(), not the SCC flag.
+        auto enum_capped = BucketGraph<EmptyPack>(inst.pv, EmptyPack{},
+                                                  {.bucket_steps = {2.0, 0.0},
+                                                   .theta = 1e9,
+                                                   .bidirectional = bidir,
+                                                   .stage = Stage::Enumerate,
+                                                   .max_enum_labels = 1});
+        enum_capped.build();
+        enum_capped.solve();
+        CHECK_FALSE(enum_capped.enumeration_complete());
+        CHECK_FALSE(enum_capped.exact_complete());
+        CHECK_FALSE(enum_capped.label_cap_hit());
     }
 
     Solver<EmptyPack> solver(inst.pv, EmptyPack{},
@@ -3081,6 +3107,14 @@ TEST_CASE("exact_complete is false after a label cap, and elimination waits (#11
     solver.build();
     solver.solve();
     CHECK_FALSE(solver.exact_complete());
+    CHECK(solver.label_cap_hit());
+
+    Solver<EmptyPack> uncapped(inst.pv, EmptyPack{}, {.bucket_steps = {2.0, 0.0}});
+    uncapped.set_stage(Stage::Exact);
+    uncapped.build();
+    uncapped.solve();
+    CHECK(uncapped.exact_complete());
+    CHECK_FALSE(uncapped.label_cap_hit());
 }
 
 TEST_CASE("A label cap reached only by inserts downstream leaves the solve exact (#115)") {
@@ -3122,6 +3156,7 @@ TEST_CASE("A label cap reached only by inserts downstream leaves the solve exact
     auto paths = bg.solve();
     CHECK(best_reduced_cost(paths) == doctest::Approx(-2.0));
     CHECK(bg.exact_complete());
+    CHECK_FALSE(bg.label_cap_hit());  // #96: set only when the cap cut labelling
 }
 
 TEST_CASE(
