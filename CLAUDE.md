@@ -134,7 +134,7 @@ Naming, as enforced by `.clang-tidy`:
 
 - Test files: `test_<module>.cpp` in `tests/`.
 - Name test cases descriptively: `TEST_CASE("solver returns optimal for feasible input")`.
-- Every test target is built twice — once normally and once with `BGSPPRC_DISABLE_SIMD` — so a SIMD path that diverges from its scalar fallback fails the suite. Keep both registered when adding a target.
+- Every test target is built twice — once normally and once with `BGSPPRC_DISABLE_SIMD` — so a SIMD path that diverges from its scalar fallback fails the suite. Keep both registered when adding a target. SIMD needs libstdc++'s `<experimental/simd>`: on libc++ (macOS, Apple clang) both builds take the scalar path, so only a libstdc++ gate checks the SIMD code.
 
 ## Python
 

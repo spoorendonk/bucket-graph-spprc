@@ -3080,11 +3080,11 @@ TEST_CASE(
         CHECK(bg.exact_complete());
 
         // The cap cuts a heuristic solve too, and nothing is set before a solve (#96).
+        capped.build();
+        CHECK_FALSE(capped.label_cap_hit());
         capped.set_stage(Stage::Heuristic1);
         capped.solve();
         CHECK(capped.label_cap_hit());
-        capped.build();
-        CHECK_FALSE(capped.label_cap_hit());
         auto fresh = make(500000);
         fresh.build();
         CHECK_FALSE(fresh.label_cap_hit());
