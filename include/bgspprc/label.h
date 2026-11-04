@@ -34,6 +34,9 @@ struct Label {
 
     bool extended = false;
     bool dominated = false;
+    // Every label on the parent chain is at this vertex: a start label,
+    // possibly jump-boosted, rather than a path that left and came back.
+    bool at_start = false;
 
     // Compile-time resource states
     Pack::StatesTuple resource_states{};

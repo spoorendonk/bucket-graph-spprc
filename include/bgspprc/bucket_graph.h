@@ -170,6 +170,7 @@ public:
         }
         check_view(pv_);
         adj_.build(pv_);
+        shared_depot_ = pv_.source == pv_.sink ? pv_.source : -1;
         n_main_ = std::min(pv_.n_main_resources, 2);
         assert(opts_.xi > 0.0 && std::isfinite(opts_.xi) && "xi must be positive and finite");
         xi_ = opts_.xi;
@@ -1398,6 +1399,7 @@ private:
         L->q = new_q;
         L->extended = false;
         L->dominated = false;
+        L->at_start = parent->at_start && new_v == parent->vertex;
         if constexpr (Pack::size > 0) {
             L->resource_states = new_resource_states;
         }
@@ -1462,6 +1464,7 @@ private:
         L->q = new_q;
         L->extended = false;
         L->dominated = false;
+        L->at_start = parent->at_start && new_v == parent->vertex;
         if constexpr (Pack::size > 0) {
             L->resource_states = new_resource_states;
         }
@@ -1475,15 +1478,16 @@ private:
     /// mode, #110). There the start label and a tour back at the depot never
     /// dominate each other (#123): the start label is the join's bw partner
     /// for every arc into the depot, and a tour is a finished path.
-    bool at_shared_depot(const Label<Pack>* L) const {
-        return pv_.source == pv_.sink && L->vertex == pv_.source;
-    }
+    bool at_shared_depot(const Label<Pack>* L) const { return L->vertex == shared_depot_; }
 
+    // The depot exception reads the labels' at_start flags, not never_left():
+    // its parent-chain walks kept clang from inlining dominates() into the
+    // dominance scans, which made mono pricing ~10% slower (#130).
     bool dominates(const Label<Pack>* L1, const Label<Pack>* L2, Direction dir) const {
         if (L1->vertex != L2->vertex) {
             return false;
         }
-        if (at_shared_depot(L1) && never_left(L1, pv_.source) != never_left(L2, pv_.source)) {
+        if (at_shared_depot(L1) && L1->at_start != L2->at_start) {
             return false;
         }
 
@@ -3726,6 +3730,7 @@ private:
         L->parent_arc = -1;
         L->extended = false;
         L->dominated = false;
+        L->at_start = true;
         L->resource_states = resource_states;
         L->bucket = bi;
         return L;
@@ -4623,6 +4628,9 @@ private:
     [[no_unique_address]] Exec executor_;
     Adjacency adj_;
     int n_main_ = 1;
+    // The depot when the source is also the sink (#110), else -1: read by
+    // dominates() on every call, so kept here rather than behind pv_ (#130).
+    int shared_depot_ = -1;
     double xi_ = 25.0;                                   // current ξ (BG2021 §6.3)
     std::array<bool, 2> derived_step_ = {false, false};  // step r follows ξ
     std::array<bool, 2> main_nondisposable_ = {false, false};
