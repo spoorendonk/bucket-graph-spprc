@@ -26,8 +26,9 @@
 #if !defined(BGSPPRC_DISABLE_SIMD) && __has_include(<experimental/simd>)
 #include <experimental/simd>
 // libc++ ships the header but declares nothing in it without
-// -fexperimental-library; fall back to the scalar path there.
-#if !defined(_LIBCPP_VERSION) || defined(_LIBCPP_ENABLE_EXPERIMENTAL)
+// -fexperimental-library, and even then it lacks reductions and operators the
+// dominance checks use. Fall back to the scalar path on any libc++.
+#if !defined(_LIBCPP_VERSION)
 #define BGSPPRC_HAS_SIMD 1
 #endif
 #endif
@@ -147,6 +148,10 @@ public:
         int max_scc_labels = 500000;
     };
 
+    // Labels one SCC may hold in Stage::Enumerate, which ignores
+    // max_scc_labels: without dominance it needs more.
+    static constexpr int kEnumSccLabelCap = 2000000;
+
     BucketGraph(const ProblemView& pv, Pack pack, Options opts = {}, Exec executor = {})
         : pv_(pv), pack_(std::move(pack)), opts_(opts), executor_(std::move(executor)) {
         // Symmetric mode is the depot convention: single depot tours from a
@@ -200,6 +205,7 @@ public:
         initial_bucket_arc_count_ = current_bucket_arc_count();
         completion_ready_ = false;  // any bounds are for the old grid
         solved_ = false;
+        label_cap_hit_ = false;
     }
 
     /// Update reduced costs (fast, O(1) — just stores the pointer).
@@ -346,10 +352,12 @@ public:
     bool enumeration_complete() const { return enum_complete_; }
 
     /// True when the last solve() stopped labelling an SCC at its label cap
-    /// (Options::max_scc_labels; 2,000,000 in Stage::Enumerate) with labels
-    /// there still to extend, in any stage, so its result may miss paths.
-    /// A cap reached only by labels inserted into later SCCs cuts nothing
-    /// and leaves it false. Enumeration's own caps are enumeration_complete().
+    /// (Options::max_scc_labels; kEnumSccLabelCap in Stage::Enumerate) with
+    /// labels there still to extend, in any stage, so its result may miss
+    /// paths. A cap reached only by labels inserted into later SCCs cuts
+    /// nothing and leaves it false. False after build() until a solve; the
+    /// enumeration caps (max_enum_labels, max_paths) are
+    /// enumeration_complete() alone.
     bool label_cap_hit() const { return label_cap_hit_.load(std::memory_order_relaxed); }
 
     /// True when the last solve() ran Stage::Exact or Stage::Enumerate and
@@ -2403,20 +2411,18 @@ private:
 
         const bool enumerating = (opts_.stage == Stage::Enumerate);
         // Enumeration needs more labels per SCC since dominance is disabled.
-        const int scc_cap = enumerating ? 2000000 : opts_.max_scc_labels;
+        const int scc_cap = enumerating ? kEnumSccLabelCap : opts_.max_scc_labels;
         int label_count = 0;
         auto& dc = counters_for(dir);
 
-        // Check all label caps; marks enumeration incomplete on hit. The
-        // callers mark the solve inexact when the cap leaves labels
-        // unextended. In parallel mode, per-direction counters avoid data
-        // races; label_cap_hit_ and enum_complete_ are atomic to allow safe
+        // Check all label caps; the enumeration caps mark enumeration
+        // incomplete on hit. scc_cap marks the solve cut (and enumeration
+        // incomplete) after the passes, only when it left labels unextended.
+        // In parallel mode, per-direction counters avoid data races;
+        // label_cap_hit_ and enum_complete_ are atomic to allow safe
         // concurrent writes.
         auto at_label_cap = [&]() -> bool {
             if (label_count >= scc_cap) {
-                if (enumerating) {
-                    enum_complete_.store(false, std::memory_order_relaxed);
-                }
                 return true;
             }
             if (enumerating && dc.total_enum_labels >= opts_.max_enum_labels) {
@@ -2608,6 +2614,9 @@ private:
         // caps already clear enum_complete_.
         if (label_count >= scc_cap && has_unextended_label(scc_bs, dir, bl)) {
             label_cap_hit_.store(true, std::memory_order_relaxed);
+            if (enumerating) {
+                enum_complete_.store(false, std::memory_order_relaxed);
+            }
         }
 
         // Enumerate appends labels unsorted (try_insert_label), but the

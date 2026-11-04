@@ -59,6 +59,7 @@ public:
     void build() {
         bg_.build();
         exact_complete_ = false;
+        label_cap_hit_ = false;
         labelled_gap_ = NEG_INF;
     }
 
@@ -187,9 +188,10 @@ public:
     /// result proves no path within theta exists; see BucketGraph::exact_complete().
     [[nodiscard]] bool exact_complete() const { return exact_complete_; }
 
-    /// Whether the last solve() or enumerate() stopped labelling an SCC at
-    /// Options::max_scc_labels with labels left to extend; see
-    /// BucketGraph::label_cap_hit().
+    /// Whether the last solve() stopped labelling an SCC at
+    /// Options::max_scc_labels, or the last enumerate() at
+    /// BucketGraph::kEnumSccLabelCap, with labels left to extend; false
+    /// after build(). See BucketGraph::label_cap_hit().
     [[nodiscard]] bool label_cap_hit() const { return label_cap_hit_; }
 
     /// Phase timing breakdown accumulated across all solve iterations
@@ -222,6 +224,7 @@ public:
         if (changed) {
             bg_.build();
             exact_complete_ = false;
+            label_cap_hit_ = false;
             labelled_gap_ = NEG_INF;
         }
         return changed;

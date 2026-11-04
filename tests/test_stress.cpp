@@ -3083,6 +3083,8 @@ TEST_CASE(
         capped.set_stage(Stage::Heuristic1);
         capped.solve();
         CHECK(capped.label_cap_hit());
+        capped.build();
+        CHECK_FALSE(capped.label_cap_hit());
         auto fresh = make(500000);
         fresh.build();
         CHECK_FALSE(fresh.label_cap_hit());
@@ -3115,6 +3117,28 @@ TEST_CASE(
     uncapped.solve();
     CHECK(uncapped.exact_complete());
     CHECK_FALSE(uncapped.label_cap_hit());
+
+    // enumerate() reports its own labelling, and a rebuild clears the flag.
+    solver.enumerate(0.0);
+    CHECK(solver.enumeration_complete());
+    CHECK_FALSE(solver.label_cap_hit());
+    solver.solve();
+    CHECK(solver.label_cap_hit());
+    solver.build();
+    CHECK_FALSE(solver.label_cap_hit());
+
+    // Parallel bidir: the two directions share the flag.
+    ThreadPool pool(4);
+    BucketGraph<EmptyPack, ThreadPoolExecutor> par(
+        inst.pv, EmptyPack{},
+        {.bucket_steps = {2.0, 0.0}, .bidirectional = true, .max_scc_labels = 1},
+        ThreadPoolExecutor(pool));
+    par.build();
+    par.solve();
+    CHECK(par.label_cap_hit());
+    CHECK_FALSE(par.exact_complete());
+    par.build();
+    CHECK_FALSE(par.label_cap_hit());
 }
 
 TEST_CASE("A label cap reached only by inserts downstream leaves the solve exact (#115)") {
