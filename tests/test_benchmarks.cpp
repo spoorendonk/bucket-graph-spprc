@@ -4,7 +4,6 @@
 #include <bgspprc/resource.h>
 #include <bgspprc/solver.h>
 #include <cmath>
-#include <cstdio>
 #include <doctest/doctest.h>
 #include <filesystem>
 #include <fstream>
