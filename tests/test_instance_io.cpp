@@ -15,6 +15,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
 #include <utility>
 
 using namespace bgspprc;
@@ -128,8 +129,10 @@ TEST_CASE("load_rcspp_graph: parse tiny.graph") {
 }
 
 // Write text to a fresh file under the temp directory and return its path.
+// The pid in the name keeps overlapping test runs from sharing a file.
 static std::string write_temp(const char* name, const std::string& text) {
-    const auto path = std::filesystem::temp_directory_path() / name;
+    const auto path =
+        std::filesystem::temp_directory_path() / (std::to_string(::getpid()) + "_" + name);
     std::ofstream(path) << text;
     return path.string();
 }
