@@ -15,6 +15,7 @@
 #include <fstream>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -26,13 +27,16 @@ namespace bgspprc::io {
 
 namespace detail {
 
-/// Read one whitespace- or ':'-separated token of line, from pos, into out:
-/// a number by std::from_chars, which must take the whole token and fit the
-/// type, or a std::string as it is.
+/// Read one token of line, from pos, into out: a number by std::from_chars,
+/// which must take the whole token and fit the type, or a std::string as it
+/// is. Whitespace separates tokens; so does ':' (as in "DIMENSION : 101"),
+/// except inside a std::string, so a name such as "R101:a" stays whole.
 template <typename T>
-bool scan_token(std::string_view line, std::size_t& pos, T& out) {
-    const auto sep = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == ':'; };
-    while (pos < line.size() && sep(line[pos])) {
+bool scan_token(std::string_view line, std::size_t& pos, T& out, bool colon_sep = true) {
+    const auto sep = [colon_sep](char c) {
+        return c == ' ' || c == '\t' || c == '\r' || (colon_sep && c == ':');
+    };
+    while (pos < line.size() && (sep(line[pos]) || line[pos] == ':')) {
         ++pos;
     }
     const std::size_t begin = pos;
@@ -61,11 +65,17 @@ bool scan_fields(std::string_view line, int skip, Ts&... out) {
     std::size_t pos = 0;
     std::string ignored;
     for (int k = 0; k < skip; ++k) {
-        if (!scan_token(line, pos, ignored)) {
+        if (!scan_token(line, pos, ignored, true)) {
             return false;
         }
     }
-    return (scan_token(line, pos, out) && ...);
+    return (scan_token(line, pos, out, !std::is_same_v<Ts, std::string>) && ...);
+}
+
+/// Throw for a line whose fields could not be read, so nothing is left
+/// uninitialised.
+[[noreturn]] inline void malformed(std::string_view kind, std::string_view line) {
+    throw std::runtime_error(std::string(kind) + ": malformed line: " + std::string(line));
 }
 
 }  // namespace detail
@@ -187,9 +197,13 @@ inline Instance load_sppcc(const std::string& path) {
                 inst.name = line.substr(pos + 2);
             }
         } else if (line.starts_with("DIMENSION")) {
-            detail::scan_fields(line, 1, dimension);
+            if (!detail::scan_fields(line, 1, dimension)) {
+                detail::malformed("sppcc", line);
+            }
         } else if (line.starts_with("CAPACITY")) {
-            detail::scan_fields(line, 1, capacity);
+            if (!detail::scan_fields(line, 1, capacity)) {
+                detail::malformed("sppcc", line);
+            }
         } else if (line.starts_with("EDGE_WEIGHT_SECTION")) {
             dist_matrix.resize(dimension);
             for (int i = 0; i < dimension; ++i) {
@@ -317,13 +331,17 @@ inline Instance load_roberti_vrp(const std::string& path) {
                 }
             }
         } else if (line.starts_with("DIMENSION")) {
-            detail::scan_fields(line, 1, dimension);
+            if (!detail::scan_fields(line, 1, dimension)) {
+                detail::malformed("vrp", line);
+            }
             x.resize(dimension);
             y.resize(dimension);
             demands.resize(dimension, 0);
             profits.resize(dimension, 0);
         } else if (line.starts_with("CAPACITY")) {
-            detail::scan_fields(line, 1, capacity);
+            if (!detail::scan_fields(line, 1, capacity)) {
+                detail::malformed("vrp", line);
+            }
         } else if (line.starts_with("NODE_COORD_SECTION")) {
             section = COORDS;
         } else if (line.starts_with("DEMAND_SECTION")) {
@@ -567,7 +585,10 @@ inline Instance load_rcspp_graph(const std::string& path) {
         if (line[0] == 'p') {
             // p name n_vertices n_edges ng_size
             std::string name;
-            detail::scan_fields(line, 1, name, n_vertices, n_edges, ng_size);
+            if (!detail::scan_fields(line, 1, name, n_vertices, n_edges, ng_size) ||
+                n_vertices <= 0) {
+                detail::malformed("graph", line);
+            }
             inst.name = std::move(name);
             vertices.resize(n_vertices);
             inst.ng_neighbors.resize(n_vertices);
@@ -578,8 +599,9 @@ inline Instance load_rcspp_graph(const std::string& path) {
             double b;
             double d;
             double Q;
-            detail::scan_fields(line, 1, id, a, b, d, Q);
-            assert(id >= 0 && id < n_vertices);
+            if (!detail::scan_fields(line, 1, id, a, b, d, Q) || id < 0 || id >= n_vertices) {
+                detail::malformed("graph", line);
+            }
             vertices[id] = {.a = a, .b = b, .d = d, .Q = Q};
         } else if (line[0] == 'e') {
             // e id source target cost time
@@ -588,7 +610,10 @@ inline Instance load_rcspp_graph(const std::string& path) {
             int tgt;
             double cost;
             double time;
-            detail::scan_fields(line, 1, eid, src, tgt, cost, time);
+            if (!detail::scan_fields(line, 1, eid, src, tgt, cost, time) || src < 0 ||
+                src >= n_vertices || tgt < 0 || tgt >= n_vertices) {
+                detail::malformed("graph", line);
+            }
             inst.arc_from.push_back(src);
             inst.arc_to.push_back(tgt);
             inst.arc_cost.push_back(cost);

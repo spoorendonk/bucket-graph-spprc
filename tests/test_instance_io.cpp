@@ -9,8 +9,11 @@
 #include <cmath>
 #include <cstdint>
 #include <doctest/doctest.h>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -122,6 +125,41 @@ TEST_CASE("load_rcspp_graph: parse tiny.graph") {
     CHECK(inst.ng_neighbors.size() == 5);
     // Vertex 0's neighbors: {0, 1, 2} (self included)
     CHECK(inst.ng_neighbors[0].size() == 3);
+}
+
+// Write text to a fresh file under the temp directory and return its path.
+static std::string write_temp(const char* name, const std::string& text) {
+    const auto path = std::filesystem::temp_directory_path() / name;
+    std::ofstream(path) << text;
+    return path.string();
+}
+
+TEST_CASE("load_rcspp_graph: a name with ':' stays whole") {
+    const std::string text =
+        "p R101:a 2 1 1\n"
+        "v 0 0 20 0 100\n"
+        "v 1 0 20 0 100\n"
+        "e 0 0 1 3 1\n";
+    auto inst = io::load_rcspp_graph(write_temp("bgspprc_colon_name.graph", text));
+    CHECK(inst.name == "R101:a");
+    CHECK(inst.n_vertices == 2);
+    CHECK(inst.arc_from.size() == 1);
+}
+
+TEST_CASE("load_rcspp_graph: a malformed line throws") {
+    const std::string head =
+        "p bad 2 1 1\n"
+        "v 0 0 20 0 100\n"
+        "v 1 0 20 0 100\n";
+    // A missing field, a number that is not one, and a vertex out of range.
+    for (const char* e : {"e 0 0 1 3\n", "e 0 0 1 x 1\n", "e 0 0 7 3 1\n"}) {
+        CAPTURE(e);
+        CHECK_THROWS_AS(io::load_rcspp_graph(write_temp("bgspprc_bad_e.graph", head + e)),
+                        std::runtime_error);
+    }
+    CHECK_THROWS_AS(
+        io::load_rcspp_graph(write_temp("bgspprc_bad_v.graph", "p bad 2 0 1\nv 5 0 20 0 100\n")),
+        std::runtime_error);
 }
 
 TEST_CASE("compute_ng_neighbors: on sppcc instance with k=2") {
