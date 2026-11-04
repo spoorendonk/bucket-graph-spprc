@@ -25,7 +25,11 @@
 
 #if !defined(BGSPPRC_DISABLE_SIMD) && __has_include(<experimental/simd>)
 #include <experimental/simd>
+// libc++ ships the header but declares nothing in it without
+// -fexperimental-library; fall back to the scalar path there.
+#if !defined(_LIBCPP_VERSION) || defined(_LIBCPP_ENABLE_EXPERIMENTAL)
 #define BGSPPRC_HAS_SIMD 1
+#endif
 #endif
 
 #include "arc.h"
