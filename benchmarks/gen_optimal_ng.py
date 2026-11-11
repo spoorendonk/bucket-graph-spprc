@@ -15,6 +15,7 @@ Usage:
     python3 benchmarks/gen_optimal_ng.py            # regenerate the files
     python3 benchmarks/gen_optimal_ng.py --check    # verify files are up to date (exit 1 if not)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -36,23 +37,22 @@ def consensus(bg_path: Path) -> dict[tuple[str, str], dict[str, str]]:
     Raises on a genuine cross-mode disagreement (a correctness red flag —
     check_consistency.py covers this, but we re-assert it here)."""
     seen: dict[tuple[str, str, str], set[float]] = defaultdict(set)
-    for r in csv.DictReader(open(bg_path)):
-        if r["set"] in SETS and r["cost"]:
-            seen[(r["set"], r["ng"], r["instance"])].add(round(float(r["cost"]), QUANT))
+    with open(bg_path) as f:
+        for r in csv.DictReader(f):
+            if r["set"] in SETS and r["cost"]:
+                seen[(r["set"], r["ng"], r["instance"])].add(round(float(r["cost"]), QUANT))
 
     out: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
-    conflicts = []
+    conflicts: list[tuple[str, str, str, list[float]]] = []
     for (s, ng, inst), vals in seen.items():
         if len(vals) > 1:
             conflicts.append((s, ng, inst, sorted(vals)))
             continue
         out[(s, ng)][inst] = f"{vals.pop():.{QUANT}f}"
     if conflicts:
-        for s, ng, inst, vals in conflicts:
-            print(f"CONFLICT {s} ng{ng} {inst}: modes disagree {vals}", file=sys.stderr)
-        raise SystemExit(
-            f"{len(conflicts)} cross-mode cost conflict(s); run check_consistency.py"
-        )
+        for s, ng, inst, costs in conflicts:
+            print(f"CONFLICT {s} ng{ng} {inst}: modes disagree {costs}", file=sys.stderr)
+        raise SystemExit(f"{len(conflicts)} cross-mode cost conflict(s); run check_consistency.py")
     return out
 
 
@@ -65,8 +65,11 @@ def render(rows: dict[str, str]) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     ap.add_argument("--bg", default=str(ROOT / "bgspprc.csv"))
-    ap.add_argument("--check", action="store_true",
-                    help="verify on-disk files match the consensus; exit 1 if not")
+    ap.add_argument(
+        "--check",
+        action="store_true",
+        help="verify on-disk files match the consensus; exit 1 if not",
+    )
     args = ap.parse_args()
 
     cons = consensus(Path(args.bg))

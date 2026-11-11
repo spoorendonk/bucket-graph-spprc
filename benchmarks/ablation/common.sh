@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # common.sh — Shared helpers for ablation study scripts.
 # Source this file; do not execute directly.
+# Its globals (DEFAULT_TIMEOUT, and those the parse_* helpers set) are read by
+# the scripts that source it, which shellcheck cannot see from here.
+# shellcheck disable=SC2034
 
 SCRIPTDIR="$(cd "$(dirname "${BASH_SOURCE[1]}")" && pwd)"
 REPODIR="$(cd "$SCRIPTDIR/../.." && pwd)"

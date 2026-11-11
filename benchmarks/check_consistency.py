@@ -13,6 +13,7 @@ Exit code:
   0 — all solved groups consistent
   1 — at least one mismatch
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,7 +33,9 @@ MODES = (
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("--csv", default=Path(__file__).parent / "bgspprc.csv", type=Path)
     p.add_argument("--eps", type=float, default=1e-3)
     args = p.parse_args()

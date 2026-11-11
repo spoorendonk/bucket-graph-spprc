@@ -14,6 +14,7 @@
 set -euo pipefail
 
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=common.sh
 source "$SCRIPTDIR/common.sh"
 
 TIMEOUT="${DEFAULT_TIMEOUT}"

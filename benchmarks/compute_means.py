@@ -26,6 +26,7 @@ Defaults to `all`. `--rows` dumps the per-row joined data as CSV (the
 spot-check replacement for the former comparison_*.csv files) instead of the
 aggregate tables; it applies to the `pathwyse` and `rcspp` joins.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -36,6 +37,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+
+# A CSV row, or a joined row built from them: column -> cell.
+Row = dict[str, str]
 
 SET_ORDER = ["spprclib", "roberti", "rcspp"]
 NG_ORDER = ["8", "16", "24"]
@@ -93,7 +97,7 @@ def join_rcspp(
     paper_path: Path,
     ng_groups: tuple[int, ...] = RCSPP_NG_GROUPS,
     timeout: float = TIMEOUT,
-) -> list[dict]:
+) -> list[Row]:
     """bgspprc `para_bidir_vec` (rcspp sets) ⋈ paper `all_s` on (instance, ng).
 
     Pure join over existing data — no solver run. Cells that timed out on
@@ -157,19 +161,19 @@ def join_pathwyse(
     pw_path: Path,
     bg_mode: str = BG_MODE,
     included_sets: set[str] = INCLUDED_SETS,
-) -> list[dict]:
+) -> list[Row]:
     """bgspprc (`bg_mode`) ⋈ pathwyse on (instance, ng), filtered to
     `included_sets`. Pure join over existing data. Missing times stay `''`
     (downstream treats them as timeouts). Returns one dict per joined
     (instance, ng), sorted by (ng, instance)."""
-    bg: dict[tuple[str, str], dict] = {}
+    bg: dict[tuple[str, str], Row] = {}
     with open(bg_path) as f:
         for r in csv.DictReader(f):
             if r["mode"] != bg_mode:
                 continue
             bg[(r["instance"], r["ng"])] = r
 
-    pw: dict[tuple[str, str], dict] = {}
+    pw: dict[tuple[str, str], Row] = {}
     with open(pw_path) as f:
         for r in csv.DictReader(f):
             pw[(r["instance"], r["ng"])] = r  # last-seen row wins on dups
@@ -209,8 +213,9 @@ def modes_table(csv_path: Path, shift: float = 1.0, tl: float = TIMEOUT) -> str:
     """bgspprc-only ablation across (set, ng, mode). Empty cost = timeout
     substituted with `tl` seconds in both the sgm and the arithmetic mean.
     `solved` is the count of instances that finished without TL."""
-    rows = list(csv.DictReader(open(csv_path)))
-    grouped: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    with open(csv_path) as f:
+        rows = list(csv.DictReader(f))
+    grouped: dict[tuple[str, str, str], list[Row]] = defaultdict(list)
     for r in rows:
         s = SET_DISPLAY.get(r["set"], r["set"])
         grouped[(s, r["ng"], r["mode"])].append(r)
@@ -236,16 +241,14 @@ def modes_table(csv_path: Path, shift: float = 1.0, tl: float = TIMEOUT) -> str:
     return "\n".join(lines)
 
 
-def pathwyse_table(
-    bg_path: Path, pw_path: Path, shift: float = 1.0, tl: float = TIMEOUT
-) -> str:
+def pathwyse_table(bg_path: Path, pw_path: Path, shift: float = 1.0, tl: float = TIMEOUT) -> str:
     """bgspprc para_bidir_vec vs patched Pathwyse on `.sppcc`/`.vrp`, in Plato
     style: one row per (set, ng, solver). Timeouts substitute as `tl` seconds
     (never dropped). Cost equality is checked per row; the bg_leq/bg_gt/bg_zero
     tally is printed to stderr (inspect `--rows` for the per-row costs)."""
     rows = join_pathwyse(bg_path, pw_path)
 
-    grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    grouped: dict[tuple[str, str], list[Row]] = defaultdict(list)
     for r in rows:
         grouped[(r["set"], r["ng"])].append(r)
 
@@ -258,8 +261,7 @@ def pathwyse_table(
             rs = grouped.get((s, ng), [])
             if not rs:
                 continue
-            for solver, col in (("bgspprc", "bgspprc_s"),
-                                ("pathwyse", "pathwyse_s")):
+            for solver, col in (("bgspprc", "bgspprc_s"), ("pathwyse", "pathwyse_s")):
                 ts = [tl if r[col] == "" else float(r[col]) for r in rs]
                 solved = sum(1 for r in rs if r[col] != "")
                 lines.append(
@@ -281,9 +283,7 @@ def pathwyse_table(
     return "\n".join(lines)
 
 
-def rcspp_table(
-    bg_path: Path, paper_path: Path, shift: float = 1.0, tl: float = TIMEOUT
-) -> str:
+def rcspp_table(bg_path: Path, paper_path: Path, shift: float = 1.0, tl: float = TIMEOUT) -> str:
     """bgspprc para_bidir_vec vs Petersen & Spoorendonk 2025 paper runtimes per
     ng, Plato-style. `TL` cells substitute as `tl` seconds."""
     rows = join_rcspp(bg_path, paper_path)
@@ -291,7 +291,7 @@ def rcspp_table(
     def to_s(v: str) -> float:
         return tl if v == "TL" else float(v)
 
-    grouped: dict[str, list[dict]] = defaultdict(list)
+    grouped: dict[str, list[Row]] = defaultdict(list)
     for r in rows:
         grouped[r["ng"]].append(r)
 
@@ -301,8 +301,7 @@ def rcspp_table(
     ]
     for ng in sorted(grouped, key=int):
         rs = grouped[ng]
-        for solver, col in (("bgspprc", "bgspprc_s"),
-                            ("paper", "paper_all_s")):
+        for solver, col in (("bgspprc", "bgspprc_s"), ("paper", "paper_all_s")):
             ts = [to_s(r[col]) for r in rs]
             solved = sum(1 for r in rs if r[col] != "TL")
             lines.append(
@@ -314,7 +313,7 @@ def rcspp_table(
     return "\n".join(lines)
 
 
-def dump_rows(rows: list[dict], columns: list[str]) -> None:
+def dump_rows(rows: list[Row], columns: list[str]) -> None:
     """Write joined rows as CSV to stdout (spot-check / per-row inspection)."""
     w = csv.DictWriter(sys.stdout, fieldnames=columns, extrasaction="ignore")
     w.writeheader()
@@ -363,8 +362,16 @@ def main() -> int:
         if args.table == "pathwyse":
             dump_rows(
                 join_pathwyse(bg, pw),
-                ["instance", "ng", "bgspprc_s", "pathwyse_s",
-                 "bgspprc_cost", "pathwyse_cost", "bg_leq", "ratio"],
+                [
+                    "instance",
+                    "ng",
+                    "bgspprc_s",
+                    "pathwyse_s",
+                    "bgspprc_cost",
+                    "pathwyse_cost",
+                    "bg_leq",
+                    "ratio",
+                ],
             )
         elif args.table == "rcspp":
             dump_rows(
@@ -372,8 +379,7 @@ def main() -> int:
                 ["instance", "ng", "bgspprc_s", "paper_all_s", "ratio"],
             )
         else:
-            print("--rows requires an explicit table: pathwyse or rcspp",
-                  file=sys.stderr)
+            print("--rows requires an explicit table: pathwyse or rcspp", file=sys.stderr)
             return 2
         return 0
 

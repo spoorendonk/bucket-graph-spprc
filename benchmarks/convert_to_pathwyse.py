@@ -33,10 +33,37 @@ The conversion models the same graph structure as bgspprc's loaders:
     - Arc costs include duals/profits as per bgspprc's instance_io.h.
     - Ng-neighborhoods are computed by Pathwyse internally via algo/default/ng/set_size.
 """
+
+from __future__ import annotations
+
 import math
 import os
 import sys
 from pathlib import Path
+from typing import TypedDict
+
+# An arc as the writer reads it: (from, to, cost, demand at `to`).
+Arc = tuple[int, int, float, float]
+
+
+class _InstanceBase(TypedDict):
+    name: str
+    n_vertices: int
+    source: int
+    sink: int
+    arcs: list[Arc]
+    cap_ub: float
+    demands: list[float]
+    has_tw: bool
+    tw_lb: list[float] | None
+    tw_ub: list[float] | None
+    arc_times: list[float] | None
+
+
+class Instance(_InstanceBase, total=False):
+    """A parsed instance; only `.graph` files carry per-vertex capacities."""
+
+    cap_ub_per_vertex: list[float]
 
 
 # Per-format cost-scale defaults. Pathwyse reads every field with std::stoi
@@ -53,10 +80,10 @@ DEFAULT_CAP_SCALE = 1
 _INT32_MAX = 2_147_483_647
 
 
-def _scale_int(value, scale):
+def _scale_int(value: float | str, scale: float) -> int:
     """Multiply by scale and round to nearest int. Pathwyse stores all fields
     as int (std::stoi → 32-bit), so callers must scale back on output side."""
-    result = int(round(float(value) * scale))
+    result = round(float(value) * scale)
     if abs(result) > _INT32_MAX:
         raise OverflowError(
             f"scaled value {result} exceeds int32 range "
@@ -65,7 +92,7 @@ def _scale_int(value, scale):
     return result
 
 
-def parse_sppcc(filepath):
+def parse_sppcc(filepath: str | Path) -> Instance:
     """Parse SPPCC file (spprclib format) — matches instance_io.h load_sppcc."""
     with open(filepath) as f:
         lines = f.readlines()
@@ -73,9 +100,9 @@ def parse_sppcc(filepath):
     name = ""
     dimension = 0
     capacity = 0.0
-    dist_matrix = []
-    node_weights = []
-    demands = []
+    dist_matrix: list[list[float]] = []
+    node_weights: list[float] = []
+    demands: list[float] = []
 
     i = 0
     while i < len(lines):
@@ -89,13 +116,13 @@ def parse_sppcc(filepath):
         elif line.startswith("CAPACITY"):
             capacity = float(line.split(":")[1].strip())
         elif line.startswith("EDGE_WEIGHT_SECTION"):
-            dist_matrix = [None] * dimension
-            for r in range(dimension):
-                vals = []
+            dist_matrix = []
+            for _ in range(dimension):
+                vals: list[float] = []
                 while len(vals) < dimension:
                     i += 1
                     vals.extend(float(x) for x in lines[i].split())
-                dist_matrix[r] = vals
+                dist_matrix.append(vals)
         elif line.startswith("NODE_WEIGHT_SECTION"):
             node_weights = []
             while len(node_weights) < dimension:
@@ -103,7 +130,7 @@ def parse_sppcc(filepath):
                 node_weights.extend(float(x) for x in lines[i].split())
         elif line.startswith("DEMAND_SECTION"):
             demands = [0.0] * dimension
-            for r in range(dimension):
+            for _ in range(dimension):
                 i += 1
                 parts = lines[i].split()
                 idx = int(parts[0]) - 1  # 1-indexed to 0-indexed
@@ -116,7 +143,7 @@ def parse_sppcc(filepath):
     source = 0
     sink = N
 
-    arcs = []  # (from, to, cost, demand)
+    arcs: list[Arc] = []
     for ii in range(N):
         for jj in range(1, N):
             if ii == jj:
@@ -131,8 +158,8 @@ def parse_sppcc(filepath):
     depot_dual = node_weights[0]
     for idx in range(len(arcs)):
         if arcs[idx][0] == 0:
-            f, t, c, d = arcs[idx]
-            arcs[idx] = (f, t, c + depot_dual, d)
+            frm, to, c, d = arcs[idx]
+            arcs[idx] = (frm, to, c + depot_dual, d)
 
     return {
         "name": name,
@@ -141,7 +168,7 @@ def parse_sppcc(filepath):
         "sink": sink,
         "arcs": arcs,
         "cap_ub": capacity,
-        "demands": demands + [0.0],  # sink has zero demand
+        "demands": [*demands, 0.0],  # sink has zero demand
         "has_tw": False,
         "tw_lb": None,
         "tw_ub": None,
@@ -149,7 +176,7 @@ def parse_sppcc(filepath):
     }
 
 
-def parse_vrp(filepath):
+def parse_vrp(filepath: str | Path) -> Instance:
     """Parse Roberti VRP file — matches instance_io.h load_roberti_vrp."""
     with open(filepath) as f:
         lines = f.readlines()
@@ -157,10 +184,10 @@ def parse_vrp(filepath):
     name = ""
     dimension = 0
     capacity = 0.0
-    x = []
-    y = []
-    demands = []
-    profits = []
+    x: list[float] = []
+    y: list[float] = []
+    demands: list[float] = []
+    profits: list[float] = []
     depot = 1  # 1-indexed
 
     NONE, COORDS, DEMANDS, DEPOT, PROFIT = range(5)
@@ -211,7 +238,7 @@ def parse_vrp(filepath):
                 idx = int(parts[0]) - 1
                 profits[idx] = float(parts[1])
 
-    def dist(i, j):
+    def dist(i: int, j: int) -> float:
         dx = x[i] - x[j]
         dy = y[i] - y[j]
         return math.sqrt(dx * dx + dy * dy)
@@ -222,7 +249,7 @@ def parse_vrp(filepath):
     source = dep0
     sink = N
 
-    arcs = []
+    arcs: list[Arc] = []
     for ii in range(N):
         for jj in range(N):
             if ii == jj:
@@ -241,7 +268,7 @@ def parse_vrp(filepath):
         "sink": sink,
         "arcs": arcs,
         "cap_ub": capacity,
-        "demands": demands + [0.0],  # sink has zero demand
+        "demands": [*demands, 0.0],  # sink has zero demand
         "has_tw": False,
         "tw_lb": None,
         "tw_ub": None,
@@ -249,15 +276,16 @@ def parse_vrp(filepath):
     }
 
 
-def parse_graph(filepath):
+def parse_graph(filepath: str | Path) -> Instance:
     """Parse .graph file (rcspp_dataset format) — matches instance_io.h load_rcspp_graph."""
     with open(filepath) as f:
         lines = f.readlines()
 
     n_vertices = 0
     name = ""
-    vertices = []
-    arcs = []
+    # Per vertex: time window [a, b], demand d, capacity Q.
+    vertices: list[dict[str, float]] = []
+    arcs: list[tuple[int, int, float, float, float]] = []  # (from, to, cost, demand, time)
 
     for line in lines:
         line = line.strip()
@@ -268,7 +296,7 @@ def parse_graph(filepath):
             parts = line.split()
             name = parts[1]
             n_vertices = int(parts[2])
-            vertices = [None] * n_vertices
+            vertices = [{} for _ in range(n_vertices)]
         elif line.startswith("v "):
             parts = line.split()
             vid = int(parts[1])
@@ -309,12 +337,12 @@ def parse_graph(filepath):
 
 
 def write_pathwyse(
-    inst,
-    outpath,
-    cost_scale=1,
-    time_scale=DEFAULT_TIME_SCALE,
-    cap_scale=DEFAULT_CAP_SCALE,
-):
+    inst: Instance,
+    outpath: str | Path,
+    cost_scale: int = 1,
+    time_scale: int = DEFAULT_TIME_SCALE,
+    cap_scale: int = DEFAULT_CAP_SCALE,
+) -> None:
     """Write instance in Pathwyse format. All numeric fields are scaled and
     rounded to int since Pathwyse parses every value with std::stoi.
 
@@ -346,7 +374,7 @@ def write_pathwyse(
 
     # Determine resources
     n_res = 0
-    res_types = []
+    res_types: list[str] = []
     # Resource 0: capacity (CAP)
     res_types.append("CAP")
     n_res += 1
@@ -359,8 +387,8 @@ def write_pathwyse(
         # Header
         f.write(f"NAME : {inst['name']}\n")
         f.write(f"SIZE : {nv}\n")
-        f.write(f"DIRECTED : 1\n")
-        f.write(f"CYCLIC : 1\n")
+        f.write("DIRECTED : 1\n")
+        f.write("CYCLIC : 1\n")
         f.write(f"ORIGIN : {source}\n")
         f.write(f"DESTINATION : {sink}\n")
         f.write(f"RESOURCES : {n_res}\n")
@@ -368,29 +396,35 @@ def write_pathwyse(
 
         # Resource types
         f.write("RES_TYPE\n")
-        for i, rt in enumerate(res_types):
-            f.write(f"{i} {rt}\n")
+        f.writelines(f"{i} {rt}\n" for i, rt in enumerate(res_types))
         f.write("END\n")
+
+        # The time windows, which the parsers set exactly when they set has_tw.
+        tw: tuple[list[float], list[float]] | None = None
+        if has_tw:
+            tw_lb, tw_ub = inst["tw_lb"], inst["tw_ub"]
+            assert tw_lb is not None and tw_ub is not None
+            tw = (tw_lb, tw_ub)
 
         # Global resource bounds
         f.write("RES_BOUND\n")
         f.write(f"0 0 {_scale_int(inst['cap_ub'], cap_scale)}\n")
-        if has_tw:
+        if tw:
+            tw_lb, tw_ub = tw
             # Global time window: [min_tw_lb, max_tw_ub]
             f.write(
-                f"1 {_scale_int(inst['tw_lb'][source], time_scale)} "
-                f"{_scale_int(inst['tw_ub'][sink], time_scale)}\n"
+                f"1 {_scale_int(tw_lb[source], time_scale)} {_scale_int(tw_ub[sink], time_scale)}\n"
             )
         f.write("END\n")
 
         # Per-node resource bounds (time windows)
-        if has_tw:
+        if tw:
+            tw_lb, tw_ub = tw
             f.write("RES_NODE_BOUND\n")
-            for v in range(nv):
-                f.write(
-                    f"1 {v} {_scale_int(inst['tw_lb'][v], time_scale)} "
-                    f"{_scale_int(inst['tw_ub'][v], time_scale)}\n"
-                )
+            f.writelines(
+                f"1 {v} {_scale_int(tw_lb[v], time_scale)} {_scale_int(tw_ub[v], time_scale)}\n"
+                for v in range(nv)
+            )
             f.write("END\n")
 
         # Per-node capacity bounds (if per-vertex caps differ)
@@ -403,8 +437,9 @@ def write_pathwyse(
 
         # Edge costs
         f.write("EDGE_COST\n")
-        for arc in inst["arcs"]:
-            f.write(f"{arc[0]} {arc[1]} {_scale_int(arc[2], cost_scale)}\n")
+        f.writelines(
+            f"{arc[0]} {arc[1]} {_scale_int(arc[2], cost_scale)}\n" for arc in inst["arcs"]
+        )
         f.write("END\n")
 
         # Node costs: all zero (costs are on arcs, which already include duals)
@@ -422,10 +457,11 @@ def write_pathwyse(
         f.write("END\n")
 
         # Edge consumption: time (resource 1)
-        if has_tw and inst["arc_times"]:
+        arc_times = inst["arc_times"]
+        if has_tw and arc_times:
             f.write("EDGE_CONSUMPTION\n")
             for i, arc in enumerate(inst["arcs"]):
-                time_val = inst["arc_times"][i]
+                time_val = arc_times[i]
                 if time_val != 0:
                     f.write(f"1 {arc[0]} {arc[1]} {_scale_int(time_val, time_scale)}\n")
             f.write("END\n")
@@ -438,12 +474,18 @@ def write_pathwyse(
         f.write(f"cap_scale={cap_scale}\n")
 
 
-def convert_file(filepath, outdir, cost_scale, time_scale, cap_scale):
+def convert_file(
+    path: str | Path,
+    outdir: str | Path,
+    cost_scale: int | None,
+    time_scale: int,
+    cap_scale: int,
+) -> str | None:
     """Convert a single instance file to Pathwyse format.
 
     cost_scale=None selects the per-extension default from DEFAULT_COST_SCALES.
     """
-    filepath = Path(filepath)
+    filepath = Path(path)
     ext = filepath.suffix
 
     if ext == ".sppcc":
@@ -469,12 +511,10 @@ def convert_file(filepath, outdir, cost_scale, time_scale, cap_scale):
     return str(outpath)
 
 
-def main():
+def main() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Convert bgspprc instances to Pathwyse format"
-    )
+    parser = argparse.ArgumentParser(description="Convert bgspprc instances to Pathwyse format")
     parser.add_argument("paths", nargs="+", help="Instance files or directories")
     parser.add_argument(
         "--outdir",
@@ -519,7 +559,8 @@ def main():
                 print(f"  {p.name} -> {out}")
                 converted += 1
                 used_scales[p.suffix] = (
-                    args.cost_scale if args.cost_scale is not None
+                    args.cost_scale
+                    if args.cost_scale is not None
                     else DEFAULT_COST_SCALES[p.suffix]
                 )
         elif p.is_dir():
@@ -532,7 +573,8 @@ def main():
                         print(f"  {f.name} -> {out}")
                         converted += 1
                         used_scales[f.suffix] = (
-                            args.cost_scale if args.cost_scale is not None
+                            args.cost_scale
+                            if args.cost_scale is not None
                             else DEFAULT_COST_SCALES[f.suffix]
                         )
         else:
@@ -540,9 +582,9 @@ def main():
 
     if args.cost_scale is None:
         # Show the per-extension scales actually applied this run.
-        scale_str = ", ".join(
-            f"{ext.lstrip('.')}={s}" for ext, s in sorted(used_scales.items())
-        ) or "auto"
+        scale_str = (
+            ", ".join(f"{ext.lstrip('.')}={s}" for ext, s in sorted(used_scales.items())) or "auto"
+        )
         cost_scale_label = f"auto ({scale_str})" if used_scales else "auto"
     else:
         cost_scale_label = str(args.cost_scale)

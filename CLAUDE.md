@@ -146,13 +146,15 @@ Naming, as enforced by `.clang-tidy`:
 The Python here is benchmark tooling under `benchmarks/`, not a packaged
 project — there is no `pyproject.toml` and no venv by default.
 
-- Full type annotations on all functions; check with `mypy --strict`.
+- Full type annotations on all functions, held by `mypy --strict`.
 - Built-in generics (`list[int]`, `dict[str, Any]`) and `|` unions.
-- `ruff` for format and lint; `test_<module>.py` for tests, run with pytest.
+- `ruff` for format and lint (rules in `ruff.toml`); `test_<module>.py` for
+  tests, run with pytest.
 - ctest runs the pytest suite as `python_tests` when it finds a Python with
   pytest (`.venv/bin` first: `uv venv && uv pip install -r requirements-dev.txt`); without one
-  configure warns and the gate skips it. No hook runs `ruff` or `mypy`; run
-  them yourself on Python changes.
+  configure warns and the gate skips it. ruff and mypy run as lint tests
+  (`ruff_check`, `ruff_format`, `mypy`; see Tooling and Gates), so the gate
+  holds them; `ruff format` and `ruff check --fix` fix most of what they find.
 
 ## Tooling and Gates
 
@@ -168,12 +170,13 @@ only `wcp init`; the CMake route gates a clone just as well.
 - **commit-msg** — Conventional Commits, subject ≤72 chars. `fixup!`/`squash!`/`amend!` pass through so `git rebase --autosquash` works (pre-push stops them at the trunk), and `type!:` marks a breaking change. For an `amend!` it judges the replacement message after the blank line.
 - **pre-push** — refuses merge commits and unsquashed `fixup!`/`squash!`/`amend!` commits on the trunk and a HEAD without a review receipt (`## Self-Review`), then runs the clean/build/test fences above in a fresh worktree of the pushed commit, inside the host's build budget (`wcp build`) where wcp is installed. Docs-only pushes skip the build.
 - A `build/` configured with another generator makes the build fence abort with "generator does not match": run the `clean` fence first.
-- **Lint as ctest tests** (`cmake/Lint.cmake`, label `lint`) — `clang_format` checks every tracked C++ file, and `clang_tidy:<path>` tidies one translation unit with warnings as errors, one test per unit in `BGSPPRC_LINT_UNITS` (every test, CLI and example source; headers are reached through them, all but the umbrella `bgspprc.h`, which only includes the others). pre-push runs the suite without them, then only the `clang_tidy:` tests the push reaches, through its cached runner; the build fence uses Ninja when it is installed (`ninja-build`; stock Ubuntu lacks it, and then the gate falls back to running every `clang_tidy:` test uncached), which gives it the dependency log it needs for that. A missing clang tool is a configure warning and drops its tests. `ctest -LE lint` skips them while iterating. A changed header is tidied at push only through a one-line stub unit, not through its includers, and there is no scheduled full lint: **after a header change, run the whole lint yourself** (`ctest --test-dir build -L lint -j4`), since a finding that shows only when a template is instantiated surfaces there and nowhere else.
+- **Lint as ctest tests** (`cmake/Lint.cmake`, label `lint`) — `clang_format` checks every tracked C++ file, and `clang_tidy:<path>` tidies one translation unit with warnings as errors, one test per unit in `BGSPPRC_LINT_UNITS` (every test, CLI and example source; headers are reached through them, all but the umbrella `bgspprc.h`, which only includes the others). The script lint is `ruff_check` and `ruff_format` (`ruff.toml`) and `mypy` (`--strict`) over every tracked `*.py`, and `shellcheck` (`.shellcheckrc`) over every tracked `*.sh`; not `.githooks/`, which is wcp's and fixed upstream. Their versions are pinned in `requirements-dev.txt` and a tool at another version, like a missing one, is a configure warning that drops its tests. pre-push runs the suite with every test but the `clang_tidy:` ones (so `clang_format` and the script lint run in full), then only the `clang_tidy:` tests the push reaches, through its cached runner; the build fence uses Ninja when it is installed (`ninja-build`; stock Ubuntu lacks it, and then the gate falls back to running every `clang_tidy:` test uncached), which gives it the dependency log it needs for that. A missing clang tool is a configure warning and drops its tests. `ctest -LE lint` skips them while iterating. A changed header is tidied at push only through a one-line stub unit, not through its includers, and there is no scheduled full lint: **after a header change, run the whole lint yourself** (`ctest --test-dir build -L lint -j4`), since a finding that shows only when a template is instantiated surfaces there and nowhere else.
 - **Local CI is the gate.** A change lands on its review plus a green pre-push, run under the machine lock where one is shared (`xk lock -- git push …`). Nothing waits on GitHub: there are no GitHub Actions workflows, and any added later runs only on `workflow_dispatch` and a `schedule` at most weekly — never on push or pull request. A `--no-verify` push is therefore caught by nothing; don't make one.
 
 The old hooks also auto-formatted and re-staged (with shfmt and ruff too),
 applied safe clang-tidy fixes and ran the suite at commit, and ran
-shellcheck, ruff complexity and mypy as push warnings; those are gone.
+shellcheck, ruff complexity and mypy as push warnings; those are gone, and
+ruff, mypy and shellcheck are now lint tests that fail the push instead.
 
 On a host with wcp, pre-push takes its CPUs and jobs from the host's build
 budget (`wcp build`), and `wcp doctor` shows that budget. Without wcp, or to

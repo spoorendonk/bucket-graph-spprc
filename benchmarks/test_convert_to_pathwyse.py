@@ -1,18 +1,17 @@
 """Tests for convert_to_pathwyse.py instance format conversion."""
+
+import sys
 import textwrap
 from pathlib import Path
 
 import pytest
-
-# Import the module under test
-import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
 from convert_to_pathwyse import _scale_int, parse_graph, parse_sppcc, parse_vrp, write_pathwyse
 
 
 @pytest.fixture
-def graph_instance(tmp_path):
+def graph_instance(tmp_path: Path) -> Path:
     """Create a minimal .graph instance file."""
     content = textwrap.dedent("""\
         c test graph
@@ -36,7 +35,7 @@ def graph_instance(tmp_path):
 
 
 @pytest.fixture
-def sppcc_instance(tmp_path):
+def sppcc_instance(tmp_path: Path) -> Path:
     """Create a minimal .sppcc instance file."""
     content = textwrap.dedent("""\
         NAME : test
@@ -62,7 +61,7 @@ def sppcc_instance(tmp_path):
 
 
 @pytest.fixture
-def vrp_instance(tmp_path):
+def vrp_instance(tmp_path: Path) -> Path:
     """Create a minimal .vrp instance file."""
     content = textwrap.dedent("""\
         NAME : test
@@ -93,60 +92,60 @@ def vrp_instance(tmp_path):
 
 
 class TestParseGraph:
-    def test_vertex_count(self, graph_instance):
+    def test_vertex_count(self, graph_instance: Path) -> None:
         inst = parse_graph(str(graph_instance))
         assert inst["n_vertices"] == 4
 
-    def test_source_sink(self, graph_instance):
+    def test_source_sink(self, graph_instance: Path) -> None:
         inst = parse_graph(str(graph_instance))
         assert inst["source"] == 0
         assert inst["sink"] == 3
 
-    def test_arc_count(self, graph_instance):
+    def test_arc_count(self, graph_instance: Path) -> None:
         inst = parse_graph(str(graph_instance))
         assert len(inst["arcs"]) == 4
 
-    def test_has_time_windows(self, graph_instance):
+    def test_has_time_windows(self, graph_instance: Path) -> None:
         inst = parse_graph(str(graph_instance))
         assert inst["has_tw"] is True
         assert inst["tw_lb"] == [0, 10, 20, 0]
         assert inst["tw_ub"] == [100, 50, 80, 100]
 
-    def test_demands(self, graph_instance):
+    def test_demands(self, graph_instance: Path) -> None:
         inst = parse_graph(str(graph_instance))
         assert inst["demands"] == [0, 10, 20, 0]
 
 
 class TestParseSppcc:
-    def test_vertex_count(self, sppcc_instance):
+    def test_vertex_count(self, sppcc_instance: Path) -> None:
         inst = parse_sppcc(str(sppcc_instance))
         # 3 original + 1 sink = 4
         assert inst["n_vertices"] == 4
 
-    def test_source_sink(self, sppcc_instance):
+    def test_source_sink(self, sppcc_instance: Path) -> None:
         inst = parse_sppcc(str(sppcc_instance))
         assert inst["source"] == 0
         assert inst["sink"] == 3
 
-    def test_no_time_windows(self, sppcc_instance):
+    def test_no_time_windows(self, sppcc_instance: Path) -> None:
         inst = parse_sppcc(str(sppcc_instance))
         assert inst["has_tw"] is False
 
 
 class TestParseVrp:
-    def test_vertex_count(self, vrp_instance):
+    def test_vertex_count(self, vrp_instance: Path) -> None:
         inst = parse_vrp(str(vrp_instance))
         # 3 original + 1 sink = 4
         assert inst["n_vertices"] == 4
 
-    def test_source_sink(self, vrp_instance):
+    def test_source_sink(self, vrp_instance: Path) -> None:
         inst = parse_vrp(str(vrp_instance))
         assert inst["source"] == 0
         assert inst["sink"] == 3
 
 
 class TestWritePathwyse:
-    def test_graph_output(self, graph_instance, tmp_path):
+    def test_graph_output(self, graph_instance: Path, tmp_path: Path) -> None:
         inst = parse_graph(str(graph_instance))
         outpath = tmp_path / "out.txt"
         write_pathwyse(inst, str(outpath))
@@ -163,7 +162,7 @@ class TestWritePathwyse:
         assert "NODE_CONSUMPTION" in content
         assert "EDGE_CONSUMPTION" in content
 
-    def test_sppcc_output(self, sppcc_instance, tmp_path):
+    def test_sppcc_output(self, sppcc_instance: Path, tmp_path: Path) -> None:
         inst = parse_sppcc(str(sppcc_instance))
         outpath = tmp_path / "out.txt"
         write_pathwyse(inst, str(outpath))
@@ -176,7 +175,7 @@ class TestWritePathwyse:
         # No time window sections for sppcc
         assert "1 TW" not in content
 
-    def test_vrp_output(self, vrp_instance, tmp_path):
+    def test_vrp_output(self, vrp_instance: Path, tmp_path: Path) -> None:
         inst = parse_vrp(str(vrp_instance))
         outpath = tmp_path / "out.txt"
         write_pathwyse(inst, str(outpath))
@@ -187,25 +186,25 @@ class TestWritePathwyse:
 
 
 class TestScaleInt:
-    def test_positive(self):
+    def test_positive(self) -> None:
         assert _scale_int(10.5, 1_000_000) == 10_500_000
 
-    def test_negative(self):
+    def test_negative(self) -> None:
         assert _scale_int(-3.7, 1000) == -3700
 
-    def test_zero(self):
+    def test_zero(self) -> None:
         assert _scale_int(0, 1_000_000) == 0
 
-    def test_identity(self):
+    def test_identity(self) -> None:
         assert _scale_int(42, 1) == 42
 
-    def test_overflow_raises(self):
+    def test_overflow_raises(self) -> None:
         with pytest.raises(OverflowError):
             _scale_int(3000.0, 1_000_000)
 
 
 class TestWriteScaling:
-    def test_edge_costs_are_integers(self, graph_instance, tmp_path):
+    def test_edge_costs_are_integers(self, graph_instance: Path, tmp_path: Path) -> None:
         inst = parse_graph(str(graph_instance))
         outpath = tmp_path / "out.txt"
         write_pathwyse(inst, str(outpath))
@@ -221,7 +220,7 @@ class TestWriteScaling:
                 parts = line.split()
                 assert parts[2].lstrip("-").isdigit(), f"Non-integer cost: {parts[2]}"
 
-    def test_sidecar_file_created(self, graph_instance, tmp_path):
+    def test_sidecar_file_created(self, graph_instance: Path, tmp_path: Path) -> None:
         inst = parse_graph(str(graph_instance))
         outpath = tmp_path / "out.txt"
         write_pathwyse(inst, str(outpath), cost_scale=1000)
@@ -232,7 +231,7 @@ class TestWriteScaling:
         assert "time_scale=1000" in content
         assert "cap_scale=1" in content
 
-    def test_custom_scales(self, sppcc_instance, tmp_path):
+    def test_custom_scales(self, sppcc_instance: Path, tmp_path: Path) -> None:
         inst = parse_sppcc(str(sppcc_instance))
         outpath = tmp_path / "out.txt"
         write_pathwyse(inst, str(outpath), cost_scale=100, time_scale=10, cap_scale=2)

@@ -11,3 +11,9 @@
 clang-format==22.1.8
 clang-tidy==22.1.8
 pytest
+# The script lint (cmake/Lint.cmake, #140), pinned for the same reason: their
+# findings and formatting move between releases. Configure registers each
+# tool's tests only at the version named here.
+ruff==0.17.4
+mypy==2.4.1
+shellcheck-py==0.11.0.1

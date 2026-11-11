@@ -126,7 +126,7 @@ printf "%-30s  %4s  %-10s  %10s  %10s  %s\n" "Instance" "ng" "Mode" "Got" "Optim
 printf '%.0s-' {1..82}; echo
 
 # Read CSV, skip header
-while IFS=, read -r inst set ng mode cost paths time_s ts; do
+while IFS=, read -r inst set ng mode cost _paths _time_s _ts; do
   # Apply ng filter
   if [[ -n "$NG_FILTER" && "$ng" != "$NG_FILTER" ]]; then
     continue

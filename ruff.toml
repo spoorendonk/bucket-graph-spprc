@@ -1,0 +1,21 @@
+# ruff for the benchmark tooling (#140): ctest runs `ruff check` and
+# `ruff format --check` as the `ruff_check` and `ruff_format` lint tests.
+# The rule set is named here rather than left to ruff's defaults, which move
+# between releases; the version is pinned in requirements-dev.txt.
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "SIM", # simplify
+    "RUF", # ruff's own
+]
+# The docstrings and comments write math with its own symbols (×, −, ≤, →) on
+# purpose, so they read as the formulas they mirror.
+ignore = ["RUF001", "RUF002", "RUF003"]
