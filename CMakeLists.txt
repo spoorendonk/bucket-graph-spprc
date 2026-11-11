@@ -33,7 +33,7 @@ if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX})
     endif()
 endif()
 
-project(bgspprc VERSION 0.1.0 LANGUAGES CXX)
+project(bgspprc VERSION 0.2.0 LANGUAGES CXX)
 
 # Fail early and legibly on a compiler that cannot do the C++23 this library
 # needs. Without this the first symptom is a wall of template errors from a
