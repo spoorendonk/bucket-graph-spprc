@@ -28,8 +28,8 @@ bucket-graph-spprc 0.2.0 carries the shared pricer contract (flowty/flowty#58) a
 - `AdjacencyView` / `CsrAdjacency`. `BucketGraph` and `Solver` can borrow a caller's CSR (#133).
 - Borrowing split: `NgPathData`/`R1CData` own the tables, and the 8-byte `NgPathView`/`R1CView` borrow them.
 - The README shows how to share one pool, one adjacency and one set of ng/R1C data across solvers (#138).
-- A nested dispatch fans out on `StdThreadExecutor` but runs inline on `ThreadPoolExecutor`, so parallel bidir's compaction there uses at most 2 threads (#136). A `Solver` on a `ThreadPoolExecutor` is tested end to end (#135).
-- The contract headers carry the shared reference comments, which read correctly in every copy (#134, #137).
+- A nested dispatch fans out on `StdThreadExecutor` but runs inline on `ThreadPoolExecutor`, so parallel bidir's compaction there uses at most 2 threads (#136). A test now runs a `Solver` on a `ThreadPoolExecutor` through elimination, fixing and enumeration (#135).
+- The contract headers carry the shared reference comments, which read correctly in every copy (#137). `ProblemView`'s stale adjacency comment now points at the `AdjacencyView` constructor arguments (#134).
 
 ### Features
 
