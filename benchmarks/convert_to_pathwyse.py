@@ -403,7 +403,8 @@ def write_pathwyse(
         tw: tuple[list[float], list[float]] | None = None
         if has_tw:
             tw_lb, tw_ub = inst["tw_lb"], inst["tw_ub"]
-            assert tw_lb is not None and tw_ub is not None
+            if tw_lb is None or tw_ub is None:
+                raise ValueError(f"instance {inst['name']} has has_tw but no time windows")
             tw = (tw_lb, tw_ub)
 
         # Global resource bounds

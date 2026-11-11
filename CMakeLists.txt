@@ -236,11 +236,13 @@ if(BGSPPRC_BUILD_TESTS)
         DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/instances")
 
     # The benchmark tooling's pytest suite, when an interpreter with pytest is
-    # found (`.venv/bin/python` first). Skipped with a warning otherwise: the
+    # found (`.venv/bin/python` first, the main checkout's from a linked
+    # worktree, as for the lint tools). Skipped with a warning otherwise: the
     # C++ build must not depend on a Python setup.
     # NO_CACHE, so a .venv made after a first configure is picked up.
+    include(cmake/VenvHint.cmake)
     find_program(BGSPPRC_PYTHON NAMES python3 python
-        HINTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin" NAMES_PER_DIR NO_CACHE)
+        HINTS ${_bgspprc_lint_hint} NAMES_PER_DIR NO_CACHE)
     if(BGSPPRC_PYTHON)
         # 3.10+: the tooling uses `X | None` annotations.
         execute_process(COMMAND ${BGSPPRC_PYTHON} -c

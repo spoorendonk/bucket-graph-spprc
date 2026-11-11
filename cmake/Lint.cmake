@@ -25,14 +25,7 @@
 #
 # Expects BGSPPRC_LINT_UNITS (paths relative to the source root) to be set.
 
-set(_bgspprc_lint_hint "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin")
-execute_process(COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --path-format=absolute --git-common-dir
-    OUTPUT_VARIABLE _bgspprc_git_common OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET RESULT_VARIABLE _bgspprc_git_rc)
-if(_bgspprc_git_rc EQUAL 0 AND _bgspprc_git_common MATCHES "/\\.git$")
-    get_filename_component(_bgspprc_main_checkout "${_bgspprc_git_common}" DIRECTORY)
-    list(APPEND _bgspprc_lint_hint "${_bgspprc_main_checkout}/.venv/bin")
-endif()
+include(${CMAKE_CURRENT_LIST_DIR}/VenvHint.cmake)
 find_program(BGSPPRC_CLANG_FORMAT clang-format HINTS ${_bgspprc_lint_hint} NO_CACHE)
 find_program(BGSPPRC_CLANG_TIDY clang-tidy HINTS ${_bgspprc_lint_hint} NO_CACHE)
 
@@ -148,7 +141,9 @@ function(_bgspprc_script_lint pkg exe)
     set(_names ${ARGN})
     _bgspprc_lint_pypi_pin(${pkg} _pin)
     if(NOT _pin)
-        message(FATAL_ERROR "requirements-dev.txt does not pin ${pkg}==X.Y.Z")
+        message(WARNING "requirements-dev.txt does not pin ${pkg}==X.Y.Z: "
+                        "${_names} not registered.")
+        return()
     endif()
     string(TOUPPER "BGSPPRC_${exe}" _var)
     find_program(${_var} ${exe} HINTS ${_bgspprc_lint_hint} NO_CACHE)
@@ -173,11 +168,15 @@ function(_bgspprc_script_lint pkg exe)
         message(STATUS "Not a git checkout: no ${_names} test")
         return()
     endif()
-    # The interpreter mypy resolves imports (pytest) in: the suite's, only
-    # when it has pytest; otherwise mypy's own environment.
+    # mypy resolves the tests' imports (pytest) in the suite's interpreter, so
+    # it is registered only where python_tests is: without one, it would fail
+    # on `import pytest` where the suite is merely skipped.
     set(_python "")
     if(BGSPPRC_PYTHON AND BGSPPRC_HAS_PYTEST EQUAL 0)
         set(_python "${BGSPPRC_PYTHON}")
+    elseif(pkg STREQUAL "mypy")
+        message(WARNING "No Python with pytest found: ${_names} not registered.")
+        return()
     endif()
     foreach(_name IN LISTS _names)
         add_test(NAME ${_name}

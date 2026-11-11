@@ -3,7 +3,8 @@
 # Source this file; do not execute directly.
 # Its globals (DEFAULT_TIMEOUT, and those run_solver and the parse_* helpers
 # set) are read by the scripts that source it, which shellcheck cannot see
-# from here: SC2034 is waived for each of them alone.
+# from here: SC2034 is waived for each definition that sets them (so it is
+# not reported inside those functions either).
 
 SCRIPTDIR="$(cd "$(dirname "${BASH_SOURCE[1]}")" && pwd)"
 REPODIR="$(cd "$SCRIPTDIR/../.." && pwd)"
