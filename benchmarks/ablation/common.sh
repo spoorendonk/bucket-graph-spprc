@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # common.sh — Shared helpers for ablation study scripts.
 # Source this file; do not execute directly.
-# Its globals (DEFAULT_TIMEOUT, and those the parse_* helpers set) are read by
-# the scripts that source it, which shellcheck cannot see from here.
-# shellcheck disable=SC2034
+# Its globals (DEFAULT_TIMEOUT, and those run_solver and the parse_* helpers
+# set) are read by the scripts that source it, which shellcheck cannot see
+# from here: SC2034 is waived for each of them alone.
 
 SCRIPTDIR="$(cd "$(dirname "${BASH_SOURCE[1]}")" && pwd)"
 REPODIR="$(cd "$SCRIPTDIR/../.." && pwd)"
 SOLVE="${SOLVE:-$REPODIR/build/bgspprc-solve}"
 INSTDIR="${INSTDIR:-$REPODIR/benchmarks/instances}"
+# shellcheck disable=SC2034
 DEFAULT_TIMEOUT=120
 
 # ── Collect instance files from paths ──
@@ -44,6 +45,7 @@ default_instance_paths() {
 # Usage: run_solver TIMEOUT EXTRA_FLAGS... -- FILE
 # Sets: OUT (stdout+stderr), STATUS (OK|TIMEOUT|ERROR(N))
 # Always passes --stats --timing for richer metrics.
+# shellcheck disable=SC2034
 run_solver() {
   local timeout_s="$1"; shift
   local args=(--stats --timing)
@@ -70,6 +72,7 @@ run_solver() {
 # ── Parse solver output ──
 # Usage: parse_cost_time "$OUT" "$STATUS"
 # Sets: COST, TIME_MS
+# shellcheck disable=SC2034
 parse_cost_time() {
   local output="$1" status="$2"
   COST="" TIME_MS=""
@@ -84,6 +87,7 @@ parse_cost_time() {
 # ── Parse paths count from solver output ──
 # Usage: parse_paths "$OUT"
 # Sets: PATHS_COUNT
+# shellcheck disable=SC2034
 parse_paths() {
   local output="$1"
   PATHS_COUNT=""
@@ -98,6 +102,7 @@ parse_paths() {
 # Usage: parse_stats "$OUT"
 # Sets: N_BUCKETS, N_LABELS_CREATED, N_DOMINANCE_CHECKS, N_NON_DOMINATED,
 #       N_FIXED_BUCKETS, N_ELIMINATED_ARCS, LABEL_STATE_BYTES
+# shellcheck disable=SC2034
 parse_stats() {
   local output="$1"
   N_BUCKETS="" N_LABELS_CREATED="" N_DOMINANCE_CHECKS="" N_NON_DOMINATED=""
@@ -116,6 +121,7 @@ parse_stats() {
 # ── Parse phase timing from --timing output ──
 # Usage: parse_timing "$OUT"
 # Sets: FW_MS, BW_MS, COMPLETION_MS, CONCAT_MS, PATHS_MS, SUM_MS
+# shellcheck disable=SC2034
 parse_timing() {
   local output="$1"
   FW_MS="" BW_MS="" COMPLETION_MS="" CONCAT_MS="" PATHS_MS="" SUM_MS=""

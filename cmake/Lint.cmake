@@ -173,6 +173,12 @@ function(_bgspprc_script_lint pkg exe)
         message(STATUS "Not a git checkout: no ${_names} test")
         return()
     endif()
+    # The interpreter mypy resolves imports (pytest) in: the suite's, only
+    # when it has pytest; otherwise mypy's own environment.
+    set(_python "")
+    if(BGSPPRC_PYTHON AND BGSPPRC_HAS_PYTEST EQUAL 0)
+        set(_python "${BGSPPRC_PYTHON}")
+    endif()
     foreach(_name IN LISTS _names)
         add_test(NAME ${_name}
             COMMAND ${CMAKE_COMMAND}
@@ -180,7 +186,7 @@ function(_bgspprc_script_lint pkg exe)
                 -DTOOL=${${_var}}
                 -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
                 -DCACHE_DIR=${CMAKE_BINARY_DIR}/lint_cache
-                -DPYTHON=${BGSPPRC_PYTHON}
+                -DPYTHON=${_python}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_script_lint.cmake)
         set_tests_properties(${_name} PROPERTIES LABELS lint)
     endforeach()

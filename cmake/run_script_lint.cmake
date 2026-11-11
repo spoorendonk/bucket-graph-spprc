@@ -27,16 +27,24 @@ execute_process(
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "git ls-files failed in ${SOURCE_DIR}; nothing was checked")
 endif()
-string(REPLACE "\n" ";" files "${files}")
+string(REPLACE "\n" ";" listed "${files}")
+# The index's paths that are on disk: one deleted but not yet `git rm`ed is
+# not there to lint.
+set(files "")
+foreach(f IN LISTS listed)
+    if(EXISTS "${SOURCE_DIR}/${f}")
+        list(APPEND files "${f}")
+    endif()
+endforeach()
 if(NOT files)
     message(FATAL_ERROR "no tracked ${patterns} files in ${SOURCE_DIR}; nothing was checked")
 endif()
 
 if(LINT STREQUAL "ruff_check")
-    set(cmd "${TOOL}" check --no-fix --cache-dir "${CACHE_DIR}/ruff")
+    set(cmd "${TOOL}" check --no-fix --cache-dir "${CACHE_DIR}/${LINT}")
     set(fix "run ruff check --fix, or fix them by hand")
 elseif(LINT STREQUAL "ruff_format")
-    set(cmd "${TOOL}" format --check --cache-dir "${CACHE_DIR}/ruff")
+    set(cmd "${TOOL}" format --check --cache-dir "${CACHE_DIR}/${LINT}")
     set(fix "run ruff format")
 elseif(LINT STREQUAL "mypy")
     # The interpreter whose packages (pytest) the tests import, when known.

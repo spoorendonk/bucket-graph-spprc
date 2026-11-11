@@ -1,5 +1,5 @@
 # shellcheck for the repository's scripts, as ctest's `shellcheck` lint test
-# runs it (#140; cmake/run_shellcheck.cmake). A `# shellcheck source=` path is
+# runs it (#140; cmake/run_script_lint.cmake). A `# shellcheck source=` path is
 # taken relative to the script that sources it.
 source-path=SCRIPTDIR
 external-sources=true

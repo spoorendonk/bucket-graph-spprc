@@ -10,7 +10,8 @@
 # .clang-format-version; a bump is made for all repos together.
 clang-format==22.1.8
 clang-tidy==22.1.8
-pytest
+# Pinned too: mypy --strict checks the tests against pytest's own typing.
+pytest==9.2.0
 # The script lint (cmake/Lint.cmake, #140), pinned for the same reason: their
 # findings and formatting move between releases. Configure registers each
 # tool's tests only at the version named here.
