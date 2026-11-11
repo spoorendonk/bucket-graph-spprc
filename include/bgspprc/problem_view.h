@@ -1,5 +1,37 @@
 #pragma once
 
+// Problem-data shape contract. Normative text: the 2026-09-08 comment on
+// flowty/pull-rcspp#23; decision flowty/flowty#58.
+//
+// This file is one copy of a shared header: flowty, bucket-graph-spprc
+// (bgspprc), pull-rcspp, single-resource-spp, time-indexed-spp and spp-graph
+// each carry it. `ProblemView` (originally bgspprc's struct), `AdjacencyView`
+// and the owning CSR adjacency match in every copy, field for field and
+// accessor for accessor, modulo namespace and, in bgspprc, the owning
+// adjacency's name (below). The copies are duplicated rather than depended on:
+// the BCP core fills one layout and hands it to every pricer in the family. DO
+// NOT rename or reorder a field in one copy alone -- a change is made in all of
+// them together.
+//
+// `ProblemView` is a *non-owning view*: every array stays owned by the core.
+// That is what makes pass-by-reference work, and it matters more than it looks
+// -- arc costs are reduced costs and change every CG iteration, so the core
+// rewrites its own cost array in place and the pricers see it with no copy and
+// no rebuild.
+//
+// The owning adjacency is CSR (four flat vectors: offsets and arcs per
+// direction) rather than `vector<vector<int>>`: four allocations instead of
+// 2*n_vertices, contiguous traversal in the hot loop. It is named `Adjacency`
+// in every copy but bgspprc's, which names it `CsrAdjacency` and keeps its
+// original `vector<vector<int>>` `Adjacency` beside it.
+//
+// `AdjacencyView` is the non-owning form of that CSR: topology only, fixed for
+// the lifetime of a solve. Costs, resource consumptions and vertex bounds stay
+// in `ProblemView`, which the core rewrites every CG iteration. Standalone, a
+// pricer builds the owning adjacency and passes its view; core-fed, the view
+// points at the core's CSR and nothing is built twice. There is deliberately no
+// `Graph` concept: `outgoing`/`incoming` always return contiguous spans.
+
 #include <cassert>
 #include <cstdint>
 #include <numeric>
@@ -16,18 +48,18 @@ struct ProblemView {
 
     int n_arcs = 0;
 
-    // Arc topology: parallel arrays of size n_arcs
+    // Arc topology: parallel arrays of size n_arcs.
+    // Arc ids are the caller's insertion order, so caller-side arc data stays
+    // index-aligned without a permutation table.
     const int* arc_from = nullptr;
     const int* arc_to = nullptr;
     const double* arc_base_cost = nullptr;
 
-    // Per-arc resource consumptions: n_resources pointers, each to array of
-    // n_arcs
+    // Per-arc resource consumptions: n_resources pointers, each to n_arcs
     int n_resources = 0;
     const double* const* arc_resource = nullptr;  // [resource][arc]
 
-    // Per-vertex resource bounds: n_resources pointers, each to array of
-    // n_vertices
+    // Per-vertex resource bounds: n_resources pointers, each to n_vertices
     const double* const* vertex_lb = nullptr;  // [resource][vertex]
     const double* const* vertex_ub = nullptr;  // [resource][vertex]
 
@@ -65,8 +97,9 @@ struct Adjacency {
 };
 
 /// Non-owning CSR topology, ~40 bytes, passed by value. Arrays are owned by
-/// whoever built them (an `Adjacency`, or the core). `out_begin`/`in_begin`
-/// have n_vertices+1 entries; `out_arcs`/`in_arcs` have n_arcs.
+/// whoever built them (the owning adjacency, or the core).
+/// `out_begin`/`in_begin` have n_vertices+1 entries; `out_arcs`/`in_arcs` have
+/// n_arcs.
 struct AdjacencyView {
     const int* out_begin = nullptr;
     const int* out_arcs = nullptr;

@@ -3,21 +3,22 @@
 // Executor shape contract. Normative text: the 2026-09-08 comment on
 // flowty/pull-rcspp#23; decision flowty/flowty#58.
 //
-// The concept below is bgspprc's `Executor`, verbatim. It is duplicated here
+// This file is one copy of a shared header: flowty, bucket-graph-spprc
+// (bgspprc), pull-rcspp, single-resource-spp, time-indexed-spp and spp-graph
+// each carry it, byte-identical modulo namespace. The copies are duplicated
 // rather than depended on: C++ concepts are structural, so a type of this
-// shape satisfies bgspprc's concept and ours alike, and the BCP core can hand
-// the same executor to bgspprc's Solver and to this repo's pricer.
-// DO NOT change a signature here alone -- it must match
-// bgspprc/include/bgspprc/executor.h and every other copy.
+// shape satisfies every copy's `Executor` alike, and the BCP core can hand one
+// executor to each pricer. DO NOT change a signature in one copy alone -- a
+// change is made in all of them together.
 //
-// bgspprc's own `StdThreadExecutor` reaches for a leaked, process-lifetime
-// global pool with detached workers. That cannot be handed a pool by
-// reference, cannot be sized per solve, and cannot be shut down. So this
-// header adds `ThreadPoolExecutor`: an 8-byte non-owning handle to a
-// caller-owned `ThreadPool`. It satisfies the same concept, so it drops into
-// bgspprc's `Solver(pv, pack, opts, Exec executor = {})` -- which takes the
-// executor by value and stores it `[[no_unique_address]]` -- with no change to
-// bgspprc. Worth upstreaming.
+// bgspprc's `StdThreadExecutor` (in its executor_thread.h, outside this
+// contract) reaches for a leaked, process-lifetime global pool with detached
+// workers. That cannot be handed a pool by reference, cannot be sized per
+// solve, and cannot be shut down. So this header has `ThreadPoolExecutor`: an
+// 8-byte non-owning handle to a caller-owned `ThreadPool`. It satisfies the
+// same concept, so it drops into bgspprc's
+// `Solver(pv, pack, opts, Exec executor = {})` -- which takes the executor by
+// value and stores it `[[no_unique_address]]` -- and into each pricer alike.
 //
 // `ThreadPool` keeps the fork-join structure and memory-ordering notes of
 // mcfcg's `thread_pool` (MIT), with workers joined in the destructor rather
@@ -83,7 +84,9 @@ struct SequentialExecutor {
 static_assert(Executor<SequentialExecutor>);
 
 /// Minimum range size for parallel_for to dispatch to the pool. Below this the
-/// submission overhead exceeds the parallelism benefit. Matches bgspprc.
+/// submission overhead exceeds the parallelism benefit. bgspprc's
+/// `StdThreadExecutor` uses its copy's `kParallelForMinChunk`, of the same
+/// value.
 inline constexpr int kParallelForMinChunk = 512;
 
 /// Fork-join pool, owned by the caller -- typically the BCP core, one per
@@ -325,12 +328,14 @@ private:
 
 static_assert(Executor<ThreadPoolExecutor>);
 
-// NO free functions taking an Executor as their first argument may live in
-// this namespace. bgspprc defines `parallel_sort(Exec&, It, It, Cmp)` and calls
-// it unqualified on its own executor_. If we define the same name here, ADL on
-// the executor argument finds both overloads and every such call inside
-// bgspprc becomes ambiguous -- it fails to compile only when the two are
-// actually used together. The contract is the concept and the executor types;
-// utilities built on top of it stay in exactly one namespace.
+// NO free functions taking an Executor as their first argument belong in this
+// header, nor in the namespace of any copy but bgspprc's. bgspprc defines
+// `parallel_sort(Exec&, It, It, Cmp)` (its parallel_sort.h) and calls it
+// unqualified on its executor_. Handed another copy's executor, ADL looks in
+// that copy's namespace too: a function of the same name there makes every
+// such call inside bgspprc ambiguous -- and fails to compile only when the
+// two are actually used together. The contract is the concept and the
+// executor types; utilities built on top of it live in exactly one namespace,
+// bgspprc's.
 
 }  // namespace bgspprc
