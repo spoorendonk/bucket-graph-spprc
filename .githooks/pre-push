@@ -1,14 +1,17 @@
 #!/bin/sh
-# wcp: pre-push base=c4f9e3c64b56
+# wcp: pre-push base=3ae99ca26321
 # Linear history on the trunk, then the review receipt.
 #
 # A real file in this repository, not a shim — see the note in `commit-msg` for
 # what the `# wcp:` line above is for and why editing this is allowed.
 #
-# Self-contained: POSIX sh and git, nothing else. Every question below is
-# answered from refs that are already local, with one exception: whether the
-# remote already holds a trunk commit's review receipt, asked of the remote
-# this push is talking to anyway, and only when the push does not carry it.
+# Self-contained: POSIX sh, git and coreutils. Every question below is
+# answered from refs that are already local, with two exceptions, each asked
+# of the remote this push is talking to anyway and only for a trunk update:
+# whether it lands that trunk through a merge queue (#428), and whether it
+# already holds a trunk commit's review receipt the push does not carry.
+# The local CI asks `wcp build` for room where wcp is on PATH, and runs
+# without it where it is not (see "One admission" below).
 
 set -u
 
@@ -19,7 +22,8 @@ TRUNKS='main master'
 #: Where review receipts live (#40): `refs/reviews/<sha>`, a ref named by the
 #: commit that was reviewed and pointing at it. Written by whoever reviewed,
 #: with the one line of git that CLAUDE.md documents; pushed with the branch,
-#: so CI can check it; read here and by the wcp status line. One spelling in
+#: so the remote holds it; read here, by the wcp status line and by a CI step
+#: where a project adds the optional one in wcp's README. One spelling in
 #: every place is how the writer and the readers stay agreed about a ref none
 #: of them owns.
 #:
@@ -31,10 +35,39 @@ TRUNKS='main master'
 #: Deliberately not written by any tool of wcp's. A receipt that needed wcp
 #: installed, or one harness running, would be a gate that stops working on the
 #: machine that has neither — the same reason these hooks are shell files that
-#: call no wcp.
+#: need no wcp.
 RECEIPTS='refs/reviews'
 #: Where reviews were recorded before #40; looked at only to say they moved.
 LEGACY_STAMP='.last-review'
+#: Where gate receipts live (#296): `refs/gates/<sha>`, written when the local
+#: CI below passes on that commit. See "The gate receipt" there.
+GATES='refs/gates'
+#: This hook's own file, for the gate receipt's configuration: by an absolute
+#: path, which no later `cd` can make name another file.
+case $0 in /*) SELF=$0 ;; *) SELF=$(pwd)/$0 ;; esac
+
+#: Run again under `wcp build` (#389): say so to the run that asked, which
+#: otherwise takes `wcp build` for one that never started this hook, and ask
+#: no second admission, whatever the `wcp build` that ran it set. Nor run the
+#: prechecks again, which the run that asked ran before it asked (#610).
+admit_asked=''
+prechecked=''
+if [ -n "${WCP_HOOK_STARTED:-}" ]; then
+	printf 'started\n' >"$WCP_HOOK_STARTED" 2>/dev/null || :
+	unset WCP_HOOK_STARTED
+	admit_asked=1
+	prechecked=1
+fi
+#: The prechecks run apart (#623; see "A precheck"): `only` runs them and
+#: nothing after, `done` says a run with `only` passed them on this push.
+#: Read once and unset: the blocks it runs, a project's own suite of nested
+#: pushes among them, are not told to skip prechecks of their own.
+precheck_only=''
+case ${PRE_PUSH_PRECHECK:-} in
+only) precheck_only=1 ;;
+done) prechecked=1 ;;
+esac
+unset PRE_PUSH_PRECHECK
 
 #: git passes the remote's name first; it goes into the push line printed below.
 remote_name=${1:-origin}
@@ -71,6 +104,21 @@ is_trunk_ref() {
 	return 1
 }
 
+# Every loop below reads its lines from a here-document. dash feeds one through
+# a pipe; bash before 5.1, macOS's /bin/sh, writes it to a temp file first (a
+# later bash does so for one over the pipe's buffer), and where that file
+# cannot be written (a full disk, `RLIMIT_FSIZE` 0) the loop reads nothing and
+# this hook would pass a push it never checked (#509). Then the redirect fails
+# and the loop never runs, which a disk filling mid-push (the local CI) causes
+# at any loop (#514). So each loop's condition sets `heredoc_read`, left empty
+# before it: still empty after the loop, its list was never read, and the
+# loop's site fails closed, refusing the push or taking the list as failed.
+heredoc_lost() {
+	err "pre-push: this shell could not write a here-document (is the disk full?),"
+	err "so a list this push is checked by was not read: it is taken as failed,"
+	err "not as nothing to check."
+}
+
 # ------------------------------------------------------- linear history (#98)
 #
 # First, because it is the only question here answered from the refs git names
@@ -89,17 +137,37 @@ is_trunk_ref() {
 # Drained once, into a variable. git closes stdin after the first read, and a
 # second `cat` would return nothing — which would read here as "no refs", and
 # then as a check that stood down reporting success.
-refs=$(cat)
+#
+# git writes the local ref as it was typed, so it can hold spaces: `git push
+# origin 'HEAD^{/fix the}:main'`, `main@{1 day ago}:main`. The other three
+# fields cannot. So the last three fields are the sha, the remote ref and its
+# sha, and what comes before them is the local ref, joined here with `_` so
+# that every loop below reads exactly four fields (#238). Left as it was, such a
+# line has five fields, and every check below would skip it.
+refs=$(awk 'NF > 4 {
+	l = $1
+	for (i = 2; i <= NF - 3; i++) l = l "_" $i
+	print l, $(NF - 2), $(NF - 1), $NF
+	next
+}
+{ print }')
 
+# The same range is searched for `fixup!`, `squash!` and `amend!` commits
+# (#245). Each is half of a commit: the other half is the one it names, and
+# `git rebase -i --autosquash` is what joins them. commit-msg lets them through
+# so that workflow works locally; landed on the trunk, one stays half a commit
+# for good. Judged on the subject alone, as `--autosquash` judges it. Merges
+# are named first: the rebase that removes them is the one that squashes.
 blocked=''
-while read -r local_ref local_sha remote_ref remote_sha extra; do
+heredoc_read=''
+while heredoc_read=1; read -r local_ref local_sha remote_ref remote_sha extra; do
 	# Exactly four fields. Anything else is not a line git wrote.
 	[ -n "${remote_sha:-}" ] || continue
 	[ -z "${extra:-}" ] || continue
 
 	# Read off the *remote* ref, so `git push origin feature:main` is a trunk
 	# update whatever the branch is called locally. A feature branch carrying a
-	# merge is not this rule's business.
+	# merge, or a fixup, is not this rule's business.
 	is_trunk_ref "$remote_ref" || continue
 	is_sha "$local_sha" && is_sha "$remote_sha" || continue
 
@@ -110,23 +178,22 @@ while read -r local_ref local_sha remote_ref remote_sha extra; do
 
 	# `log` rather than `rev-list --count`: a refusal has to name the commits,
 	# and a count names nothing anybody can go and look at. Subjects, because a
-	# bare abbreviated sha identifies the merge to git and to nobody else.
-	if ! found=$(git log --merges --format='%h %s' "$remote_sha..$local_sha" -- 2>/dev/null); then
+	# bare abbreviated sha identifies the commit to git and to nobody else. The
+	# parents first, a tab after them: a merge's hold a space.
+	if ! range=$(git log --format='%p%x09%h %s' "$remote_sha..$local_sha" -- 2>/dev/null); then
 		# Open, but not silent. git puts the sha the *remote* advertised on
 		# stdin, and a clone that has not fetched does not have that object, so
 		# this is reachable without contriving anything. A gate that decided it
 		# could not judge has to say so, or its silence when it found nothing
 		# means the same as its silence when it could not look.
-		err "warning: $remote_ref: git could not resolve $(printf '%.12s' "$remote_sha")..$(printf '%.12s' "$local_sha"), so this push was not checked for merge commits. \`git fetch\` and push again to have it checked."
+		err "warning: $remote_ref: git could not resolve $(printf '%.12s' "$remote_sha")..$(printf '%.12s' "$local_sha"), so this push was not checked for merge commits or fixup!/squash!/amend! commits. \`git fetch\` and push again to have it checked."
 		continue
 	fi
-	[ -n "$found" ] || continue
+	merges=$(printf '%s\n' "$range" | awk '/^[^\t ]+ [^\t]*\t/ { sub(/^[^\t]*\t/, ""); print }')
+	fixups=$(printf '%s\n' "$range" | awk '{ sub(/^[^\t]*\t/, "") } /^[^ ]+ (fixup|squash|amend)! /')
+	[ -n "$merges$fixups" ] || continue
 
-	count=$(printf '%s\n' "$found" | wc -l | tr -d '[:space:]')
-	plural=s
-	[ "$count" = 1 ] && plural=''
 	base=$(printf '%.12s' "$remote_sha")
-
 	# The remedy has to name the branch it acts on: `git push origin
 	# feature:main` is refused while the author stands on `main`, and a bare
 	# `git rebase <sha>` there rewrites the wrong branch — worse for the
@@ -137,66 +204,109 @@ while read -r local_ref local_sha remote_ref remote_sha extra; do
 	refs/heads/*) branch=${local_ref#refs/heads/} ;;
 	*) branch='' ;;
 	esac
-	if [ -n "$branch" ]; then
-		rebase="git rebase $base $branch"
-		replay="or, on $branch, replay the work by hand:"
+
+	# Without an editor, which an agent's session has none of: `-i` only
+	# because `--autosquash` needs it before git 2.44.
+	squash="GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash $base${branch:+ $branch}"
+
+	if [ -n "$merges" ]; then
+		found=$merges
+		kind='merge commit'
+		section='Linear history'
+		verdict='the trunk takes no merge commits.'
+		rebase="git rebase $base${branch:+ $branch}"
+		replay="or, on ${branch:-the branch you are pushing}, replay the work by hand:"
+		# Squashed by the same rebase, or the next push is refused for them.
+		[ -z "$fixups" ] || rebase=$squash
+		remedy=$(
+			printf 'Rebase them out and push the result:\n      %s\n' "$rebase"
+			printf '%s\n      git reset --hard %s   # then re-apply your commits' "$replay" "$base"
+		)
 	else
-		rebase="git rebase $base"
-		replay="or, on the branch you are pushing, replay the work by hand:"
+		found=$fixups
+		kind='fixup!/squash!/amend! commit'
+		section='Autosquash'
+		verdict='the trunk takes no fixup!, squash! or amend! commits.'
+		# A commit named that is already on the trunk is below the base, and
+		# the rebase folds nothing into it: the next push is refused the same.
+		remedy=$(
+			printf 'Squash them into the commits they name and push the result:\n      %s\n' "$squash"
+			printf 'One whose commit is already on the trunk folds into nothing: reword it into a commit of its own.'
+		)
 	fi
+	count=$(printf '%s\n' "$found" | wc -l | tr -d '[:space:]')
+	plural=s
+	[ "$count" = 1 ] && plural=''
 
 	blocked=$(
-		printf 'This push adds %s merge commit%s to %s:\n' "$count" "$plural" "$remote_ref"
+		printf 'This push adds %s %s%s to %s:\n' "$count" "$kind" "$plural" "$remote_ref"
 		printf '%s\n' "$found" | sed 's/^/      /'
-		printf 'Rebase them out and push the result:\n      %s\n' "$rebase"
-		printf '%s\n      git reset --hard %s   # then re-apply your commits\n' "$replay" "$base"
+		printf '%s\n' "$remedy"
 	)
 	break
 done <<EOF
 $refs
 EOF
+[ -n "$heredoc_read" ] || { heredoc_lost; exit 1; }
 
 if [ -n "$blocked" ]; then
-	err "=== Linear history ==="
+	err "=== $section ==="
 	err "$blocked"
-	err "Push blocked: the trunk takes no merge commits."
+	err "Push blocked: $verdict"
 	exit 1
 fi
 
-# This project's own: commit-msg lets `fixup!`/`squash!`/`amend!` subjects
-# through so `git rebase --autosquash` works, so this is where they stop. Same
-# range and the same open-but-not-silent rule as the merge check above.
-while read -r local_ref local_sha remote_ref remote_sha extra; do
-	[ -n "${remote_sha:-}" ] || continue
-	[ -z "${extra:-}" ] || continue
-	is_trunk_ref "$remote_ref" || continue
-	is_sha "$local_sha" && is_sha "$remote_sha" || continue
-	is_absent "$local_sha" && continue
-	# A trunk the remote does not have yet: all of its history lands.
-	range="$remote_sha..$local_sha"
-	is_absent "$remote_sha" && range=$local_sha
-	if ! found=$(git log --format='%h %s' "$range" -- 2>/dev/null); then
-		err "warning: $remote_ref: git could not resolve $(printf '%.12s' "$remote_sha")..$(printf '%.12s' "$local_sha"), so this push was not checked for fixup! commits. \`git fetch\` and push again to have it checked."
-		continue
-	fi
-	found=$(printf '%s\n' "$found" | grep -E '^[0-9a-f]+ (fixup|squash|amend)! ') || continue
-	err "=== Unsquashed fixups ==="
-	err "This push adds commits to $remote_ref that were meant to be folded away:"
-	err "$(printf '%s\n' "$found" | sed 's/^/      /')"
-	err "Fold them in and push the result:"
-	# Named branch, as the merge check's remedy does: `feature:main` pushed
-	# from `main` must not rebase `main`.
-	case $local_ref in refs/heads/*) branch=" ${local_ref#refs/heads/}" ;; *) branch='' ;; esac
-	if is_absent "$remote_sha"; then
-		err "      GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash --root$branch"
-	else
-		err "      GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash $(printf '%.12s' "$remote_sha")$branch"
-	fi
-	err "Push blocked: fixup!, squash! and amend! commits do not land on the trunk."
-	exit 1
-done <<EOF
+# --------------------------------------------------------- merge queue (#428)
+#
+# A remote whose trunk lands through a wcp merge queue (`wcp queue submit`)
+# carries `refs/wcp/merge-queue/<trunk>`: `wcp queue add` publishes it, and the
+# queue's runner puts it back when it finds it gone. A push that updates that
+# trunk is refused, unless it is the runner's own landing push, or its gate's
+# dry run of one, which say so with `PRE_PUSH_QUEUE_LANDING=1`. Left set for
+# the local CI, as `PRE_PUSH_QUEUE_GATE` is: this hook runs itself again under
+# `wcp build` ("One admission"), and that run must see it too. That run asks
+# the remote nothing again: the run that started it already did.
+#
+# Asked of the remote the push talks to anyway, and only for a trunk update:
+# the queue runs on one host, so a clone has no record of its own that there
+# is one. A remote that cannot be asked is said, not a refusal; the push
+# itself will find out whether it answers. Only the trunks above are guarded.
+# While a host runs the queue, its runner puts a deleted ref back: taking a
+# queue off is removing it from that host, then deleting the ref,
+# `git push origin :refs/wcp/merge-queue/<trunk>`.
+#
+# Not for a lint-only run (`PRE_PUSH_LINT_ONLY=1`, #256) either: it pushes
+# nothing, and is run as a `git push --dry-run` of the trunk on the very host
+# that gates the queue.
+QUEUE_MARKS='refs/wcp/merge-queue'
+if [ "${PRE_PUSH_QUEUE_LANDING:-0}" != 1 ] && [ "${PRE_PUSH_LINT_ONLY:-0}" != 1 ] &&
+	[ -z "$admit_asked" ]; then
+	heredoc_read=''
+	while heredoc_read=1; read -r local_ref local_sha remote_ref remote_sha extra; do
+		[ -n "${remote_sha:-}" ] || continue
+		[ -z "${extra:-}" ] || continue
+		is_trunk_ref "$remote_ref" || continue
+		is_sha "$local_sha" && is_sha "$remote_sha" || continue
+		[ "$local_sha" = "$remote_sha" ] && continue
+		mark="$QUEUE_MARKS/${remote_ref#refs/heads/}"
+		if ! marks=$(git ls-remote "${2:-$remote_name}" "$mark" 2>/dev/null); then
+			err "warning: $remote_name could not be asked whether $remote_ref lands through a merge queue ($mark), so this push was not checked for one."
+			continue
+		fi
+		printf '%s\n' "$marks" | awk -v ref="$mark" '$2 == ref { found = 1 } END { exit !found }' ||
+			continue
+		err "=== Merge queue ==="
+		err "$remote_name lands $remote_ref through a merge queue ($mark), and this push updates it directly."
+		err "Queue the commit instead, with its review receipt:"
+		err "      wcp queue submit"
+		err "To push past the queue on purpose, say so: PRE_PUSH_QUEUE_LANDING=1 git push ..."
+		err "Push blocked: the trunk lands through its merge queue."
+		exit 1
+	done <<EOF
 $refs
 EOF
+	[ -n "$heredoc_read" ] || { heredoc_lost; exit 1; }
+fi
 
 # ------------------------------------------------------------------ receipts
 #
@@ -228,9 +338,13 @@ missing_review() {
 	fi
 }
 
+# Refuse the push: $1 is missing_review's line, $2 the commit it is about.
 refuse_review() {
 	err "=== Review check ==="
 	err "$1"
+	if [ "$2" != "$(git rev-parse -q --verify HEAD 2>/dev/null)" ]; then
+		err "$(printf '%.12s' "$2") is not HEAD: check it out before the steps below, which name HEAD."
+	fi
 	# Spelled out in full, because the reader may never have seen this
 	# repository and there is no wcp command to send them to: wcp ships no
 	# reviewer and no way to record one. A review and two lines of git that
@@ -253,16 +367,23 @@ refuse_review() {
 
 # ---------------------------------------------------- the receipt travels (#40)
 #
-# A trunk update must carry its commit's receipt in the same push, or CI, the
-# one place a `--no-verify` push or a clone without these hooks is seen, fails
-# it. So the honest path is refused here, where it is cheap to put right.
+# A trunk update must carry its commit's receipt in the same push, so the
+# remote holds the record of the review beside the commit. This check is the
+# gate: no CI is assumed to check the receipt again. A project that wants a
+# `--no-verify` push, or one from a clone without these hooks, caught too adds
+# the optional CI step in wcp's README, which reads the receipt off the remote.
 #
 # git leaves a ref the remote already holds off stdin: a receipt pushed with a
 # feature branch, which then lands on the trunk by fast-forward, or a commit
 # pushed to a second trunk. So a receipt missing from stdin is looked for on
 # the remote itself before the push is refused. A remote that cannot be asked
 # is a refusal, as an unreadable receipt always is.
-while read -r local_ref local_sha remote_ref remote_sha extra; do
+#
+# Not for a lint-only run (`PRE_PUSH_LINT_ONLY=1`, #256), which pushes
+# nothing: `git push --dry-run` of the trunk alone is what it is run as.
+CI_LINT_ONLY=${PRE_PUSH_LINT_ONLY:-0}
+heredoc_read=''
+while heredoc_read=1; read -r local_ref local_sha remote_ref remote_sha extra; do
 	[ -n "${remote_sha:-}" ] || continue
 	[ -z "${extra:-}" ] || continue
 	is_trunk_ref "$remote_ref" || continue
@@ -270,16 +391,19 @@ while read -r local_ref local_sha remote_ref remote_sha extra; do
 	is_absent "$local_sha" && continue
 
 	missing=$(missing_review "$local_sha")
-	[ -z "$missing" ] || refuse_review "$missing"
+	[ -z "$missing" ] || refuse_review "$missing" "$local_sha"
 
+	[ "$CI_LINT_ONLY" != 1 ] || continue
 	carried=''
-	while read -r _ref receipt_sha receipt_ref _rest; do
+	heredoc_read=''
+	while heredoc_read=1; read -r _ref receipt_sha receipt_ref _rest; do
 		if [ "$receipt_ref" = "$RECEIPTS/$local_sha" ] && [ "$receipt_sha" = "$local_sha" ]; then
 			carried=yes
 		fi
 	done <<RECEIPTS_IN_PUSH
 $refs
 RECEIPTS_IN_PUSH
+	[ -n "$heredoc_read" ] || { heredoc_lost; exit 1; }
 	if [ -z "$carried" ]; then
 		held=$(git ls-remote "${2:-$remote_name}" "$RECEIPTS/$local_sha" 2>/dev/null |
 			awk -v ref="$RECEIPTS/$local_sha" '$2 == ref { print $1 }')
@@ -291,8 +415,9 @@ RECEIPTS_IN_PUSH
 		*) source=$local_sha ;;
 		esac
 		err "=== Review receipt ==="
-		err "This push updates $remote_ref to $(printf '%.12s' "$local_sha") without its review receipt, which CI checks for,"
+		err "This push updates $remote_ref to $(printf '%.12s' "$local_sha") without its review receipt,"
 		err "and the remote does not hold it either (or could not be asked)."
+		err "A trunk commit's receipt goes to the remote with it, as the record that it was reviewed."
 		err "Push them together:"
 		err "      git push --atomic $remote_name $source:$remote_ref $RECEIPTS/$local_sha"
 		exit 1
@@ -300,49 +425,95 @@ RECEIPTS_IN_PUSH
 done <<TRUNK_UPDATES
 $refs
 TRUNK_UPDATES
-
-# ------------------------------------------------------------- nothing to push
-#
-# git runs this hook even when the push carries nothing: an "Everything
-# up-to-date" push, `git push origin --delete <branch>`, a tag push, a receipt
-# pushed on its own. Without this, a delete from a clean trunk is refused until
-# somebody reviews again.
-#
-# `@{push}`, which is where *this branch* would go, rather than the trunk: a
-# branch that tracks something unusual is pushed where it tracks. Commits rather
-# than changed files, because an empty commit or a revert pair carries no file
-# change and is still something to have reviewed. Unknown is not nothing — no
-# push target, a detached HEAD, a first push — and the first push of a branch is
-# the one that most needs the review.
-ahead=$(git rev-list --count '@{push}..HEAD' 2>/dev/null) || ahead=''
+[ -n "$heredoc_read" ] || { heredoc_lost; exit 1; }
 
 # --------------------------------------------------------------- review check
 #
-# Every push with something to push needs a receipt for HEAD, a feature
-# branch's too: only a trunk update's receipt has to travel, but every
-# branch's has to exist. Every unreadable case is a reason to block; the
+# Every update this push makes that brings commits the remote does not have
+# needs a receipt for the commit it pushes, a feature branch's too: only a
+# trunk update's receipt has to travel, but every branch's has to exist.
+#
+# Judged per update on stdin, never from HEAD (#238): what is pushed is what
+# git names there, and HEAD need not be among it. git runs this hook even when
+# the push carries nothing new — an "Everything up-to-date" push, `git push
+# origin --delete <branch>`, a receipt pushed on its own, a tag on history the
+# remote already has — and none of those asks for a review of HEAD. A tag or a
+# second branch that does carry unpushed commits needs its own commit's receipt.
+#
+# A tag is judged by the commit it names; one naming no commit carries none. A
+# receipt is judged by the commit it points at, which has its receipt when the
+# ref pushed is that receipt, so `HEAD:refs/reviews/<sha>` or a receipt set by
+# hand to another commit is refused for that commit. A gate receipt pushed as
+# itself is judged by the commit it is about, `<sha>` of `refs/gates/<sha>`,
+# when it is the gate commit on it (with it as only parent, and its tree), and as itself
+# otherwise. A note pushed as itself passes: notes hold no code anybody builds,
+# and a notes ref pointed at a commit by hand is as deliberate as a receipt
+# written by hand; HEAD pushed under a note's name is judged like any push.
+#
+# Commits rather than changed files, because an empty commit or a revert pair
+# carries no file change and is still something to have reviewed. New to the
+# remote is the remote's old value for the ref when it has one, and otherwise
+# every remote-tracking branch of this remote, or of every remote when this one
+# has none here: a push to a URL names no remote, and a remote never fetched
+# has nothing to count from. The first push of a branch is the one that most
+# needs the review, and a branch cut from the remote's own trunk brings it
+# nothing new. Unknown is not nothing: a count git cannot make blocks, since the
 # alternative is a push cleared by a review nobody can point at.
 #
 # The receipt stays: it is the record, here and on the remote. A later commit
 # has no receipt of its own, so the next push is refused until it is reviewed.
-if [ "$ahead" != 0 ]; then
-	head=$(git rev-parse HEAD 2>/dev/null) || head=''
-	if [ -z "$head" ]; then
-		refuse_review 'WARNING: git could not resolve HEAD, so the review cannot be verified.'
-	fi
-	missing=$(missing_review "$head")
-	[ -z "$missing" ] || refuse_review "$missing"
+pushed_to="--remotes=$remote_name"
+if [ -z "$(git for-each-ref --count=1 --format=x "refs/remotes/$remote_name/" 2>/dev/null)" ]; then
+	pushed_to=--remotes
 fi
+heredoc_read=''
+while heredoc_read=1; read -r local_ref local_sha remote_ref remote_sha extra; do
+	[ -n "${remote_sha:-}" ] || continue
+	[ -z "${extra:-}" ] || continue
+	case $remote_ref in
+	refs/notes/*) [ "$local_ref" = "$remote_ref" ] && continue ;;
+	esac
+	is_sha "$local_sha" && is_sha "$remote_sha" || continue
+	is_absent "$local_sha" && continue
+	[ "$local_sha" = "$remote_sha" ] && continue
+	commit=$(git rev-parse -q --verify "$local_sha^{commit}" 2>/dev/null) || continue
+	case $remote_ref in
+	"$GATES"/*)
+		about=${remote_ref#"$GATES"/}
+		if [ "$local_ref" = "$remote_ref" ] && is_sha "$about" &&
+			[ "$(git rev-parse -q --verify "$commit^1" 2>/dev/null)" = "$about" ] &&
+			! git rev-parse -q --verify "$commit^2" >/dev/null 2>&1 &&
+			[ "$(git rev-parse -q --verify "$commit^{tree}" 2>/dev/null)" = "$(git rev-parse -q --verify "$about^{tree}" 2>/dev/null)" ]; then
+			commit=$about
+		fi
+		;;
+	esac
+	if is_absent "$remote_sha"; then
+		new=$(git rev-list --count "$commit" --not "$pushed_to" -- 2>/dev/null) || new=''
+	else
+		new=$(git rev-list --count "$remote_sha..$commit" -- 2>/dev/null) || new=''
+	fi
+	[ "$new" = 0 ] && continue
+	missing=$(missing_review "$commit")
+	[ -z "$missing" ] || refuse_review "$missing" "$commit"
+done <<EOF
+$refs
+EOF
+[ -n "$heredoc_read" ] || { heredoc_lost; exit 1; }
 
 # ------------------------------------------------------------------ local CI
 #
 # The project's own build and tests, run on the tip of each branch this push
 # updates — the commit the branch will point at, not each commit before it,
 # which would multiply the cost for little — from the tagged blocks under
-# CLAUDE.md's `## Build & Test`: `clean`,
-# then `build`, then `test`, then `lint` if the project has one. Last, so a push the checks above refuse does not
-# pay for a build. A project opts in by having a `build` block — the C++
-# templates do, the Python one has only `test` — and a clone opts out with
+# CLAUDE.md's `## Build & Test`: `precheck` if the project has one (see "A
+# precheck" below), `clean`,
+# then `build`, then `lint` if the project has one, then `test`. Last, so a push the checks above refuse does not
+# pay for a build. A project opts in by having a `build` or a `test` block:
+# without a `build` block (the Python template has only `test`), the `test`
+# block runs alone (#318). A commit with neither, or no CLAUDE.md, is
+# skipped, and the hook says so, as a merge queue's log must (its runner
+# gates through this hook). A clone opts out with
 # `git config hooks.localCi off`.
 #
 # **The commit pushed, not the working tree.** The blocks run in a worktree
@@ -365,7 +536,10 @@ fi
 # wherever that is) is what makes its build cheap, not a kept build directory.
 # Submodules are checked out, and `.venv/bin` (the pinned tools) of this
 # checkout, or of the main checkout from a linked worktree, is put first on
-# PATH.
+# PATH; the first of them holding a Python is the blocks' `Python3_ROOT_DIR`
+# (and `Python_ROOT_DIR`), with `VIRTUAL_ENV` and `CONDA_PREFIX` unset, so a
+# CMake build finds that interpreter rather than one the caller had active
+# (#228).
 #
 # **Lint only what the push changed.** A C++ project registers clang-tidy as
 # one ctest test per source, named `clang_tidy:<path from the repository
@@ -378,29 +552,121 @@ fi
 # its lint runner (`tidy_runner`, #178): a changed source's own unit, one
 # stub unit per changed header in place of everything that includes it, and
 # a cache of the passes, so a re-push or a build-file edit re-tidies only
-# what changed. The scheduled full lint runs what the gate leaves out: a
-# changed header's includers, and a change only clang-tidy's own
-# preprocessing reaches (the cache's key is what the compiler read), so it
-# runs uncached: ctest, or this hook with `hooks.tidyCache off`. Every unit
-# runs (through the cache) when the change is unknown (a new branch with no
-# trunk to compare against, a remote commit this clone lacks), when a
-# `.clang-tidy` or a CMake file changed,
-# when a path matches a line of the optional `lint-every` block (one extended
+# what changed. What the gate leaves out (a changed header's includers, and
+# a change only clang-tidy's own preprocessing reaches, as the cache's key is
+# what the compiler read) is the full lint's: ctest running every
+# `clang_tidy:` test itself, each with its own command and header filter,
+# after a build of the tree; uncached as long as each test's command is
+# clang-tidy itself, not a driver with a cache of its own:
+#
+#     ctest --test-dir <build directory> -R '^clang_tidy:'
+#
+# Where the project's scheduled CI runs it, that is where it runs; where
+# nothing does, nobody runs it unless by hand (before a release or a
+# checkpoint, say), and the gate is all the lint there is (#668). This hook is no
+# substitute even with `hooks.tidyCache off` and `PRE_PUSH_FULL_LINT=1`: that
+# reaches what only clang-tidy's preprocessing reads, but screens each header
+# through a stub, never through its includers.
+#
+# A build file that changed (a preset, a package manifest, or a CMake file
+# the configure read: `configure_inputs`, so a script ctest runs with
+# `cmake -P` is data, linted where a unit reads it, #285) lints, beside what
+# the push reaches, the units configured otherwise than at the commit the
+# push is compared with, and the new ones (#274): a unit's configuration is
+# its command, its compilation database entries, its `.clang-tidy`, the
+# clang-tidy it runs and every untracked file its last build read (a
+# generated header, a system or package header). The runner keeps a record
+# of the units' configuration, in its cache, for each commit whose lint
+# passed on every unit configured otherwise than at its base (or carries
+# the base's on). With none for the base, the nearest first-parent
+# ancestor's is compared with, since a commit whose gate has no lint step
+# (documentation, stamped hooks) leaves none (#654), never past a commit
+# that may change the configuration; with none, every unit runs. A unit with no
+# dependency log counts as configured otherwise. A CMakeLists.txt edit
+# that only adds a test then tidies nothing. `git config hooks.tidyFullOn
+# all` makes a build-file change lint every unit instead.
+#
+# Every unit runs (through the cache) when the change is unknown (a new
+# branch with no trunk to compare against, a remote commit this clone
+# lacks), when a `.clang-tidy` changed, when a path matches a line of the
+# optional `lint-every` block (one extended
 # regex per line, trailing blanks and a CR ignored: the project's own lint
 # driver, say), or with `PRE_PUSH_FULL_LINT=1`. Tests the runner cannot run
 # itself (a command that is not clang-tidy, a property ctest must honour) go
 # to `ctest -R` as before, with this push's reach: the changed sources and
 # every source whose recorded dependencies (`ninja -t deps` in the test
 # directory, current because the build has just run) include a changed file,
-# or all of them for the reasons above or a changed header with no record.
+# or all of them for the reasons above, a build-file change, or a changed
+# header with no record.
 # So does everything when there is no `python3` (`PRE_PUSH_PYTHON` names
 # another), no JSON listing from ctest, or no dependency log. Only a `ctest`
 # the block runs itself is split; one inside a script it calls runs as
-# written. The whole lint belongs in the project's scheduled run.
+# written. The whole lint is the full lint above, not the push's.
+#
+# **A budget** (#256). One run's lint starts no unit after
+# `hooks.lintBudget` seconds (600 unless set, `0` for none) of lint, summed
+# over every `ctest` the blocks call (the suites between them count for
+# nothing), so a lint of
+# every unit (a `.clang-tidy` change, say) holds one push's build admission
+# for no longer: the units running then finish,
+# what passed is cached, and with any left the push is refused, saying how
+# many. The next run starts where it stopped. `PRE_PUSH_LINT_ONLY=1 git push
+# --dry-run` runs one such chunk without the suite: the `build` block, then
+# the `lint` block, or the `test` block with each `ctest` running only its
+# lint (its other commands, and a preset with no `-E`, run as written). It
+# writes no gate receipt and refuses the push whatever it finds, and run
+# until it says nothing is left, it has filled the cache, which every push
+# and gate run as this user on this host reads: the push after it, or the
+# queue's gate on the same host, then lints from the cache. Only with the
+# cache on, since with none a stopped lint could never finish; and a unit
+# with no dependency log, which has no cache key, is never left. A merge
+# queue's gate, on its runner's host or a gate worker, has no budget (#611):
+# its lint runs to the end in the gate that built for it, rather than its
+# build (and, with no `lint` block, its tests) running again for the units
+# left.
 #
 # **Where it runs.** `git config hooks.localCiCpus <list>` pins the local CI
-# to those CPUs (`taskset -c`), so a `-j$(nproc)` in a block follows it, and
+# to those CPUs (`taskset -c`), so a `-j$(nproc)` in a block follows it (an
+# `OMP_NUM_THREADS` or `CTEST_PARALLEL_LEVEL` above their count is lowered
+# to it, and `CMAKE_BUILD_PARALLEL_LEVEL` set to it where unset or above), and
 # `hooks.localCiJobs` sets how many units the lint runner tidies at a time.
+# Within an admission (`WCP_BUILD`) the pin narrows the CPUs `wcp build` placed
+# the run on, to those of the list among them, and never widens them: a run
+# placed on none of the list stays where it was placed (#489). A benchmark
+# re-pins it only as far as it does the admission's own CPUs (#493).
+# A host's limit is the host's, not each clone's (#467), and nobody sets it:
+# `wcp build` derives its CPUs and jobs from the host's memory and CPUs
+# (#556), and pins every admitted build there, this local CI of every clone
+# included, and caps its jobs at their count ("One admission"). `[build]
+# cpus` in wcp's config and `[build.repos.<repo>] max_jobs` override that;
+# without wcp, the two keys above in the global git config (`git config
+# --global hooks.localCiCpus 0-3`) reach every clone. A clone sets them only
+# to differ from its host.
+#
+# **One admission** (#389). With wcp on PATH, the local CI waits for room in
+# the host's build budget: at the first commit it gates, the hook runs itself
+# again as `wcp build --priority push -- <this hook>`, the refs fed back on
+# stdin, and exits as that run does, which gates every commit of the push in
+# one admission, in one scope of `build.slice`. `wcp build` sets `WCP_BUILD`
+# for what it runs, and a hook that finds it set (that run, or a queue
+# landing's push, already admitted at `land`) gates as it is, within the
+# admission it is in; so does the run the hook started, by a mark of its own,
+# under a `wcp build` too old to set `WCP_BUILD`. Within another admission,
+# with `hooks.localCiCpus` set, the hook still runs itself again as
+# `wcp build`, told the list in `WCP_BUILD_CPUS`, a build nested in that
+# admission: it asks for no room, and keeps the local CI to those of the CPUs
+# the admission keeps to, through every benchmark re-pin (#493); a `wcp build`
+# from before that ignores it. The admission is charged for
+# the CPUs `hooks.localCiCpus` names, `wcp build` run pinned to them, else for
+# every CPU the budget has room for (as any `CMD` that names no jobs), and
+# the jobs it sets (`MAKEFLAGS`, `CMAKE_BUILD_PARALLEL_LEVEL`, and
+# `OMP_NUM_THREADS` and a set `CTEST_PARALLEL_LEVEL` lowered) reach the
+# blocks; `[build.repos.<repo>] test_jobs`, told in `WCP_TEST_JOBS`, replaces
+# the two the `test` step reads, for that step alone (#655, `test_step_jobs`).
+# Without wcp the local CI runs as it is and says so: no
+# hook needs wcp. A `wcp build` that ends below 128 without starting the hook
+# again (a broken install, a config error) is said, and the local CI runs
+# here unadmitted; one that died of a signal blocks the push.
 #
 # **A warm worktree** (#183). `git config hooks.localCiWorktree <path>` (a
 # relative one under the cache directory) runs the local CI in that one
@@ -412,8 +678,12 @@ fi
 # next push then builds incrementally. Meant for a clone that does nothing but
 # push, a merge queue's (`wcp queue`): one push at a time holds it, through a
 # `.lock` directory beside it, and another push is refused while that push
-# runs; a lock whose push was killed is taken over, also one killed before it
-# wrote its owner into the lock, once the lock has stayed without one for
+# runs (but a precheck outside an admission, which runs in a new worktree
+# then: "A precheck"; while such a precheck holds it, a build is refused as
+# by any push, a clash a merge queue's clone never meets, as its landing
+# lock runs one push at a time); a lock whose push was killed is taken
+# over, also one killed before it wrote its owner into the lock, once the
+# lock has stayed without one for
 # `LOCK_GRACE` seconds. So a push that cannot write its owner gives the lock
 # back and is refused. Taken over under a token one push at a time holds,
 # the owner replaced by a rename, and let go only while it is still this
@@ -429,18 +699,150 @@ fi
 # **Timed.** Each step's wall time is printed as it ends, the build's with
 # ccache's hits and misses over it, and once more on one line at the end.
 #
+# **Variables it needs** (#401). A clone sets the ones its runs need once, as
+# `git config --add hooks.localCiEnv NAME=VALUE` (NAME in upper case, neither
+# `GIT_*` nor `CI_*`; the last value of a name set twice; a leading `~/` is
+# `$HOME`): a path to data outside the repository, say, that a test skips
+# without. Each is exported into the blocks when the environment leaves it
+# unset or empty. A project names the ones a push must not do without in the
+# optional `ci-env` block, one `NAME ERE` per line: when a path the push
+# changes matches the extended regex, or what it changes is unknown, the push
+# is blocked unless NAME is set and not empty, before its branch is built. A
+# test that skips without its variable passes the gate, so this is what turns
+# that skip into a refusal where the variable matters. A variable the
+# environment sets to another value than `hooks.localCiEnv` gives it, or sets
+# while only the `ci-env` block names it, is not what the gate receipt's
+# configuration records: the gate runs under it and leaves that commit no
+# receipt. Not so the parallelism (`MAKEFLAGS`, `CMAKE_BUILD_PARALLEL_LEVEL`,
+# `CTEST_PARALLEL_LEVEL`, `OMP_NUM_THREADS`), which the build admission and
+# `hooks.localCiCpus` change after the clone set it.
+#
 # Skipped when the push changes only documentation: `*.md` other than
-# CLAUDE.md (its blocks are this CI's commands), LICENSE, .gitignore.
+# CLAUDE.md (its blocks are this CI's commands), LICENSE, .gitignore. A project
+# whose tests read such a file (a parameter table a test checks against the
+# code, say) names it in the optional `ci-code` block, one extended regex per
+# line, trailing blanks ignored (#227): a changed path matching a line counts as
+# code, and so does every path when a line is one grep cannot read, so a bad
+# line gates rather than skips. The block is read from the pushed commit, as
+# every block is, so the hook stays wcp's own.
+#
+# **A precheck** (#610). An optional `precheck` block holds the checks that
+# take seconds and need no build (a formatter, a linter of scripts, a docs
+# table checked against the tree): it runs on every commit the push gates
+# before anything else, and a failing one blocks the push before any build,
+# saying "Local CI: precheck failed", which a merge queue reads as the
+# entry's failure; one that could not be set up (a worktree in use, say) is
+# the host's, as the build's is. Before the admission too ("One admission"):
+# every commit's precheck runs first, and only then does the hook wait for
+# room and build; the run it starts under `wcp build` does not run them
+# again. Each runs in a worktree of its own, set up as the build's is,
+# submodules included, since a precheck may configure, and timed on a line
+# of its own, "Local CI times (precheck)". In the warm worktree where the
+# clone has one, as the build: its ignored build directory, with what a
+# configure downloaded (CMake's `_deps`), stays between pushes, so a precheck
+# that configures fetches nothing a push before it fetched, and a host whose
+# downloads fail for minutes still gates (#666). Outside an admission, only
+# while no other push holds it: its lock would refuse a push the admission
+# would have queued behind the push building there, so the precheck then
+# runs in a new worktree, as without one, and says so. Not pinned to
+# `hooks.localCiCpus`, which is the build's. A `ci-env` variable the commit's
+# build needs is asked for before its precheck. It runs on a push that
+# changes only documentation as well, and alone there: it is the part of the
+# gate a documentation change can break; and on a smoke gate's commit. Not
+# in a lint-only run (`PRE_PUSH_LINT_ONLY=1`), repeated only to fill the lint
+# cache. A commit whose CLAUDE.md has neither a `build` nor a `test` block
+# gets none of the local CI, the precheck included.
+#
+# Apart, for a caller that waits for room itself (#623): a merge queue runs
+# this hook under its gate wrap, an admission this hook's own comes after. It
+# runs the hook first with `PRE_PUSH_PRECHECK=only`, outside the wrap, which
+# runs the prechecks as above and nothing after, exiting 0 when they pass (or
+# there are none to run); then under the wrap with `PRE_PUSH_PRECHECK=done`,
+# which runs no precheck again. Every other check of the push runs in both.
+#
+# **A smoke gate for wcp's own hooks** (#465). A push that changes only hooks
+# wcp wrote, unedited (each under `.githooks/`, its `# wcp:` line's `base=`
+# the SHA-256 digest of its bytes without that line, as `wcp doctor` judges
+# it), as a refresh of them does, builds nothing: each changed hook must pass
+# `sh -n`, and the hook that runs, the pushed one where a merge queue's gate
+# checks the tip out, has run end to end meanwhile, so a broken one fails its
+# own push. An edited hook, a deleted one, or any other path in the push gets
+# the full local CI, and so does every push on a host with neither
+# `sha256sum` nor `shasum`.
+#
+# **A push to the merge queue** (`refs/queue/*`, `wcp queue submit`) runs no
+# local CI, unless `PRE_PUSH_QUEUE_GATE=1`: the queue's runner gates what it
+# lands. `wcp queue submit` sets it for a `git push --dry-run` of an entry the
+# runner could land without a rebase, so that the session's gate run counts.
+#
+# **The gate receipt** (#296). When every step passed, the hook records it as
+# `refs/gates/<sha>`, which a merge queue's runner can land the commit on
+# without gating that tree again (#286). It is a commit object, which every
+# remote takes a ref to: the pushed commit's tree, the pushed commit as its
+# parent, author and committer `pre-push gate`, and the message
+#
+#     gate receipt
+#
+#     tree <the tree gated>
+#     config <the configuration hash>
+#     base <the commit the lint compared the push with, or ->
+#     toolchain <this host's toolchain fingerprint, or ->
+#     smoke 1                   (a smoke gate's only, #465)
+#     result pass
+#
+# A smoke gate's receipt says so, so nothing reads it as a full gate's.
+#
+# The toolchain fingerprint (#380) is the one wcp recorded in this host's
+# profile (`fingerprint = "..."` in `$XDG_CONFIG_HOME/wcp/host.toml`, #367),
+# read as a file, so the hook still needs no wcp: a merge queue lands on a
+# receipt only from a host whose toolchain is the one it requires.
+#
+# The configuration hash is `git hash-object --stdin` of these lines, in this
+# order (`wcp.app.gate.config_text` writes the same):
+#
+#     hook <git hash-object --no-filters of this hook's file, as it ran>
+#     host <uname -n>
+#     tidyFullOn <flags or all, as the lint reads it>
+#     localCiEnv <value>        (once per `hooks.localCiEnv` value, in git's order)
+#
+# What runs is in the tree: the CLAUDE.md blocks, the committed hook. The
+# hash holds what is not: the hook that ran, the machine (its compilers and
+# libraries), and the settings that change what the gate checks. Not in it:
+# `hooks.localCiCpus`, `hooks.localCiJobs` and the lint cache, which change
+# where and how fast the same checks run; a warm worktree, which a fresh one
+# is no weaker than; `PRE_PUSH_FULL_LINT=1`, a superset of the lint the push
+# reaches; and `PRE_PUSH_PYTHON`, since ctest runs the same reach without the
+# lint runner. The lint the push reaches depends on the tree and the `base`,
+# which is why the receipt names it. A skipped CI (documentation only,
+# `hooks.localCi off`, neither a `build` nor a `test` block) or a failed step
+# writes none, nor does a gate run under a variable the environment set past
+# `hooks.localCiEnv` ("Variables it needs"): the hash records the configured
+# values, not what ran.
 
 #: The test-name prefix of a project's per-source clang-tidy tests.
 TIDY_TESTS='clang_tidy:'
+#: Seconds one run's lint may take before it starts no more units, unless
+#: `hooks.lintBudget` says otherwise (#256): one push holds its build
+#: admission for about ten minutes of lint at most. A merge queue's gate has
+#: none (#611).
+LINT_BUDGET=600
 #: Header-like files: without a dependency record, one of these changing
-#: reaches every source.
+#: reaches every source. An extended regex that Python's `re` reads the same
+#: way: the lint runner takes it as `CI_TIDY_HEADER_LIKE`.
 HEADER_LIKE='\.(h|hh|hpp|hxx|inl|ipp|tpp|tcc|inc|def|cuh|cppm|ixx|mxx)$'
 #: Files that may change the flags or the inputs of any source: the lint of
-#: every source runs when one changes. `.in` is a `configure_file` template,
-#: whose output the dependency log names in the build directory instead.
-EVERY_SOURCE='(^|/)(CMakeLists\.txt|CMakePresets\.json|CMakeUserPresets\.json|vcpkg\.json|conanfile\.(txt|py))$|\.(cmake|in)$'
+#: every source runs when one changes. These count by name: CMake reads them
+#: before its configure, or a package manager does, so configure need not
+#: list them.
+BUILD_FILES='(^|/)(CMakePresets\.json|CMakeUserPresets\.json|vcpkg\.json|conanfile\.(txt|py))$'
+#: Files that count by name unless they are known to be data
+#: (`build_file_reason`, #285): a `.cmake` script ctest runs with `cmake -P`,
+#: or a `CMakeLists.txt` the configure did not read. CMake reads others at
+#: build time or from its command line (a `configure_file` template a custom
+#: command fills, a `-C` cache script), where no list names them. `.in` is a
+#: `configure_file` template, whose output the dependency log names in the
+#: build directory instead.
+CONFIGURE_LIKE='(^|/)CMakeLists\.txt$|\.(cmake|in)$'
 #: How many tests one `ctest -R` names, and how long the regex may grow: kwsys
 #: refuses one past its compiled-size limit, and ctest then runs no test and
 #: passes.
@@ -463,7 +865,50 @@ DURATION_AWK='function d(s) {
 
 duration() { awk -v s="$1" "$DURATION_AWK"' BEGIN { print d(s) }'; }
 
+#: A path a build directory names, relative to the worktree top, for awk:
+#: absolute or relative to `BUILD`, `.` and `..` resolved, the worktree in
+#: either spelling (`TOP`, `LOGICAL_TOP`); empty outside it.
+NORM_AWK='function norm(p,    n, i, k, parts, out, top) {
+	if (substr(p, 1, 1) != "/") p = ENVIRON["BUILD"] "/" p
+	n = split(p, parts, "/")
+	k = 0
+	for (i = 1; i <= n; i++) {
+		if (parts[i] == "..") { if (k > 0) k-- }
+		else if (parts[i] != "." && parts[i] != "") out[++k] = parts[i]
+	}
+	p = ""
+	for (i = 1; i <= k; i++) p = p "/" out[i]
+	top = ENVIRON["TOP"] "/"
+	if (index(p, top) == 1) return substr(p, length(top) + 1)
+	top = ENVIRON["LOGICAL_TOP"] "/"
+	if (index(p, top) == 1) return substr(p, length(top) + 1)
+	return ""
+}'
+
 now() { date +%s; }
+
+# The CPUs two `taskset -c` lists (`0,2-5`, `0-15:2`) share, as one such list;
+# nothing when they share none.
+cpu_lists_shared() {
+	printf '%s\n%s\n' "$1" "$2" | awk '
+	{
+		n = split($0, item, ",")
+		for (i = 1; i <= n; i++) {
+			lo = item[i]; hi = lo; step = 1
+			if (split(lo, s, ":") == 2) { lo = s[1]; step = s[2] }
+			if (split(lo, r, "-") == 2) { lo = r[1]; hi = r[2] } else hi = lo
+			if (lo !~ /^[0-9]+$/ || hi !~ /^[0-9]+$/ || step !~ /^[1-9][0-9]*$/) continue
+			for (c = lo + 0; c <= hi + 0; c += step) on[NR, c] = 1
+			if (hi + 0 > top) top = hi + 0
+		}
+	}
+	END {
+		out = ""
+		for (c = 0; c <= top; c++)
+			if ((1, c) in on && (2, c) in on) out = out (out == "" ? "" : ",") c
+		print out
+	}'
+}
 
 # Records step `$1`, begun at `$2`, in the timings file and on stderr, with
 # `$3` after the time when given.
@@ -474,14 +919,35 @@ timed() {
 }
 
 # ccache's hits and misses so far, as `hits misses`; nothing without ccache or
-# with one too old for `--print-stats`. Machine-wide counters, so a build
-# beside this one blurs the difference.
+# with one too old for `--print-stats`. `$1`, when given, is a stats log
+# (`stats_log`), whose counters are those of the compiles that wrote it;
+# otherwise the counters are machine-wide, so a build beside this one blurs the
+# difference.
 ccache_counts() {
 	command -v ccache >/dev/null 2>&1 || return 0
-	ccache --print-stats 2>/dev/null | awk '
+	if [ -n "${1:-}" ]; then
+		CCACHE_STATSLOG=$1 ccache --print-log-stats 2>/dev/null
+	else
+		ccache --print-stats 2>/dev/null
+	fi | awk '
 		$1 == "direct_cache_hit" || $1 == "preprocessed_cache_hit" { h += $2 }
 		$1 == "cache_miss" { m += $2 }
 		END { if (NR) print h + 0, m + 0 }'
+}
+
+# A stats log for the build step's compiles alone, `$1`, emptied, when ccache
+# can read one back (`--print-log-stats`) and no `stats_log` is set already, in
+# the hook's environment or the ccache config it reads (which this one would
+# divert; a config the block itself points ccache at is not seen); nothing
+# otherwise, and the build's share is then read off the machine-wide counters
+# (#613: on a queue's host, other sessions' builds in the same minutes made a
+# gate's 95 compiles count as 139).
+ccache_stats_log() {
+	command -v ccache >/dev/null 2>&1 || return 0
+	[ -z "$(ccache -k stats_log 2>/dev/null)" ] || return 0
+	rm -f "$1"
+	CCACHE_STATSLOG=$1 ccache --print-log-stats >/dev/null 2>&1 || return 0
+	printf '%s\n' "$1"
 }
 
 # `$1` single-quoted for `eval`.
@@ -503,23 +969,7 @@ dependents() {
 	[ -n "$deps" ] || return 1
 	wanted=$(cat)
 	printf '%s\n' "$deps" |
-		TOP="$CI_SRC" LOGICAL_TOP="$CI_LOGICAL_SRC" BUILD="$(cd "$1" && pwd -P)" WANTED="$wanted" awk '
-		function norm(p,    n, i, k, parts, out) {
-			if (substr(p, 1, 1) != "/") p = ENVIRON["BUILD"] "/" p
-			n = split(p, parts, "/")
-			k = 0
-			for (i = 1; i <= n; i++) {
-				if (parts[i] == "..") { if (k > 0) k-- }
-				else if (parts[i] != "." && parts[i] != "") out[++k] = parts[i]
-			}
-			p = ""
-			for (i = 1; i <= k; i++) p = p "/" out[i]
-			top = ENVIRON["TOP"] "/"
-			if (index(p, top) == 1) return substr(p, length(top) + 1)
-			top = ENVIRON["LOGICAL_TOP"] "/"
-			if (index(p, top) == 1) return substr(p, length(top) + 1)
-			return ""
-		}
+		TOP="$CI_SRC" LOGICAL_TOP="$CI_LOGICAL_SRC" BUILD="$(cd "$1" && pwd -P)" WANTED="$wanted" awk "$NORM_AWK"'
 		function flush(    i) {
 			if (hit) for (i = 1; i <= nd; i++) if (deps[i] != "") print deps[i]
 			nd = 0
@@ -533,6 +983,146 @@ dependents() {
 			if (d in want) hit = 1
 		}
 		END { flush() }'
+}
+
+# The files in the tree CMake's configure read when it last ran in build
+# directory `$1`, relative to the worktree top, one per line (#285): the
+# inputs of the Ninja edge that re-runs CMake (in `build.ninja`, or in
+# `CMakeFiles/common.ninja` for Ninja Multi-Config), else the Makefile
+# generator's `CMAKE_MAKEFILE_DEPENDS`. Current, because the build has just
+# run. Fails when the directory names neither: no CMake, one told not to
+# regenerate, or a test directory below the build's top.
+configure_inputs() {
+	build_top=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+	if [ -f "$1/build.ninja" ]; then
+		ninja_dir=$1
+		set -- "$ninja_dir/build.ninja"
+		[ ! -f "$ninja_dir/CMakeFiles/common.ninja" ] || set -- "$@" "$ninja_dir/CMakeFiles/common.ninja"
+		# A statement runs on past a line ending in an unescaped `$`; `$ `,
+		# `$:` and `$$` are a space, a colon and a dollar in a path.
+		TOP="$CI_SRC" LOGICAL_TOP="$CI_LOGICAL_SRC" BUILD="$build_top" awk "$NORM_AWK"'
+		function statement(s,    n, i, c, t, tok, colon) {
+			if (substr(s, 1, 6) != "build " || index(s, "RERUN_CMAKE") == 0) return
+			n = 0
+			t = ""
+			for (i = 1; i <= length(s); i++) {
+				c = substr(s, i, 1)
+				if (c == "$" && i < length(s)) {
+					c = substr(s, ++i, 1)
+					t = t (c == " " || c == ":" || c == "$" ? c : "$" c)
+				} else if (c == " " || c == "\t" || c == ":") {
+					if (t != "") tok[++n] = t
+					t = ""
+					if (c == ":") { tok[++n] = ":"; if (!colon) colon = n }
+				} else t = t c
+			}
+			if (t != "") tok[++n] = t
+			if (!colon || tok[colon + 1] != "RERUN_CMAKE") return
+			found = 1
+			for (i = colon + 2; i <= n && tok[i] != "||"; i++)
+				if (tok[i] != "|" && (p = norm(tok[i])) != "") print p
+		}
+		{
+			line = $0
+			if (cont) sub(/^[ \t]+/, "", line)
+			match(line, /\$+$/)
+			if (RLENGTH > 0 && RLENGTH % 2 == 1) {
+				stmt = stmt substr(line, 1, length(line) - 1)
+				cont = 1
+				next
+			}
+			statement(stmt line)
+			stmt = ""
+			cont = 0
+		}
+		END { exit !found }' "$@"
+	elif [ -f "$1/CMakeFiles/Makefile.cmake" ]; then
+		TOP="$CI_SRC" LOGICAL_TOP="$CI_LOGICAL_SRC" BUILD="$build_top" awk "$NORM_AWK$UNQUOTE_AWK"'
+		/^set\(CMAKE_MAKEFILE_DEPENDS/ { in_list = 1; found = 1; next }
+		in_list && /^[ \t]*\)/ { in_list = 0 }
+		in_list && match($0, /"([^"\\]|\\.)*"/) {
+			if ((p = norm(unquote(substr($0, RSTART, RLENGTH)))) != "") print p
+		}
+		END { exit !found }' "$1/CMakeFiles/Makefile.cmake"
+	else
+		return 1
+	fi
+}
+
+#: A CMake quoted argument's value, for awk: the quotes off, `\x` as `x`.
+UNQUOTE_AWK='
+function unquote(q,    out, i, c) {
+	out = ""
+	for (i = 2; i < length(q); i++) {
+		c = substr(q, i, 1)
+		if (c == "\\") c = substr(q, ++i, 1)
+		out = out c
+	}
+	return out
+}'
+
+# The files in the tree a test runs, relative to the worktree top, one per
+# line: every absolute path an `add_test` of a `CTestTestfile.cmake` under
+# build directory `$1` names, alone or after a `-D<var>=`. A `.cmake` script
+# ctest runs with `cmake -P` is among them.
+test_scripts() {
+	find "$1" -name CTestTestfile.cmake -type f 2>/dev/null |
+		while IFS= read -r file; do
+			TOP="$CI_SRC" LOGICAL_TOP="$CI_LOGICAL_SRC" BUILD=/ awk "$NORM_AWK$UNQUOTE_AWK"'
+			/^[ \t]*add_test\(/ {
+				s = $0
+				while (match(s, /"([^"\\]|\\.)*"/)) {
+					v = unquote(substr(s, RSTART, RLENGTH))
+					s = substr(s, RSTART + RLENGTH)
+					if (substr(v, 1, 1) != "/" && (k = index(v, "=")) > 0) v = substr(v, k + 1)
+					if (substr(v, 1, 1) == "/" && (p = norm(v)) != "") print p
+				}
+			}' "$file"
+		done
+}
+
+# Why a changed path may change the flags or the inputs of any source, in
+# build directory `$1`; nothing when none can. A preset or package manifest,
+# by name; any file CMake's configure read (`configure_inputs`); and a CMake
+# file (`CONFIGURE_LIKE`) unless it is known to be data: one a test runs
+# (`test_scripts`), or a `CMakeLists.txt` the configure did not read (#285).
+# A deleted one counts, since the base's configure may have read it. With no
+# list of what the configure read, or one naming nothing in the tree (the
+# worktree spelled otherwise), every CMake file counts.
+build_file_reason() {
+	reason='which may change the flags or inputs of any source'
+	if printf '%s\n' "$CI_CHANGED" | grep -qE "$BUILD_FILES"; then
+		echo "a build file changed, $reason"
+		return 0
+	fi
+	if ! inputs=$(configure_inputs "$1") || [ -z "$inputs" ]; then
+		! printf '%s\n' "$CI_CHANGED" | grep -qE "$CONFIGURE_LIKE" || echo "a build file changed, $reason"
+		return 0
+	fi
+	read_one=$(printf '%s\n' "$CI_CHANGED" | INPUTS="$inputs" awk '
+		BEGIN { n = split(ENVIRON["INPUTS"], w, "\n"); for (i = 1; i <= n; i++) read[w[i]] = 1 }
+		$0 in read { print; exit }')
+	if [ -n "$read_one" ]; then
+		echo "a build file changed ($read_one, which CMake's configure reads), $reason"
+		return 0
+	fi
+	cmake_like=$(printf '%s\n' "$CI_CHANGED" | grep -E "$CONFIGURE_LIKE") || return 0
+	scripts=$(test_scripts "$1")
+	heredoc_read=''
+	while heredoc_read=1; IFS= read -r path; do
+		if [ ! -e "$CI_SRC/$path" ]; then
+			echo "a build file changed ($path, deleted), $reason"
+			return 0
+		fi
+		case $path in CMakeLists.txt | */CMakeLists.txt) continue ;; esac
+		if ! printf '%s\n' "$scripts" | grep -qxF -- "$path"; then
+			echo "a build file changed ($path, which no test runs: CMake may read it while it builds), $reason"
+			return 0
+		fi
+	done <<CMAKE_LIKE
+$cmake_like
+CMAKE_LIKE
+	[ -n "$heredoc_read" ] || { heredoc_lost; echo "a here-document could not be written, $reason"; }
 }
 
 # Why the `lint-every` block runs the whole lint: the first line a changed path
@@ -556,19 +1146,54 @@ lint_every_match() {
 	done
 }
 
+# Why a push of documentation alone runs the local CI (#227): the first changed
+# path (CI_CHANGED) that a line of the `ci-code` block in CLAUDE.md `$1`
+# matches, or the first line grep cannot read, which gates rather than skips.
+# Nothing when no line matches.
+ci_code_match() {
+	printf '%s\n' "$1" | extract_block ci-code | sed 's/[[:space:]]*$//' |
+		while IFS= read -r pattern; do
+			[ -n "$pattern" ] || continue
+			# No blank line, which a push changing nothing leaves, for a line like `.*` to match.
+			if hits=$(printf '%s\n' "$CI_CHANGED" | grep -v '^$' | grep -E -- "$pattern" 2>/dev/null); then
+				matched=0
+			else
+				matched=$?
+			fi
+			if [ "$matched" = 0 ]; then
+				printf '%s matches the ci-code line %s\n' "$(printf '%s\n' "$hits" | head -n 1)" "$pattern"
+				break
+			elif [ "$matched" != 1 ]; then
+				printf 'the ci-code line %s is not an extended regex grep can read\n' "$pattern"
+				break
+			fi
+		done
+}
+
 # Whether a changed path is a directory in the worktree: a submodule, which
-# git names as one path however many of its files changed.
+# git names as one path however many of its files changed. Yes when the paths
+# could not be read (#514), so that every source is linted.
 moved_submodule() {
-	while IFS= read -r path; do
+	heredoc_read=''
+	while heredoc_read=1; IFS= read -r path; do
 		[ -z "$path" ] || [ ! -d "$CI_SRC/$path" ] || return 0
 	done <<CHANGED
 $CI_CHANGED
 CHANGED
+	[ -n "$heredoc_read" ] || { heredoc_lost; return 0; }
 	return 1
 }
 
-# Why the push lints every source rather than what it reaches; nothing when
-# it can be narrowed.
+# Why the push lints every source rather than what it reaches, in build
+# directory `$1`; nothing when it can be narrowed. With `$2` set to
+# `flags`, a build-file change is not a reason: the lint runner compares the
+# units' configuration instead (`hooks.tidyFullOn flags`, #274).
+# `PRE_PUSH_FULL_LINT=1` lints every unit, through the cache while it is on,
+# so a lint of them all goes in budget-sized chunks the cache carries from
+# push to push, and a file only clang-tidy's preprocessing reads replays its
+# cached pass; with `hooks.tidyCache off` it is one pass with no budget and
+# nothing kept. Either way a header is screened by its stub, not its
+# includers. The full lint is ctest's (#668).
 every_source_reason() {
 	if [ "${PRE_PUSH_FULL_LINT:-0}" = 1 ]; then
 		echo 'PRE_PUSH_FULL_LINT=1'
@@ -576,8 +1201,8 @@ every_source_reason() {
 		echo 'what the push changes is unknown'
 	elif printf '%s\n' "$CI_CHANGED" | grep -qE '(^|/)\.clang-tidy$'; then
 		echo 'a .clang-tidy changed'
-	elif printf '%s\n' "$CI_CHANGED" | grep -qE "$EVERY_SOURCE"; then
-		echo 'a build file changed, which may change the flags or inputs of any source'
+	elif [ "${2:-}" != flags ] && build_why=$(build_file_reason "$1") && [ -n "$build_why" ]; then
+		printf '%s\n' "$build_why"
 	elif every=$(lint_every_match) && [ -n "$every" ]; then
 		printf '%s\n' "$every"
 	elif moved_submodule; then
@@ -590,7 +1215,7 @@ every_source_reason() {
 lint_selection() {
 	all=$2
 	total=$(printf '%s\n' "$all" | wc -l | tr -d '[:space:]')
-	why=$(every_source_reason)
+	why=$(every_source_reason "$1")
 	if [ -n "$why" ]; then
 		:
 	elif ! reached=$(printf '%s\n' "$CI_CHANGED" | dependents "$1"); then
@@ -627,7 +1252,7 @@ lint_selection() {
 #   clang-tidy's default, less the exclusion; not a header it reads as a
 #   system header) is tidied through a stub, a unit of one line
 #   `#include "<header>"` with the first such includer's flags, filtered
-#   to that header; its includers are left to the scheduled full lint. A
+#   to that header; its includers are left to the full lint (ctest's). A
 #   changed header no includer reports on has its includers tidied for
 #   their own diagnostics. A stub is a screen: one that fails (a header
 #   that does not compile on its own, or a finding no includer reports,
@@ -644,6 +1269,12 @@ lint_selection() {
 #   test's `TIMEOUT`, else the block's `ctest --timeout`, holds as under
 #   ctest. A run that says it could not read the configuration fails, though
 #   clang-tidy exits 0 after it.
+# - **The pin** (#616). `.clang-format-version` pins clang-tidy as it pins
+#   clang-format in pre-commit, in as many components as it names (the
+#   version `--version` prints, not a wheel's `22.1.8.1`): a test
+#   whose clang-tidy (its command's own) is another version is skipped,
+#   loudly, neither tidied nor left to ctest, as its findings would not be
+#   the pinned one's. Where the runner cannot run, ctest runs them unchecked.
 # - **The cache.** A pass is stored with its output, a failure never. Its key
 #   is a sha256 over the runner's schema, `clang-tidy --version`, the command,
 #   the unit's compilation database entries, the configuration's bytes and the
@@ -654,11 +1285,26 @@ lint_selection() {
 #   directory among them. A unit the log does not cover runs uncached. The
 #   log is what the build's compiler read: a file only clang-tidy's own
 #   preprocessing reaches (under `#ifdef __clang__`, say) is not in the key,
-#   and a change to it alone is left to the scheduled full lint, which
-#   therefore runs uncached.
+#   and a change to it alone is left to the full lint, which therefore
+#   runs uncached: ctest's, run on the project's schedule or by hand.
 #   It is `git config hooks.tidyCacheDir`, else
 #   `${XDG_CACHE_HOME:-$HOME/.cache}/local-ci-tidy`; `hooks.tidyCache off` turns it
 #   off, and an entry unused for 30 days is removed. Deleting it is safe.
+# - **A build-file change** (`hooks.tidyFullOn flags`, the default, #274).
+#   A passing lint stores, beside the passes, each unit's configuration
+#   digest (`configuration`) at the pushed commit, keyed by the commit and
+#   the build directory: a configuration it was linted clean under. A push
+#   that changes a build file compares against the digests at its base: the
+#   units whose digest differs, the new ones and the ones with no
+#   dependency log are tidied with the configuration's own filter, so the
+#   headers they include are judged under their new flags too. With no
+#   record for the base, the nearest first-parent ancestor's stands in
+#   (#654): a commit with no lint step leaves none. Only across commits
+#   that cannot change the configuration: past one, a change undone would
+#   compare equal with code linted only under it. With none within
+#   `RECORD_WALK` commits (pushed from elsewhere, or the cache is off), every
+#   unit runs, as under `all`. A push that changes no build file lints
+#   only its reach, so it carries that record on, or writes none.
 # - **In parallel**, `hooks.localCiJobs` at a time, else one per CPU this
 #   process may use; the largest sources first.
 tidy_runner() {
@@ -671,6 +1317,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -678,11 +1325,16 @@ import time
 E = os.environ
 #: Bumped whenever what a key covers changes: every stored pass then misses.
 SCHEMA = "tidy-runner 2"
+#: How many first-parent commits, the base among them, are looked through for
+#: a record of the units' configuration (#654): days of a busy trunk, at a
+#: file's open each, so a clone with no records pays nothing to speak of.
+RECORD_WALK = 200
 PREFIX = E["CI_TIDY_PREFIX"]
 HEADER = re.compile(r"\.(h|hh|hpp|hxx|cuh)$")
 #: What a stub cannot stand in for: these files make sense only inside the
-#: unit that includes them, so their includers are tidied instead.
-HEADER_LIKE = re.compile(r"\.(h|hh|hpp|hxx|inl|ipp|tpp|tcc|inc|def|cuh|cppm|ixx|mxx)$")
+#: unit that includes them, so their includers are tidied instead. The shell's
+#: `HEADER_LIKE`, so its "no dependency log, lint everything" agrees (#332).
+HEADER_LIKE = re.compile(E["CI_TIDY_HEADER_LIKE"])
 #: Test properties the runner honours as ctest would, or that only steer
 #: ctest's scheduling; a test with any other runs through ctest.
 PLAIN = {"LABELS", "WORKING_DIRECTORY", "COST", "PROCESSORS", "RUN_SERIAL", "RESOURCE_LOCK", "TIMEOUT"}
@@ -759,6 +1411,25 @@ class Hasher:
             except OSError:
                 self.known[path] = None
         return self.known[path]
+
+    def spelled_file(self, path: str) -> str | None:
+        """`path`'s digest, with the worktree spelled as a placeholder in a file under it.
+
+        A generated header may name the worktree, which is new for each push.
+        """
+        if rel(path) is None:
+            return self.file(path)
+        key = "spelled " + path
+        if key not in self.known:
+            try:
+                with open(path, "rb") as f:
+                    data = f.read()
+                for root in sorted(ROOTS, key=len, reverse=True):
+                    data = data.replace(os.fsencode(root), b"@SRC@")
+                self.known[key] = hashlib.sha256(data).hexdigest()
+            except OSError:
+                self.known[key] = None
+        return self.known[key]
 
 
 HASH = Hasher()
@@ -1102,6 +1773,7 @@ class Job:
         self.output = ""
         self.ok = False
         self.cached = False
+        self.left = False  # not started: the lint's budget had run out
 
 
 class Cache:
@@ -1170,6 +1842,36 @@ class Cache:
             pass
 
 
+def lint_used() -> float:
+    """The seconds this run's lint has used so far, in the `ctest`s before this one.
+
+    `CI_TIDY_CLOCK`, a file the hook clears at the start of each run and each
+    runner adds its own lint time to (`lint_spent`), so the suites the run's
+    `ctest`s call in between count for nothing; 0 when there is none or it
+    cannot be read.
+    """
+    path = E.get("CI_TIDY_CLOCK", "")
+    if not path:
+        return 0.0
+    try:
+        with open(path, encoding="utf-8") as f:
+            return float(f.read())
+    except (OSError, ValueError):
+        return 0.0
+
+
+def lint_spent(used: float) -> None:
+    """Records `used`, the seconds this run's lint has used up to now, for the next runner."""
+    path = E.get("CI_TIDY_CLOCK", "")
+    if not path:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(repr(used))
+    except OSError:
+        pass
+
+
 VERSIONS: dict[str, str] = {}
 
 
@@ -1180,6 +1882,65 @@ def tidy_version(exe: str) -> str:
         except OSError:
             VERSIONS[exe] = ""
     return VERSIONS[exe]
+
+
+#: A version as the pin and clang-tidy's `--version` spell it, `22.1.8`.
+VERSION = r"[0-9]+(?:\.[0-9]+)*"
+
+
+def tidy_pin() -> str:
+    """The version `.clang-format-version` pins clang-tidy to (#616), else nothing.
+
+    Read as pre-commit reads it for clang-format: the leading `N[.N...]` of
+    its first line, whose major must be all digits.
+    """
+    try:
+        with open(os.path.join(E["CI_SRC"], ".clang-format-version"), encoding="utf-8", errors="replace") as f:
+            line = f.readline().strip()
+    except OSError:
+        return ""
+    if not re.fullmatch("[0-9]+", line.split(".")[0]):
+        say(f'lint: .clang-format-version does not begin with a version ("{line}"); the clang-tidy version was not checked')
+        return ""
+    found = re.match(VERSION, line)
+    return found.group(0) if found else ""
+
+
+def off_pin(units: list[Unit], pin: str) -> set[str]:
+    """The names of `units` whose clang-tidy is not `pin`, in every component it names.
+
+    Skipped, as pre-commit skips a clang-format of another version: its
+    findings differ from the pinned one's either way. Each such clang-tidy is
+    named once. A test whose command is not clang-tidy is not judged.
+    """
+    off: dict[str, tuple[str, list[str]]] = {}
+    for u in units:
+        if not pin or not u.cmd or not TIDY_EXE.search(u.cmd[0]):
+            continue
+        found = re.search(f"version ({VERSION})", tidy_version(u.cmd[0]))
+        version = found.group(1) if found else ""
+        if version == pin or version.startswith(pin + "."):
+            continue
+        off.setdefault(u.cmd[0], (version, []))[1].append(u.name)
+    spec = pin if pin.count(".") >= 2 else pin + ".*"
+    for exe, (version, names) in off.items():
+        say(
+            f"lint: {shutil.which(exe) or exe} is clang-tidy {version or 'of an unknown version'}, not {pin}"
+            f" as .clang-format-version pins; its {len(names)} {PREFIX} test(s) were skipped. Put clang-tidy"
+            f" {pin} where the build finds it, first on PATH or in the checkout's .venv/bin"
+            f" (uv tool install clang-tidy=={spec}, say), and configure the build again:"
+            " its tests name the clang-tidy it found then."
+        )
+    return {name for _, names in off.values() for name in names}
+
+
+def keyed_cmd(cmd: list[str]) -> list[str]:
+    """`cmd` as a key spells it: clang-tidy without its path, which `tidy_version` stands for.
+
+    A session clone runs its `.venv`'s clang-tidy and a queue clone the one on
+    PATH; the same version must fill one cache (#479).
+    """
+    return ["clang-tidy"] + [spelled(a) for a in cmd[1:]]
 
 
 def key_of(
@@ -1202,7 +1963,7 @@ def key_of(
     material = {
         "schema": SCHEMA,
         "tidy": tidy_version(cmd[0]),
-        "cmd": [spelled(a) for a in cmd],
+        "cmd": keyed_cmd(cmd),
         "cwd": spelled(unit.cwd),
         "entries": json.loads(spelled(json.dumps(entries, sort_keys=True, ensure_ascii=False))),
         "config": config or unit.config_bytes(),
@@ -1210,6 +1971,103 @@ def key_of(
         "extra": extra,
     }
     return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
+
+
+def configuration(unit: Unit, files: set[str]) -> str:
+    """What `unit`'s lint depends on besides the tracked files it reads, as one digest (#274).
+
+    Its command, its compilation database entries, its `.clang-tidy`, the
+    clang-tidy it runs, and the content of every file its last build read
+    that git does not track: a generated header, a system or package header.
+    A tracked file that changed is the push's to reach.
+    """
+    db = database(unit.database)
+    entries = db.all_entries(unit.path) if db else []
+    closure = db.closure(unit.path) if db else None
+    read = None
+    if closure is not None:
+        read = [[spelled(p), HASH.spelled_file(p) or "missing"] for p in sorted(set(closure)) if p not in files]
+    material = {
+        "schema": SCHEMA,
+        "tidy": tidy_version(unit.cmd[0]),
+        "cmd": keyed_cmd(unit.cmd),
+        "cwd": spelled(unit.cwd),
+        "entries": json.loads(spelled(json.dumps(entries, sort_keys=True, ensure_ascii=False))),
+        "config": unit.config_bytes(),
+        "read": read,
+    }
+    return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
+
+
+def record_key(commit: str, test_dir: str) -> str:
+    """Where the cache keeps the units' configurations at `commit`, for build directory `test_dir`."""
+    material = {"schema": SCHEMA, "record": commit, "tests": spelled(test_dir)}
+    return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
+
+
+def first_parents(commit: str) -> list[tuple[str, list[str]]]:
+    """`commit` and its first parents, each with the paths it changed, nearest first.
+
+    `RECORD_WALK` in all, or `commit` alone, changing nothing, if git cannot say.
+    """
+    env = {k: v for k, v in E.items() if not k.startswith("GIT_")}
+    # `--no-renames`: a rename lists only its new path, and the old may be a build file.
+    log = ["log", "--first-parent", f"--max-count={RECORD_WALK}", "--no-renames", "--name-only"]
+    argv = ["git", "-c", "core.quotePath=false", *log, "--format=%x01%H", commit, "--"]
+    try:
+        done = subprocess.run(argv, cwd=ROOTS[0], env=env, capture_output=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return [(commit, [])]
+    walk: list[tuple[str, list[str]]] = []
+    for line in done.stdout.decode("utf-8", "surrogateescape").splitlines():
+        if line.startswith("\x01"):
+            walk.append((line[1:], []))
+        elif line and walk:
+            walk[-1][1].append(line)
+    return walk or [(commit, [])]
+
+
+def configure_read() -> set[str]:
+    """What the configure read, from the file the hook wrote; nothing if it could not."""
+    try:
+        with open(E.get("CI_TIDY_CONFIG_INPUTS", ""), encoding="utf-8", errors="surrogateescape") as f:
+            return set(f.read().splitlines())
+    except OSError:
+        return set()
+
+
+def may_reconfigure(paths: list[str], read: set[str]) -> bool:
+    """Whether one of the changed `paths` may change a unit's configuration: what
+    `build_file_reason` counts, a `.clang-tidy`, or any path if the hook passed no pattern.
+    """
+    pattern = E.get("CI_TIDY_CONFIG_FILES", "")
+    return any(not pattern or p in read or re.search(pattern, p) for p in paths)
+
+
+def nearest_record(cache: Cache, base: str, test_dir: str) -> tuple[dict[str, str] | None, str]:
+    """The units' configurations at `base`, else at its nearest first parent with a record (#654).
+
+    And the commit they are of. A commit whose gate ran no lint leaves none,
+    which without this costs the next build-file change every unit. A record
+    says each digest is a configuration its units were linted clean under, so
+    an older one stands in only across commits that cannot change one: with no
+    such commit between, what they changed was linted, where their gates ran a
+    lint, under that same configuration. Past one (from another host, say, so
+    with no record here), a configuration changed and later undone would
+    compare equal, with the code between linted only under the change; and a
+    unit gone and back would not be new.
+    """
+    read = configure_read()
+    for commit, changed in first_parents(base):
+        try:
+            record = json.loads(cache.hit(record_key(commit, test_dir)) or "null")
+        except ValueError:
+            record = None
+        if isinstance(record, dict):
+            return record, commit
+        if may_reconfigure(changed, read):
+            break
+    return None, base
 
 
 def unit_job(unit: Unit, filter_: str) -> Job:
@@ -1312,6 +2170,13 @@ def main() -> int:
     jobs_n = int(E.get("CI_TIDY_JOBS") or 0) or cpus
 
     units = [Unit(t, test_dir) for t in listing.get("tests", []) if str(t.get("name", "")).startswith(PREFIX)]
+    # Neither tidied nor left to ctest, and so in no configuration record.
+    skipped = off_pin(units, tidy_pin())
+    units = [u for u in units if u.name not in skipped]
+    # Named for the hook too: where the runner gives up below (exit 2), ctest
+    # runs the rest, and these must stay skipped there.
+    with open(E["CI_TIDY_SKIPPED"], "w", encoding="utf-8") as f:
+        f.write("".join(name + "\n" for name in sorted(skipped)))
     direct = [u for u in units if not u.why_not]
     # Printed for the hook to select from as before.
     for u in units:
@@ -1336,6 +2201,38 @@ def main() -> int:
     if len(unlogged) == len(direct):
         say("lint: no dependency log names what the units read; ctest runs them as before")
         return 2
+
+    # Under `hooks.tidyFullOn flags` (#274) a build-file change lints the
+    # units whose configuration differs from the base commit's, which a
+    # record kept for each commit whose lint passed says, or the nearest
+    # first parent's with one (#654); with no record to compare with, every
+    # unit.
+    cache = Cache(E.get("CI_TIDY_CACHE", ""))
+    files = tracked() if E.get("CI_TIDY_FULL_ON") == "flags" else None
+    configs = {u.name: configuration(u, files) for u in direct} if files is not None else None
+    base = E.get("CI_BASE", "")
+    before = None
+    compared = base
+    if base and configs is not None:
+        before, compared = nearest_record(cache, base, test_dir)
+    reconfigured: list[Unit] = []
+    build = E.get("CI_TIDY_BUILD", "")
+    if build and not full:
+        if before is None or configs is None:
+            full = (
+                f"{build}; no record of the units' configuration at {base[:12] or 'the base'}"
+                f", or back to a build-file change within {RECORD_WALK} commits, to compare with"
+            )
+        else:
+            # A unit with no dependency log: what it reads cannot be compared.
+            blind = {u.name for u in unlogged}
+            reconfigured = [u for u in direct if u.name in blind or before.get(u.name) != configs[u.name]]
+            say(
+                f"lint: {build}; {len(reconfigured)} of {len(direct)} unit(s) are configured otherwise"
+                f" than at {compared[:12]}"
+                + (f" (the nearest record: {base[:12]} has none)" if compared != base else "")
+                + ", new, or with no dependency log"
+            )
 
     builds = {u.database for u in direct if u.database}
     # Units tidied for their own diagnostics only; units tidied with the
@@ -1363,6 +2260,9 @@ def main() -> int:
                     if scope_of(u).covers(path):
                         whole[u.name] = u
     else:
+        # Their flags or untracked inputs changed: what they include is
+        # judged under the new ones too.
+        whole = {u.name: u for u in reconfigured}
         by_rel = {u.rel: u for u in direct}
         for c in changed:
             path = norm(c, E["CI_SRC"])
@@ -1390,7 +2290,7 @@ def main() -> int:
         reach = sorted(includers.get(header, []), key=lambda u: u.rel)
         if not reach:
             if not unlogged:
-                say(f"lint: no unit includes {rel(header)}, so it is not tidied")
+                say(f"lint: no unit {'on the pin ' if skipped else ''}includes {rel(header)}, so it is not tidied")
             continue
         # The first includer that reports on it: the filter takes it, and
         # the header is not a system header there. With none, no stub stands
@@ -1418,7 +2318,21 @@ def main() -> int:
             jobs += [unit_job(u, header_filter(header)) for u in reach]
         else:
             jobs.append(job)
-    return execute(dedupe(jobs), Cache(E.get("CI_TIDY_CACHE", "")), jobs_n, includers, full)
+    status = execute(dedupe(jobs), cache, jobs_n, includers, full)
+    # A record vouches for each unit's configuration as one it was linted
+    # clean under. A run that tidied every unit, or every one configured
+    # otherwise than at the base, vouches for this commit's; one that tidied
+    # only what the push reaches vouches for no more than the base did, so
+    # the record compared with is carried on, and with none, none is written. Only
+    # for the units there are now: one gone and back is new again.
+    record = None
+    if full or build:
+        record = configs
+    elif before is not None and configs is not None:
+        record = {name: d for name, d in before.items() if name in configs}
+    if status == 0 and record is not None and E.get("CI_SHA"):
+        cache.store(record_key(E["CI_SHA"], test_dir), json.dumps(record, sort_keys=True))
+    return status
 
 
 def dedupe(jobs: list[Job]) -> list[Job]:
@@ -1441,16 +2355,36 @@ def execute(jobs: list[Job], cache: Cache, jobs_n: int, includers: dict[str, lis
     use in the unit exempts), and the full lint is the units. So a stub that
     fails hands its header to its includers, filtered to that header, and
     they decide.
+
+    With a budget (`hooks.lintBudget`, #256), no job starts once the lint has
+    run that long, so that one gate run holds its admission, or the queue,
+    for no longer; what passed is cached, and the next run starts where this
+    one stopped. Only with the cache on, as only then is there a next run to
+    start there, and never for a job with no key, which would start over.
     """
     started = time.time()
+    budget = float(E.get("CI_TIDY_BUDGET") or 0) if cache.directory else 0.0
+    # One clock for the run's lint, however many `ctest`s its blocks call.
+    used = lint_used() if budget else 0.0
+    begun = started - used
+
+    def attempt(job: Job) -> Job:
+        if budget and job.key is not None and time.time() - begun >= budget:
+            job.left = True
+            return job
+        return run(job)
+
     stubs = sum(1 for j in jobs if j.header)
     say(
         f"lint: {len(jobs) - stubs} unit(s) and {stubs} header stub(s), {jobs_n} at a time"
         + (f"; every unit: {full}" if full else "")
+        + (f"; a budget of {budget:g}s (hooks.lintBudget)" if budget else "")
     )
     failed = 0
     hits = 0
     ran = 0
+    left = 0
+    undecided: set[str] = set()  # headers an includer left at the budget was to judge
     done: set[str] = set()
     confirming: dict[str, bool] = {}  # header -> whether an includer failed on it
     wave = jobs
@@ -1464,7 +2398,12 @@ def execute(jobs: list[Job], cache: Cache, jobs_n: int, includers: dict[str, lis
                 else:
                     hits += 1
             wave = []
-            for job in pool.map(run, sorted(todo, key=lambda j: -j.size)):
+            for job in pool.map(attempt, sorted(todo, key=lambda j: -j.size)):
+                if job.left:
+                    left += 1
+                    if job.confirms:
+                        undecided.add(job.confirms)
+                    continue
                 ran += 1
                 if job.ok:
                     cache.store(job.key, job.output)
@@ -1485,11 +2424,30 @@ def execute(jobs: list[Job], cache: Cache, jobs_n: int, includers: dict[str, lis
                         confirming[job.confirms] = True
                     say(f"lint: {job.label} failed")
                     print(job.output.rstrip("\n"), file=sys.stderr)
+    if budget:
+        lint_spent(used + time.time() - started)
     for header, includer_failed in sorted(confirming.items()):
-        if not includer_failed:
+        if includer_failed:
+            continue
+        if header in undecided:
+            say(f"lint: {rel(header)} is left to the next run, by the units that include it")
+        else:
             say(f"lint: {rel(header)} passes in every unit that includes it")
-    say(f"lint: {ran} tidied, {hits} cached, {failed} failed, in {time.time() - started:.0f}s")
-    return 1 if failed else 0
+    say(
+        f"lint: {ran} tidied, {hits} cached, {failed} failed"
+        + (f", {left} left" if left else "")
+        + f", in {time.time() - started:.0f}s"
+    )
+    if left:
+        say(
+            f"lint: stopped at its budget of {budget:g}s (hooks.lintBudget) with {left} of"
+            f" {ran + hits + left} left; what passed is cached, so the next run starts where"
+            " this one stopped: `PRE_PUSH_LINT_ONLY=1 git push --dry-run` lints without each"
+            " ctest's suite, until nothing is left (on the host that gates: the cache is per host;"
+            " a merge queue's gate has no budget)"
+        )
+    # 3: stopped at the budget with no unit failed, for the hook to say so (#553).
+    return 1 if failed else 3 if left else 0
 
 
 try:
@@ -1503,11 +2461,20 @@ except Exception as exc:  # a fault here must not stop a push ctest could lint
 PY
 }
 
+# Where the runner names the tests it skipped for the pin, one per line.
+tidy_skipped() { printf '%s' "${CI_TIMINGS%/*}/tidy-skipped"; }
+
 # Runs the `clang_tidy:` tests in build directory `$1` itself, listed with the
 # block's arguments `$2`, through the runner below; prints the ones it leaves
-# to ctest. Returns 1 when one failed, and 2 when ctest is to run them all as
-# before: no Python, a listing ctest cannot give, no dependency log.
+# to ctest. Returns 1 when one failed, 2 when ctest is to run them all as
+# before: no Python, a listing ctest cannot give, no dependency log; and 3
+# when none failed but the lint stopped at its budget with units left.
+# The tests it skipped for the pin (#616) are listed in `tidy_skipped`,
+# for a 2 to leave out, once the runner got that far.
 tidy_itself() {
+	# Before any return 2: a list a killed push left in a kept directory
+	# would drop tests from the ctest that takes over.
+	rm -f "$(tidy_skipped)"
 	python=${PRE_PUSH_PYTHON:-python3}
 	if ! command -v "$python" >/dev/null 2>&1; then
 		err "=== Local CI: lint through ctest, uncached: $python is not on PATH ==="
@@ -1521,16 +2488,65 @@ tidy_itself() {
 	fi
 	listing="${CI_TIMINGS%/*}/tidy-tests.json"
 	stubs="${CI_TIMINGS%/*}/tidy-stubs"
+	# A file, since a project's list can outgrow one environment variable.
+	config_inputs="${CI_TIMINGS%/*}/tidy-config-inputs"
+	configure_inputs "$1" >"$config_inputs" 2>/dev/null || : >"$config_inputs"
 	if ! eval "command ctest $2 --show-only=json-v1 -R '^$TIDY_TESTS'" >"$listing" 2>/dev/null; then
 		err "=== Local CI: lint through ctest, uncached: ctest cannot list its tests as JSON ==="
 		return 2
 	fi
 	mkdir -p "$stubs" || return 2
-	CI_TIDY_PREFIX=$TIDY_TESTS CI_TIDY_TESTS=$listing CI_TIDY_STUBS=$stubs \
-		CI_TIDY_TEST_DIR=$(cd "$1" && pwd -P) CI_TIDY_FULL=$(every_source_reason) \
-		CI_TIDY_CACHE=$CI_TIDY_CACHE CI_TIDY_JOBS=$CI_TIDY_JOBS CI_TIDY_CTEST_ARGS=$2 \
+	# Empty where its here-document could not be written (#514), and an empty
+	# script would exit 0, a lint that passed with nothing left to ctest.
+	runner=$(tidy_runner)
+	if [ -z "$runner" ]; then
+		heredoc_lost
+		err "=== Local CI: lint through ctest, uncached: the lint runner could not be read ==="
+		return 2
+	fi
+	CI_TIDY_PREFIX=$TIDY_TESTS CI_TIDY_HEADER_LIKE=$HEADER_LIKE CI_TIDY_TESTS=$listing CI_TIDY_STUBS=$stubs \
+		CI_TIDY_TEST_DIR=$(cd "$1" && pwd -P) CI_TIDY_FULL=$(every_source_reason "$1" "$CI_TIDY_FULL_ON") \
+		CI_TIDY_FULL_ON=$CI_TIDY_FULL_ON CI_TIDY_BUILD=$(build_file_reason "$1") CI_SHA=$CI_SHA CI_BASE=$CI_BASE \
+		CI_TIDY_CONFIG_FILES="$BUILD_FILES|$CONFIGURE_LIKE|(^|/)\.clang-tidy\$" \
+		CI_TIDY_CONFIG_INPUTS=$config_inputs \
+		CI_TIDY_CACHE=$CI_TIDY_CACHE CI_TIDY_JOBS=$CI_TIDY_JOBS CI_TIDY_BUDGET=$CI_TIDY_BUDGET \
+		CI_TIDY_CLOCK="${CI_TIMINGS%/*}/lint-clock" CI_TIDY_CTEST_ARGS=$2 CI_TIDY_SKIPPED=$(tidy_skipped) \
 		CI_SRC=$CI_SRC CI_LOGICAL_SRC=$CI_LOGICAL_SRC CI_CHANGED=$CI_CHANGED \
-		"$python" -I -c "$(tidy_runner)"
+		"$python" -I -c "$runner"
+}
+
+# `ctest` for the lint the runner left to it, with the block's arguments `$@`:
+# under `test_jobs` at the admission's jobs, not the step's (#655): a
+# clang-tidy is about a compile's size, and the step's jobs were only ever
+# meant to fit the tests. A `-j$(nproc)` in the block read the step's number,
+# so a wider one is overridden by a `-j` after it, the last of them being the
+# one ctest takes; a block without `nproc` named its own. A
+# `CTEST_PARALLEL_LEVEL` at the step's number goes back the same way.
+lint_ctest() {
+	if [ -z "${ci_test_jobs:-}" ]; then
+		command ctest "$@"
+		return
+	fi
+	(
+		if [ -n "$ci_lint_jobs" ]; then
+			export OMP_NUM_THREADS="$ci_lint_jobs"
+			if [ "$ci_lint_jobs" -lt "$ci_test_jobs" ]; then
+				case $block in *nproc*)
+					case " $* " in
+					*" -j$ci_test_jobs "* | *" -j $ci_test_jobs "* | *" --parallel $ci_test_jobs "* | *" --parallel=$ci_test_jobs "*)
+						set -- "$@" -j "$ci_lint_jobs"
+						;;
+					esac
+					;;
+				esac
+			fi
+		fi
+		lint_level=${ci_lint_ctest:-$ci_lint_jobs}
+		if [ -n "$lint_level" ] && [ "${CTEST_PARALLEL_LEVEL:-}" = "$ci_test_jobs" ]; then
+			export CTEST_PARALLEL_LEVEL="$lint_level"
+		fi
+		command ctest "$@"
+	)
 }
 
 # `ctest`, while the `test` block runs: the suite without the `clang_tidy:`
@@ -1596,6 +2612,10 @@ ctest() {
 		sed -n "s/^ *Test *#[0-9][0-9]*: \\($TIDY_TESTS.*\\)\$/\\1/p")
 	ctest_status=0
 	if [ -z "$all" ]; then
+		if [ -n "$ci_lint_only" ]; then
+			err "=== Local CI: a ctest with no $TIDY_TESTS tests skipped (PRE_PUSH_LINT_ONLY=1) ==="
+			return 0
+		fi
 		started=$(now)
 		command ctest "$@" || ctest_status=1
 		timed "$ci_suite" "$started"
@@ -1623,16 +2643,28 @@ ctest() {
 		set -- "$@" "$arg"
 	done
 	[ -n "$merged" ] || set -- "$@" -E "^$TIDY_TESTS"
-	started=$(now)
-	command ctest "$@" || ctest_status=1
-	timed "$ci_suite" "$started"
+	if [ -n "$ci_lint_only" ]; then
+		err "=== Local CI: the suite skipped (PRE_PUSH_LINT_ONLY=1) ==="
+	else
+		started=$(now)
+		command ctest "$@" || ctest_status=1
+		timed "$ci_suite" "$started"
+	fi
 
 	started=$(now)
 	tidy_status=0
 	leftover=$(tidy_itself "$test_dir" "$bare") || tidy_status=$?
 	case $tidy_status in
 	0) ;;
-	2) leftover=$all ;;
+	2)
+		leftover=$all
+		if [ -s "$(tidy_skipped)" ]; then
+			leftover=$(printf '%s\n' "$all" | grep -vxF -f "$(tidy_skipped)") || leftover=''
+		fi
+		;;
+	# Stopped at the budget, nothing failed: the block goes on, so the step
+	# can say when that was its only failure (#553), and fails then.
+	3) : >"$CI_BUDGET_STOP" ;;
 	*) ctest_status=1 ;;
 	esac
 	selection=''
@@ -1644,20 +2676,22 @@ ctest() {
 	eval "set -- $bare"
 	chunk=''
 	n=0
-	while IFS= read -r name; do
+	heredoc_read=''
+	while heredoc_read=1; IFS= read -r name; do
 		name=$(printf '%s' "$name" | sed 's/[][\\.*+?^$(){}|]/\\&/g')
 		chunk="${chunk:+$chunk|}$name"
 		n=$((n + 1))
 		if [ "$n" -ge "$LINT_CHUNK" ] || [ "${#chunk}" -ge "$LINT_CHUNK_BYTES" ]; then
-			command ctest "$@" -R "^($chunk)\$" || ctest_status=1
+			lint_ctest "$@" -R "^($chunk)\$" || ctest_status=1
 			chunk=''
 			n=0
 		fi
 	done <<SELECTION
 $selection
 SELECTION
+	[ -n "$heredoc_read" ] || { heredoc_lost; ctest_status=1; }
 	if [ -n "$chunk" ]; then
-		command ctest "$@" -R "^($chunk)\$" || ctest_status=1
+		lint_ctest "$@" -R "^($chunk)\$" || ctest_status=1
 	fi
 	timed lint "$started"
 	return "$ctest_status"
@@ -1752,8 +2786,53 @@ prune_ci() {
 #: How long a lock directory with no owner file, or a takeover token, is
 #: watched before it is taken as a killed push's: far longer than a push takes
 #: from making either to renaming its owner file in, a read, a `mktemp`, a
-#: write and a rename, then to letting the token go, a `mktemp` and a rename.
+#: write and a rename, then to letting the token go, a `mktemp` and a rename;
+#: each made with `make_dir`'s file.
 LOCK_GRACE=2
+
+#: The file in a lock directory, or a takeover token, that says which push
+#: made it: see `make_dir`.
+LOCK_MADE='.made'
+
+# Makes directory `$1`, failing when it is there, as `mkdir` is meant to but
+# is not trusted to: uutils coreutils' `mkdir` looks before it makes, so two
+# pushes making one directory together may both be told they made it (#482).
+# Of those, the one that creates `LOCK_MADE` in it made it, the other fails as
+# if it had been there: the shell opens a file under `set -C` with `O_EXCL`,
+# which the kernel decides. A push killed in between leaves the directory
+# without the file, which is taken over as any lock or token left alone is.
+make_dir() {
+	mkdir "$1" 2>/dev/null || return 1
+	(set -C && : >"$1/$LOCK_MADE") 2>/dev/null && return 0
+	# No file there: not another's, but one that could not be written, on a
+	# full disk say. Given back, as a `mkdir` that failed leaves nothing.
+	[ -e "$1/$LOCK_MADE" ] || rmdir "$1" 2>/dev/null
+	return 1
+}
+
+# Removes lock directory `$1` while it is empty but for `LOCK_MADE`; fails
+# otherwise, as `rmdir` does, though with that file gone. A push that `mkdir`
+# tells it made the lock in between takes it for its own, as it may: the
+# `rmdir` then fails. Not for a token, which `let_go` lets go.
+unmake_dir() {
+	rm -f "$1/$LOCK_MADE"
+	rmdir "$1" 2>/dev/null
+}
+
+# Lets token `$1` go, renamed aside whole before it is removed. A takeover
+# then finds nothing at its path, or a new token, never a part of this one
+# (it may hold the one it took over), and never this one without its
+# `LOCK_MADE`, which a push `mkdir` told it made the token would create and
+# take the token for its own (#482). Removed in place only where nothing can
+# be made beside it, on a full disk.
+let_go() {
+	if aside=$(mktemp -d "${1%/*}/.taken.XXXXXX" 2>/dev/null); then
+		mv "$1" "$aside" 2>/dev/null || :
+		rm -rf "$aside"
+	else
+		rm -rf "$1"
+	fi
+}
 
 # Whether directory `$1`, this user's, is the same one `LOCK_GRACE` seconds on.
 # What told it, its inode and path, is left in `alone`.
@@ -1784,16 +2863,19 @@ owner_gone() {
 	owner_start=''
 	# Not opened, gone since the test above: its push has ended and taken it.
 	owner_text=$(cat "$1" 2>/dev/null) || return 1
+	# Run to its end, the group succeeds: it fails only where its
+	# here-document could not be written (#514): said, and nothing is judged gone.
 	{
 		IFS= read -r first || return 1
 		read -r second || second=''
-	} <<EOF
+	} <<EOF || { heredoc_lost; return 1; }
 $owner_text
 EOF
 	# The earliest one-line owner wrote an empty namespace as nothing between
 	# two blanks, which a split on blanks drops (#216).
 	case $first in *'  '*) first="${first%%  *} - ${first#*  }" ;; esac
-	read -r owner_host owner_pid owner_ns owner_start <<EOF
+	# The same: `$first` ends in a newline, so the read fails only there.
+	read -r owner_host owner_pid owner_ns owner_start <<EOF || { heredoc_lost; return 1; }
 $first
 EOF
 	[ -n "$owner_start" ] || owner_start=$second
@@ -1814,6 +2896,7 @@ cleanup=''
 unlock=''
 unlock_owner=''
 remove_ci() {
+	[ -z "${admit_mark:-}" ] || rm -f "$admit_mark"
 	if [ -n "$unlock" ]; then
 		# Only while it is still this push's: a push that took it over
 		# wrongly would otherwise lose it to a third (#216).
@@ -1869,7 +2952,7 @@ worktree_lock() {
 # be written, and with 3 when the lock is gone: let go since it was judged.
 claim_lock() {
 	made=0
-	until mkdir "$1/.taking" 2>/dev/null; do
+	until make_dir "$1/.taking"; do
 		[ -d "$1" ] || return 3
 		if [ -d "$1/.taking" ]; then
 			take_token "$1/.taking" || return 1
@@ -1892,17 +2975,7 @@ claim_lock() {
 			rm -f "$claim"
 		fi
 	fi
-	# A token taken over holds the one it took, so it is renamed aside whole
-	# before it is removed: a takeover then finds nothing at its path, or a
-	# new token, never a part of this one.
-	if ! rmdir "$1/.taking" 2>/dev/null; then
-		if aside=$(mktemp -d "$1/.taken.XXXXXX" 2>/dev/null); then
-			mv "$1/.taking" "$aside" 2>/dev/null || :
-			rm -rf "$aside"
-		else
-			rm -rf "$1/.taking"
-		fi
-	fi
+	let_go "$1/.taking"
 	return "$claimed"
 }
 
@@ -1917,37 +2990,66 @@ claim_lock() {
 take_token() {
 	token=$1
 	while [ -d "$token/.taking" ]; do token="$token/.taking"; done
-	left_alone "$token" && mkdir "$token/.taking" 2>/dev/null || return 1
+	left_alone "$token" && make_dir "$token/.taking" || return 1
 	# Still the one judged: not let go by a push that took it over since,
 	# and made again by another.
 	[ "$(ls -di "$token" 2>/dev/null)" = "$alone" ] && return 0
-	rmdir "$token/.taking" 2>/dev/null || :
+	let_go "$token/.taking"
 	return 1
+}
+
+# The push holding the warm worktree at `$1`, as its lock's owner file says,
+# left in `held`: empty when it cannot be read.
+lock_owner() {
+	held=$(tr '\n' ' ' 2>/dev/null <"$1.lock/$CI_OWNER") || held=''
+	held=${held% }
 }
 
 # Says the warm worktree at `$1` is held by another push, naming its owner.
 lock_held() {
-	held=$(tr '\n' ' ' 2>/dev/null <"$1.lock/$CI_OWNER") || held=''
-	held=${held% }
+	lock_owner "$1"
 	err "Push blocked: the warm local CI worktree $1 (hooks.localCiWorktree) is in use${held:+ by the push $held (host, pid, pid namespace, start time)}; push again when it ends, or remove $1.lock if no push holds it."
+}
+
+#: Set by `local_ci` for a run that may go on without the warm worktree, in a
+#: new one, when another push holds it (#666): `warm_worktree` then says
+#: nothing of it and sets `warm_busy`, for the caller to say; never set otherwise.
+warm_try=''
+warm_busy=''
+
+# Another push holds the warm worktree at `$1`, or took it while this push
+# did (`$2` is `moved`): a refusal, said, or, under `warm_try`, `warm_busy`
+# set to `held` or `moved`.
+warm_taken() {
+	if [ -n "$warm_try" ]; then
+		warm_busy=${2:-held}
+		return 0
+	fi
+	if [ "${2:-}" = moved ]; then
+		err "Push blocked: the warm local CI worktree $1 (hooks.localCiWorktree) changed hands while this push took it; push again."
+	else
+		lock_held "$1"
+	fi
 }
 
 # In this repository's git (stdin of nothing), the warm worktree at `$1`
 # (`hooks.localCiWorktree`, #183) made or reused, locked for this push and
 # checked out at commit `$2`; its lock directory, which holds the timings, is
-# `$1.lock`. Fails, having said why, when it cannot be had.
+# `$1.lock`. Fails, having said why, when it cannot be had; held by another
+# push, under `warm_try`, it fails unsaid, with `warm_busy` set (`warm_taken`).
 warm_worktree() {
+	warm_busy=''
 	# The owner before the lock, so that a kill between the two finds the
 	# window narrow.
 	me=$(owner_line)
 	tries=0
 	while :; do
 		judged=''
-		if ! mkdir "$1.lock" 2>/dev/null; then
+		if ! make_dir "$1.lock"; then
 			if owner_gone "$1.lock/$CI_OWNER"; then
 				judged=$owner_text
 			elif ! owner_unwritten "$1.lock"; then
-				lock_held "$1"
+				warm_taken "$1"
 				return 1
 			fi
 		fi
@@ -1962,16 +3064,16 @@ warm_worktree() {
 	2)
 		# A lock left without its owner is taken over after `LOCK_GRACE`,
 		# so a push that cannot say it holds the lock gives it back (#196).
-		rmdir "$1.lock" 2>/dev/null || :
+		unmake_dir "$1.lock" || :
 		err "Push blocked: could not write this push's owner into $1.lock, the warm local CI worktree's lock (hooks.localCiWorktree); a full disk?"
 		return 1
 		;;
 	3)
-		err "Push blocked: the warm local CI worktree $1 (hooks.localCiWorktree) changed hands while this push took it; push again."
+		warm_taken "$1" moved
 		return 1
 		;;
 	*)
-		lock_held "$1"
+		warm_taken "$1"
 		return 1
 		;;
 	esac
@@ -2030,9 +3132,39 @@ warm_worktree() {
 	fi
 }
 
-# Builds and tests commit `$1`.
+# The `test` step's jobs, in its subshell, where `wcp build` says them in
+# `WCP_TEST_JOBS` (#655): `max_jobs` is there for the compile's memory, and
+# the tests need not sit under it. `OMP_NUM_THREADS`, which `$(nproc)` in the
+# block reads, and a set `CTEST_PARALLEL_LEVEL`, each set to them, up to the
+# CPUs this run may use; an unset one stays unset, and a `-j` the block names
+# itself is left as written. A wider or a narrower number either way: the build
+# and lint steps keep the admission's, and so does a lint this step runs, at
+# `hooks.localCiJobs` in the runner and through `lint_ctest` where ctest runs
+# it; `ci_lint_jobs` and `ci_lint_ctest` keep them for that. So does
+# `CMAKE_BUILD_PARALLEL_LEVEL`, for a block that compiles too; one that
+# compiles at `$(nproc)` compiles at these jobs.
+test_step_jobs() {
+	case ${WCP_TEST_JOBS:-} in '' | *[!0-9]* | 0) return 0 ;; esac
+	ci_lint_jobs=${OMP_NUM_THREADS:-}
+	ci_lint_jobs=${ci_lint_jobs%%,*}
+	case $ci_lint_jobs in *[!0-9]* | 0) ci_lint_jobs='' ;; esac
+	ci_lint_ctest=${CTEST_PARALLEL_LEVEL:-}
+	ci_test_jobs=$WCP_TEST_JOBS
+	cpus_here=$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc 2>/dev/null) || cpus_here=''
+	if [ -n "$cpus_here" ] && [ "$ci_test_jobs" -gt "$cpus_here" ]; then
+		ci_test_jobs=$cpus_here
+	fi
+	export OMP_NUM_THREADS="$ci_test_jobs"
+	if [ -n "${CTEST_PARALLEL_LEVEL:-}" ]; then
+		export CTEST_PARALLEL_LEVEL="$ci_test_jobs"
+	fi
+	err "=== Local CI: test at $ci_test_jobs jobs (test_jobs $WCP_TEST_JOBS) ==="
+}
+
+# Builds and tests commit `$1`; runs only its precheck when `$2` is `precheck`.
 local_ci() {
 	sha=$1
+	ci_steps=${2:-}
 	git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || git_dir=''
 	if [ -z "$git_dir" ]; then
 		err "Push blocked: git could not locate this worktree's git directory for the local CI."
@@ -2047,6 +3179,11 @@ local_ci() {
 	# A warm worktree (#183), kept between pushes; expanded and placed as
 	# `hooks.localCiDir` is below.
 	warm=$(git config hooks.localCiWorktree 2>/dev/null) || warm=''
+	# A precheck outside an admission takes it only while no other push holds
+	# it ("A precheck", #666): its lock would refuse a push that the admission
+	# would have queued behind the one building there.
+	warm_try=''
+	[ "$ci_steps" != precheck ] || [ -n "${WCP_BUILD:-}" ] || warm_try=1
 	if [ -n "$warm" ]; then
 		src=$(git config --path hooks.localCiWorktree 2>/dev/null) || src=''
 		case $src in
@@ -2068,9 +3205,20 @@ local_ci() {
 			err "Push blocked: could not create the directory for $src, which hooks.localCiWorktree names."
 			return 1
 		fi
-		warm_worktree "$src" "$sha" || return 1
-		work="$src.lock"
-	else
+		if warm_worktree "$src" "$sha"; then
+			work="$src.lock"
+		elif [ "$warm_busy" = moved ]; then
+			err "=== Local CI: the precheck in a new worktree: the warm one, $src (hooks.localCiWorktree), changed hands as this push took it ==="
+			warm=''
+		elif [ -n "$warm_busy" ]; then
+			lock_owner "$src"
+			err "=== Local CI: the precheck in a new worktree: the warm one, $src (hooks.localCiWorktree), is in use${held:+ by the push $held} ==="
+			warm=''
+		else
+			return 1
+		fi
+	fi
+	if [ -z "$warm" ]; then
 		# A place the clone chose is not second-guessed, but it is never under the
 		# checkout (#143): relative, it is taken under the cache directory. Read
 		# raw to know whether it is set, then with `--path`, which expands a
@@ -2152,16 +3300,34 @@ local_ci() {
 	# `pre-commit`: the worktree's own `.venv` may be missing, or hold only what
 	# `uv run` installed there.
 	tools=''
+	main_venv=''
 	if common=$(git rev-parse --git-common-dir 2>/dev/null) &&
 		common=$(CDPATH='' cd -- "$common" 2>/dev/null && pwd) &&
 		[ "${common%/.git}" != "$common" ] && [ -d "${common%/.git}/.venv/bin" ]; then
-		tools="${common%/.git}/.venv/bin:"
+		main_venv="${common%/.git}/.venv"
+		tools="$main_venv/bin:"
 	fi
 	[ ! -d "$top/.venv/bin" ] || tools="$top/.venv/bin:$tools"
+	# The interpreter a build binds to (#228): the first of those with a
+	# Python. CMake's FindPython prefers an active virtualenv or conda env to
+	# its hints and PATH, so one the caller happened to have active would
+	# otherwise win: those are unset and the venv is the hint. Not exported
+	# as VIRTUAL_ENV, which `uv pip` would install into from the worktree.
+	venv=''
+	if [ -x "$top/.venv/bin/python" ]; then
+		venv="$top/.venv"
+	elif [ -n "$main_venv" ] && [ -x "$main_venv/bin/python" ]; then
+		venv=$main_venv
+	fi
 	CI_SRC=$(cd "$src" && pwd -P)
 	CI_LOGICAL_SRC=$src
 	CI_TIMINGS="$work/timings"
 	: >"$CI_TIMINGS"
+	# The seconds this run's lint has used (`lint_used`): a warm worktree's are the last run's.
+	rm -f "$work/lint-clock"
+	# There once a `ctest`'s lint stopped at its budget with no unit failed (#553).
+	CI_BUDGET_STOP="$work/lint-budget"
+	rm -f "$CI_BUDGET_STOP"
 	# The lint runner's cache (`tidy_runner`): on unless `hooks.tidyCache` is
 	# false, in `hooks.tidyCacheDir` (a relative one under the cache
 	# directory) or the default.
@@ -2180,17 +3346,76 @@ local_ci() {
 		CI_TIDY_JOBS=''
 		;;
 	esac
+	# How long one run's lint may take before it starts no more units (#256).
+	CI_TIDY_BUDGET=$(git config hooks.lintBudget 2>/dev/null) || CI_TIDY_BUDGET=''
+	case $CI_TIDY_BUDGET in
+	'') CI_TIDY_BUDGET=$LINT_BUDGET ;;
+	*[!0-9.]* | *.*.* | . | .* | *.)
+		err "pre-push: hooks.lintBudget ($CI_TIDY_BUDGET) is not a number of seconds; the lint stops at $LINT_BUDGET."
+		CI_TIDY_BUDGET=$LINT_BUDGET
+		;;
+	esac
+	# What a build-file change lints (#274): under `flags`, the default, the
+	# units whose configuration differs from the base commit's, beside what
+	# the push reaches; under `all`, every unit.
+	CI_TIDY_FULL_ON=$(git config hooks.tidyFullOn 2>/dev/null) || CI_TIDY_FULL_ON=''
+	case $CI_TIDY_FULL_ON in
+	'') CI_TIDY_FULL_ON=flags ;;
+	flags | all) ;;
+	*)
+		err "pre-push: hooks.tidyFullOn ($CI_TIDY_FULL_ON) is neither flags nor all; a build-file change lints every unit."
+		CI_TIDY_FULL_ON=all
+		;;
+	esac
 	# The CPUs the local CI may use (`hooks.localCiCpus`, a `taskset -c` list),
 	# set on this process so every block inherits them: `nproc` in a block
 	# then counts them, and so does the lint runner.
 	cpus=$(git config hooks.localCiCpus 2>/dev/null) || cpus=''
+	# Not the precheck's, which runs before the admission ("A precheck"): a pin
+	# of this process would carry into the `wcp build` that admits the rest.
+	[ "$ci_steps" != precheck ] || cpus=''
+	pin=$cpus
+	pin_why='hooks.localCiCpus'
+	# Within an admission, `wcp build` has placed this run, on the CPUs of
+	# `hooks.localCiCpus` it may use and is charged for (#489): narrowed to
+	# them here, never widened past them; on its placement where they share none.
+	if [ -n "$cpus" ] && [ -n "${WCP_BUILD:-}" ] && command -v taskset >/dev/null 2>&1; then
+		placed=$(taskset -c -p $$ 2>/dev/null | sed -n 's/.*: *//p') || placed=''
+		if [ -n "$placed" ]; then
+			pin=$(cpu_lists_shared "$placed" "$cpus")
+			if [ -n "$pin" ]; then
+				pin_why="hooks.localCiCpus $cpus, within the admission's CPUs $placed"
+			else
+				pin=$placed
+				pin_why="the admission's; hooks.localCiCpus $cpus names none of them"
+			fi
+		fi
+	fi
 	if [ -n "$cpus" ]; then
 		if ! command -v taskset >/dev/null 2>&1; then
-			err "pre-push: hooks.localCiCpus is set, but taskset is not on PATH; the local CI runs on every CPU."
-		elif ! taskset -p -c "$cpus" $$ >/dev/null 2>&1; then
-			err "pre-push: taskset could not pin the local CI to hooks.localCiCpus ($cpus); it runs on every CPU."
+			err "pre-push: hooks.localCiCpus is set, but taskset is not on PATH; the local CI runs on the CPUs it inherited."
+		elif ! taskset -p -c "$pin" $$ >/dev/null 2>&1; then
+			err "pre-push: taskset could not pin the local CI to CPUs $pin ($pin_why); it runs on the CPUs it inherited."
 		else
-			err "=== Local CI: on CPUs $cpus (hooks.localCiCpus) ==="
+			err "=== Local CI: on CPUs $pin ($pin_why) ==="
+			# GNU `nproc` reports `OMP_NUM_THREADS` in place of the CPUs, and a
+			# build wrapper sets it as its cap: the cap holds only up to the
+			# CPUs pinned. So does its `CTEST_PARALLEL_LEVEL` (#469).
+			pinned=$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc 2>/dev/null) || pinned=''
+			if [ -n "$pinned" ] && [ "${OMP_NUM_THREADS:-0}" -gt "$pinned" ] 2>/dev/null; then
+				export OMP_NUM_THREADS="$pinned"
+			fi
+			if [ -n "$pinned" ] && [ "${CTEST_PARALLEL_LEVEL:-0}" -gt "$pinned" ] 2>/dev/null; then
+				export CTEST_PARALLEL_LEVEL="$pinned"
+			fi
+			# And a `cmake --build` naming no jobs runs one per CPU pinned, as
+			# under `wcp build`, which sets `CMAKE_BUILD_PARALLEL_LEVEL` (#467).
+			if [ -n "$pinned" ]; then
+				case ${CMAKE_BUILD_PARALLEL_LEVEL:-} in
+				'' | *[!0-9]* | 0) export CMAKE_BUILD_PARALLEL_LEVEL="$pinned" ;;
+				*) [ "$CMAKE_BUILD_PARALLEL_LEVEL" -le "$pinned" ] || export CMAKE_BUILD_PARALLEL_LEVEL="$pinned" ;;
+				esac
+			fi
 		fi
 	fi
 
@@ -2199,26 +3424,52 @@ local_ci() {
 	begun=$(now)
 	# A `lint` block, when the project has one, is where the `clang_tidy:`
 	# tests run: the `test` block then runs as written, and the lint step runs
-	# only the tests the push reaches.
+	# only the tests the push reaches. Before the `test` block (#644): it needs
+	# the build (its ninja dependency log narrows it and keys its cache), not
+	# the tests, so a lint refusal does not wait on the suite. So the `build`
+	# block builds what the lint reads: a header the `test` block generates or
+	# a unit only it compiles is not there yet.
 	lint_block=$(printf '%s\n' "$claude" | extract_block lint)
 	# A trailing blank or CR would make a line silently match nothing.
 	CI_LINT_EVERY=$(printf '%s\n' "$claude" | extract_block lint-every | sed 's/[[:space:]]*$//')
-	for step in clean build test ${lint_block:+lint}; do
+	# The precheck has run before this, on its own ("A precheck").
+	[ -n "$ci_steps" ] || ci_steps="clean build${lint_block:+ lint} test"
+	for step in $ci_steps; do
 		# A warm worktree is kept so that its build is not thrown away.
 		if [ "$step" = clean ] && [ -n "$warm" ]; then
 			err "=== Local CI: clean skipped in the warm worktree $src (hooks.localCiWorktree) ==="
 			continue
 		fi
+		if [ "$step" = test ] && [ -n "$lint_block" ] && [ "$CI_LINT_ONLY" = 1 ]; then
+			err "=== Local CI: test skipped (PRE_PUSH_LINT_ONLY=1), the \`lint\` block ran ==="
+			continue
+		fi
 		block=$(printf '%s\n' "$claude" | extract_block "$step")
 		if [ -z "$block" ]; then
-			[ "$step" = clean ] && continue
+			case $step in clean | precheck) continue ;; esac
+			# A project with nothing to build (the Python template's) runs its
+			# `test` block alone (#318).
+			if [ "$step" = build ]; then
+				err "=== Local CI: no \`build\` block, so the \`test\` block runs alone ==="
+				continue
+			fi
 			err "pre-push: CLAUDE.md has no \`$step\` block under ## Build & Test."
 			ok=0
 			break
 		fi
 		err "=== Local CI ($src at $(printf '%.12s' "$sha")): $step ==="
 		started=$(now)
-		[ "$step" != build ] || cache_before=$(ccache_counts)
+		# The timings this step writes come after these: the lint step's are
+		# already there when the `test` step runs.
+		timed_before=$(wc -l <"$CI_TIMINGS" | tr -d '[:space:]')
+		cache_log=''
+		if [ "$step" = build ]; then
+			cache_log=$(ccache_stats_log "$work/ccache-stats")
+			# Read either way: a log no compile wrote to (a build whose compiles
+			# do not inherit its environment, or a ccache of its own that keeps
+			# no log) falls back to these.
+			cache_before=$(ccache_counts)
+		fi
 		# git exports GIT_DIR and friends into the hook, and a build's nested
 		# `git clone` (FetchContent) would then treat this repository as the
 		# one it is cloning into. `set -e`, so a block of one command per line
@@ -2230,12 +3481,29 @@ local_ci() {
 			# What the wrapper calls the run beside the lint: in a `lint`
 			# block, whatever else it selects (a format check, say) is lint.
 			ci_suite=tests
+			# Under `PRE_PUSH_LINT_ONLY=1`, the `test` block's `ctest`s run
+			# their lint alone; the block's other commands run as written.
+			ci_lint_only=''
 			case $step in
-			test) [ -z "$lint_block" ] || unset -f ctest ;;
+			test)
+				[ -z "$lint_block" ] || unset -f ctest
+				[ "$CI_LINT_ONLY" != 1 ] || ci_lint_only=yes
+				test_step_jobs
+				;;
 			lint) ci_suite=lint ;;
 			*) unset -f ctest ;;
 			esac
 			PATH="$tools$PATH"
+			if [ -n "$venv" ]; then
+				Python_ROOT_DIR=$venv
+				Python3_ROOT_DIR=$venv
+				export Python_ROOT_DIR Python3_ROOT_DIR
+				unset VIRTUAL_ENV CONDA_PREFIX
+			fi
+			if [ -n "$cache_log" ]; then
+				CCACHE_STATSLOG=$cache_log
+				export CCACHE_STATSLOG
+			fi
 			cd "$src"
 			unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 			eval "$block"
@@ -2243,27 +3511,52 @@ local_ci() {
 		# Not `( ... ) || ok=0`: on the left of `||`, as in a condition, `set -e`
 		# is off for everything the subshell runs.
 		[ $? = 0 ] || ok=0
+		# A lint stopped at its budget fails the step; said once, explicitly,
+		# when nothing else of it failed, for a merge queue to gate it again
+		# with no budget rather than refuse it (#553). Since #611 a queue's
+		# gate has none: of its gates, only a worker's on an older wcp stops here.
+		if [ -e "$CI_BUDGET_STOP" ]; then
+			[ "$ok" = 0 ] || err "=== Local CI: stopped only at the lint budget ==="
+			ok=0
+		fi
 		if [ "$step" = build ]; then
-			# The cache's share of the build, from its counters either side.
-			cache=$(printf '%s %s\n' "$cache_before" "$(ccache_counts)" | awk 'NF == 4 {
+			# The cache's share of the build: its own log's counters, or the
+			# machine-wide ones either side when the log holds no compile,
+			# said as the host's: a build with nothing to compile and one
+			# whose compiles did not inherit the log look the same here.
+			cache_own=''
+			[ -z "$cache_log" ] || cache_own=$(ccache_counts "$cache_log" | awk 'NF == 2 && $1 + $2 > 0')
+			if [ -n "$cache_own" ]; then
+				cache_counts="0 0 $cache_own"
+				cache_whose=''
+			else
+				cache_counts="$cache_before $(ccache_counts)"
+				cache_whose=' on the host'
+			fi
+			cache=$(printf '%s\n' "$cache_counts" | awk -v whose="$cache_whose" 'NF == 4 {
 				h = $3 - $1; m = $4 - $2
-				if (h + m > 0) printf "; ccache %d hits, %d misses (%.0f%% hits)", h, m, 100 * h / (h + m) }')
+				if (h + m > 0) printf "; ccache%s %d hits, %d misses (%.0f%% hits)", whose, h, m, 100 * h / (h + m) }')
 			timed build "$started" "$cache"
 		elif [ "$step" = lint ]; then
-			grep -q '^lint ' "$CI_TIMINGS" || timed lint "$started"
+			tail -n "+$((timed_before + 1))" "$CI_TIMINGS" | grep -q '^lint ' || timed lint "$started"
 		elif [ "$step" != test ]; then
 			timed "$step" "$started"
-		elif ! grep -q '^tests ' "$CI_TIMINGS"; then
+		elif ! tail -n "+$((timed_before + 1))" "$CI_TIMINGS" | grep -qE '^(tests|lint) '; then
 			# Timed inside, as tests and lint, when the block runs `ctest`.
 			timed test "$started"
 		else
 			# What else the block ran beside `ctest` (a second test runner).
-			inner=$(awk '$1 == "tests" || $1 == "lint" { s += $2 } END { print s + 0 }' "$CI_TIMINGS")
+			inner=$(tail -n "+$((timed_before + 1))" "$CI_TIMINGS" |
+				awk '$1 == "tests" || $1 == "lint" { s += $2 } END { print s + 0 }')
 			rest=$(($(now) - started - inner))
 			[ "$rest" -lt 1 ] || printf 'rest %s\n' "$rest" >>"$CI_TIMINGS"
 		fi
 		if [ "$ok" = 0 ]; then
-			err "The \`$step\` step failed."
+			if [ "$step" = precheck ]; then
+				err "=== Local CI: precheck failed, before any build ==="
+			else
+				err "The \`$step\` step failed."
+			fi
 			break
 		fi
 	done
@@ -2271,18 +3564,296 @@ local_ci() {
 	summary=$(awk "$DURATION_AWK"'
 		{ t[$1] += $2; if (!seen[$1]++) order[++n] = $1 }
 		END { for (i = 1; i <= n; i++) printf "%s %s %s", (i > 1 ? "," : ""), order[i], d(t[order[i]]) }' "$CI_TIMINGS")
-	err "=== Local CI times:$summary; total $(duration $(($(now) - begun))) ==="
+	# A precheck's said apart: a merge queue's stats take the last plain line
+	# for the gate's time, and a precheck alone for no gate run.
+	if [ "$ci_steps" = precheck ]; then
+		err "=== Local CI times (precheck):$summary; total $(duration $(($(now) - begun))) ==="
+	else
+		err "=== Local CI times:$summary; total $(duration $(($(now) - begun))) ==="
+	fi
 	remove_ci
 	[ "$ok" = 1 ]
 }
 
+# Whether `$1` can name a variable for the local CI: upper case, so none is
+# one of this hook's lower-case variables, and neither git's (`GIT_*`, which
+# would point the hook's own git at another repository) nor one the hook sets
+# per branch (`CI_*`). Its other upper-case variables are set, so never
+# replaced. The letters are spelled out: a range collates by the locale, and
+# macOS's sh takes `[A-Z]` for lower case too under a UTF-8 one (#499).
+is_env_name() {
+	case $1 in '' | [0-9]* | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]* | GIT_* | CI_*) return 1 ;; esac
+}
+
+# The parallelism a run's environment sets for its blocks: the build admission
+# (`wcp build`) and `hooks.localCiCpus` change it, and it is not what a gate
+# runs that its receipt need record.
+is_jobs_name() {
+	case $1 in MAKEFLAGS | CMAKE_BUILD_PARALLEL_LEVEL | CTEST_PARALLEL_LEVEL | OMP_NUM_THREADS) return 0 ;; esac
+	return 1
+}
+
+# Exports each `NAME=VALUE` of hooks.localCiEnv whose variable the environment
+# leaves unset or empty: the last value of a name set more than once (git's
+# rule for a key set twice), a leading `~/` taken as `$HOME`. Sets
+# `ci_env_names` to the names it read, and `ci_env_over` to those the
+# environment set to another value, space-separated and padded with spaces:
+# never the parallelism (`is_jobs_name`), which the build admission and
+# `hooks.localCiCpus` change after the clone set it.
+load_ci_env() {
+	ci_env_names=' '
+	ci_env_over=' '
+	entries=$(git config --get-all hooks.localCiEnv 2>/dev/null) || return 0
+	# Last first, so the first of a name met is the one used.
+	entries=$(printf '%s\n' "$entries" | awk '{ l[NR] = $0 } END { for (i = NR; i > 0; i--) print l[i] }')
+	heredoc_read=''
+	while heredoc_read=1; IFS= read -r entry; do
+		name=${entry%%=*}
+		if [ "$name" = "$entry" ] || ! is_env_name "$name"; then
+			err "pre-push: ignoring hooks.localCiEnv \`$entry\`, which is not NAME=VALUE with an upper-case NAME, neither GIT_* nor CI_*."
+			continue
+		fi
+		case $ci_env_names in
+		*" $name "*)
+			err "pre-push: hooks.localCiEnv sets $name more than once, and the last value is used; \`git config --replace-all hooks.localCiEnv '$name=<value>' '^$name='\` keeps one."
+			continue
+			;;
+		esac
+		ci_env_names="$ci_env_names$name "
+		value=${entry#*=}
+		case $value in "~/"*) [ -z "${HOME:-}" ] || value="$HOME/${value#"~/"}" ;; esac
+		eval "current=\${$name:-}"
+		if [ -n "$current" ]; then
+			[ "$current" = "$value" ] || is_jobs_name "$name" || ci_env_over="$ci_env_over$name "
+			continue
+		fi
+		eval "$name=\$value"
+		export "$name"
+	done <<ENTRIES
+$entries
+ENTRIES
+	[ -n "$heredoc_read" ] || { heredoc_lost; exit 1; }
+}
+
+# Fails, saying why and how to fix it, when commit `$1` changes a path
+# (CI_CHANGED) that a line of its `ci-env` block matches while that line's
+# variable is unset or empty. A line that is not `NAME ERE` fails too. Sets
+# `ci_env_past` to what the commit's gate runs under that its receipt would
+# not record: `ci_env_over` (`load_ci_env`), and each name of the block the
+# environment sets and hooks.localCiEnv does not.
+check_ci_env() {
+	ci_env_past=$ci_env_over
+	lines=$(git show "$1:CLAUDE.md" 2>/dev/null | extract_block ci-env)
+	[ -n "$lines" ] || return 0
+	env_ok=0
+	heredoc_read=''
+	while heredoc_read=1; read -r name pattern; do
+		[ -n "$name" ] || continue
+		# The same words as a bad pattern's below: a merge queue refuses the entry on them.
+		if ! is_env_name "$name" || [ -z "$pattern" ]; then
+			err "Push blocked: the ci-env line \`$name $pattern\` is not \`NAME ERE\`."
+			env_ok=1
+			continue
+		fi
+		# Whatever the variable and the change: a bad line lands from a host
+		# that has the variable, and blocks every push from one that has not.
+		if printf '' | grep -E -- "$pattern" >/dev/null 2>&1; [ $? -gt 1 ]; then
+			err "Push blocked: the ci-env line \`$name $pattern\` is not \`NAME ERE\`: grep cannot read its pattern as an extended regex."
+			env_ok=1
+			continue
+		fi
+		eval "current=\${$name:-}"
+		if [ -n "$current" ]; then
+			case $ci_env_names$ci_env_past in
+			*" $name "*) ;;
+			*) is_jobs_name "$name" || ci_env_past="$ci_env_past$name " ;;
+			esac
+			continue
+		fi
+		if printf '%s\n' "$CI_CHANGED" | grep -qx '/unknown'; then
+			why='what the push changes is unknown'
+		elif hits=$(printf '%s\n' "$CI_CHANGED" | grep -E -- "$pattern"); then
+			why="it changes $(printf '%s\n' "$hits" | head -n 1)"
+		else
+			continue
+		fi
+		err "Push blocked: the local CI needs $name for $(printf '%.12s' "$1"): $why (CLAUDE.md's ci-env block). Set it for this clone with \`git config --add hooks.localCiEnv '$name=<value>'\`, or export it for this push."
+		env_ok=1
+	done <<LINES
+$lines
+LINES
+	[ -n "$heredoc_read" ] || { heredoc_lost; env_ok=1; }
+	return "$env_ok"
+}
+
+# The gate's configuration, the lines the header's "The gate receipt" names.
+# Fails when this hook's own file cannot be hashed.
+gate_config() {
+	self=$(git hash-object --no-filters -- "$SELF" 2>/dev/null) || return 1
+	full_on=$(git config hooks.tidyFullOn 2>/dev/null) || full_on=''
+	case $full_on in '') full_on=flags ;; flags | all) ;; *) full_on=all ;; esac
+	printf 'hook %s\nhost %s\ntidyFullOn %s\n' "$self" "$(uname -n)" "$full_on"
+	git config --get-all hooks.localCiEnv 2>/dev/null | sed 's/^/localCiEnv /'
+}
+
+# This host's toolchain fingerprint, from its wcp host profile (#367, #380);
+# nothing when it has none or it cannot be read.
+gate_toolchain() {
+	case ${XDG_CONFIG_HOME:-} in
+	/*) profile="$XDG_CONFIG_HOME/wcp/host.toml" ;;
+	*) [ -n "${HOME:-}" ] || return 0; profile="$HOME/.config/wcp/host.toml" ;;
+	esac
+	[ -r "$profile" ] || return 0
+	sed -n 's/^fingerprint = "\([0-9a-f][0-9a-f]*\)"$/\1/p' "$profile" 2>/dev/null | head -n 1
+}
+
+# Records that the local CI passed on commit `$1`, its lint compared with `$2`
+# (empty for none), under the configuration `$3` (`gate_config`, read before
+# the CI ran; empty when it could not be), on the toolchain `$4`
+# (`gate_toolchain`, empty for none), as `refs/gates/$1`; a smoke gate's
+# (#465) when `$5` is `smoke`. A receipt that cannot be written is said, not a
+# refusal: the gate itself passed.
+gate_receipt() {
+	gate_smoke=''
+	[ "${5:-}" != smoke ] || gate_smoke='smoke 1\n'
+	if [ -z "$3" ] || ! tree=$(git rev-parse -q --verify "$1^{tree}") ||
+		! config=$(printf '%s\n' "$3" | git hash-object --stdin) ||
+		! receipt=$(printf 'gate receipt\n\ntree %s\nconfig %s\nbase %s\ntoolchain %s\n%bresult pass\n' \
+			"$tree" "$config" "${2:--}" "${4:--}" "$gate_smoke" |
+			GIT_AUTHOR_NAME='pre-push gate' GIT_AUTHOR_EMAIL='gate@pre-push.invalid' \
+				GIT_COMMITTER_NAME='pre-push gate' GIT_COMMITTER_EMAIL='gate@pre-push.invalid' \
+				git commit-tree --no-gpg-sign "$tree" -p "$1") ||
+		! git update-ref "$GATES/$1" "$receipt"; then
+		err "pre-push: the local CI passed on $(printf '%.12s' "$1"), but its gate receipt ($GATES/$1) could not be written."
+	fi
+}
+
+# SHA-256 of stdin, in hex first: coreutils' tool, else the one macOS has.
+sha256() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum
+	else
+		shasum -a 256
+	fi
+}
+
+# Whether every path of `$1`, one per line, is a hook wcp wrote, unedited, at
+# commit `$2` ("A smoke gate for wcp's own hooks"): as `wcp.adapters.provenance`
+# judges it, the first `base=` field of a `# wcp: ` line is the first twelve hex
+# digits of the SHA-256 of the file without those lines. Not for no path, nor
+# where there is no tool to take the digest with.
+stamped_hooks_only() {
+	command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || return 1
+	hooks_seen=''
+	heredoc_read=''
+	while heredoc_read=1; IFS= read -r hook_path; do
+		[ -n "$hook_path" ] || continue
+		case $hook_path in .githooks/*) ;; *) return 1 ;; esac
+		hook_blob=$(git rev-parse -q --verify "$2:$hook_path" 2>/dev/null) || return 1
+		hook_base=$(git cat-file blob "$hook_blob" | awk '
+			index($0, "# wcp: ") == 1 {
+				for (i = 3; i <= NF; i++)
+					if (index($i, "base=") == 1) { print substr($i, 6); exit }
+			}')
+		# Spelled out, as in `is_env_name`: macOS's sh takes `[a-f]` for `B` too (#499).
+		case $hook_base in
+		[0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef][0123456789abcdef]) ;;
+		*) return 1 ;;
+		esac
+		# The kept lines joined by newlines, a final one only where the file
+		# ends in one and keeps a line: `split("\n")` and `join` exactly, which
+		# no `sed` is at a file's end.
+		hook_nl=0
+		[ -n "$(git cat-file blob "$hook_blob" | tail -c 1)" ] || hook_nl=1
+		hook_digest=$(git cat-file blob "$hook_blob" | awk -v nl="$hook_nl" '
+			index($0, "# wcp: ") != 1 { printf "%s%s", (kept++ ? "\n" : ""), $0 }
+			END { if (nl && kept) printf "\n" }' | sha256 | cut -c1-12)
+		[ "$hook_digest" = "$hook_base" ] || return 1
+		hooks_seen=1
+	done <<EOF
+$1
+EOF
+	[ -n "$heredoc_read" ] || return 1
+	[ -n "$hooks_seen" ]
+}
+
+# The smoke gate of commit `$1`, which changes only the hooks `$2` names, one
+# per line: `sh -n` on each as the commit has it. Says what failed.
+smoke_gate() {
+	smoke_failed=''
+	heredoc_read=''
+	while heredoc_read=1; IFS= read -r hook_path; do
+		[ -n "$hook_path" ] || continue
+		if ! smoke_out=$(git cat-file blob "$1:$hook_path" | sh -n 2>&1); then
+			err "pre-push: $hook_path at $(printf '%.12s' "$1") does not parse (sh -n):"
+			err "$smoke_out"
+			smoke_failed=1
+		fi
+	done <<EOF
+$2
+EOF
+	[ -n "$heredoc_read" ] || { heredoc_lost; smoke_failed=1; }
+	[ -z "$smoke_failed" ]
+}
+
+# Whether `hooks.localCiCpus` is set and taskset can pin to it, into `admit_cpus`.
+admit_pins() {
+	admit_cpus=$(git config hooks.localCiCpus 2>/dev/null) || admit_cpus=''
+	[ -n "$admit_cpus" ] && command -v taskset >/dev/null 2>&1 &&
+		taskset -c "$admit_cpus" true >/dev/null 2>&1
+}
+
+# Runs this hook again under `wcp build --priority push` ("One admission") and
+# exits as that run does; returns, having said why, when the local CI is to
+# run here unadmitted. `$@` is the hook's own arguments.
+admit() {
+	if ! command -v wcp >/dev/null 2>&1; then
+		if [ -n "${WCP_BUILD:-}" ]; then
+			err "pre-push: wcp is not on PATH, so a benchmark may move the local CI off hooks.localCiCpus."
+		else
+			err "pre-push: wcp is not on PATH, so the local CI runs without waiting for room in the host's build budget."
+		fi
+		return 0
+	fi
+	if ! admit_mark=$(mktemp "$(git rev-parse --absolute-git-dir)/wcp-build.XXXXXX" 2>/dev/null); then
+		err "pre-push: could not make a file in the git directory to hear from \`wcp build\` through, so the local CI runs without it."
+		return 0
+	fi
+	# Charged for the CPUs the local CI is to run on (`hooks.localCiCpus`):
+	# `wcp build` counts the ones it may run on. Inside an admission it is told
+	# them instead, a pin there being the outer build's (#493).
+	if [ -n "${WCP_BUILD:-}" ]; then
+		set -- env WCP_BUILD_CPUS="$admit_cpus" wcp build --priority push -- "$SELF" "$@"
+	elif admit_pins; then
+		set -- taskset -c "$admit_cpus" wcp build --priority push -- "$SELF" "$@"
+	else
+		set -- wcp build --priority push -- "$SELF" "$@"
+	fi
+	printf '%s\n' "$refs" | WCP_HOOK_STARTED=$admit_mark "$@"
+	admit_code=$?
+	admit_ran=$(cat "$admit_mark" 2>/dev/null) || admit_ran=''
+	rm -f "$admit_mark"
+	admit_mark=''
+	if [ -n "$admit_ran" ] || [ "$admit_code" -ge 128 ]; then
+		exit "$admit_code"
+	fi
+	err "pre-push: \`wcp build\` ended (exit $admit_code) without running the local CI, so it runs here without it."
+}
+
 # What each branch update adds: `<sha> <path>` lines, `/unknown` for the path
 # when git cannot say. A new branch is compared with the trunk it would join.
+# And what it was compared with: `<sha> <base>` lines, `-` for none.
 pushed=''
-while read -r local_ref local_sha remote_ref remote_sha extra; do
+bases=''
+heredoc_read=''
+while heredoc_read=1; read -r local_ref local_sha remote_ref remote_sha extra; do
 	[ -n "${remote_sha:-}" ] || continue
 	[ -z "${extra:-}" ] || continue
-	case $remote_ref in refs/heads/*) ;; *) continue ;; esac
+	case $remote_ref in
+	refs/heads/*) ;;
+	refs/queue/*) [ "${PRE_PUSH_QUEUE_GATE:-0}" = 1 ] || continue ;;
+	*) continue ;;
+	esac
 	is_sha "$local_sha" && is_sha "$remote_sha" || continue
 	is_absent "$local_sha" && continue
 	[ "$local_sha" = "$remote_sha" ] && continue
@@ -2301,26 +3872,131 @@ while read -r local_ref local_sha remote_ref remote_sha extra; do
 		files='/unknown'
 	fi
 	pushed=$(printf '%s\n%s' "$pushed" "$(printf '%s\n' "$files" | sed "s|^|$local_sha |")")
+	bases=$(printf '%s\n%s %s' "$bases" "$local_sha" "${base:--}")
 done <<EOF
 $refs
 EOF
+[ -n "$heredoc_read" ] || { heredoc_lost; exit 1; }
 
 # A git boolean: off, false, no and 0 all turn it off.
 mode=$(git config --bool hooks.localCi 2>/dev/null) || mode=''
+load_ci_env
+linted=''
+shas=$(printf '%s\n' "$pushed" | awk 'NF { print $1 }' | awk '!seen[$0]++')
 
-for sha in $(printf '%s\n' "$pushed" | awk 'NF { print $1 }' | awk '!seen[$0]++'); do
-	git show "$sha:CLAUDE.md" 2>/dev/null | extract_block build | grep -q . || continue
+# What the local CI does for commit `$1`, saying nothing: `ci_kind` is `none`
+# (no CLAUDE.md, or neither a `build` nor a `test` block), `docs` (only
+# documentation changed), `smoke` ("A smoke gate for wcp's own hooks") or
+# `full`, and `ci_note` what is to be said of it. Sets `claude` to its
+# CLAUDE.md, `CI_CHANGED` to what it changes, and `CI_SHA` and `CI_BASE`.
+ci_plan() {
+	ci_note=''
+	CI_SHA=$1
+	CI_CHANGED=$(printf '%s\n' "$pushed" | awk -v sha="$1" '$1 == sha { print substr($0, length(sha) + 2) }')
+	# The commit the lint compares the units' configuration with
+	# (`hooks.tidyFullOn flags`): none when two updates of the push compare
+	# this one with different commits.
+	CI_BASE=$(printf '%s\n' "$bases" | awk -v sha="$1" '
+		$1 == sha { if (b == "") b = $2; else if (b != $2) b = "-" }
+		END { if (b != "-") print b }')
+	ci_kind=none
+	if ! claude=$(git show "$1:CLAUDE.md" 2>/dev/null); then
+		ci_note="=== Local CI: skipped for $(printf '%.12s' "$1"), which has no CLAUDE.md ==="
+		return 0
+	fi
+	if ! printf '%s\n' "$claude" | extract_block build | grep -q . &&
+		! printf '%s\n' "$claude" | extract_block test | grep -q .; then
+		ci_note="=== Local CI: skipped for $(printf '%.12s' "$1"), whose CLAUDE.md has neither a \`build\` nor a \`test\` block under ## Build & Test ==="
+		return 0
+	fi
+	code=$(printf '%s\n' "$CI_CHANGED" |
+		awk '$0 == "CLAUDE.md" || !($0 == "" || /\.md$/ || $0 == "LICENSE" || $0 == ".gitignore")')
+	if [ -z "$code" ]; then
+		code=$(ci_code_match "$claude")
+		[ -z "$code" ] || ci_note="=== Local CI: runs for $(printf '%.12s' "$1"), which changes only documentation, but $code ==="
+	fi
+	if [ -z "$code" ]; then
+		ci_kind=docs
+		if printf '%s\n' "$claude" | extract_block precheck | grep -q .; then
+			ci_note="=== Local CI: only the precheck for $(printf '%.12s' "$1"), which changes only documentation ==="
+		else
+			ci_note="=== Local CI: skipped for $(printf '%.12s' "$1"), which changes only documentation ==="
+		fi
+	elif stamped_hooks_only "$CI_CHANGED" "$1"; then
+		ci_kind=smoke
+	else
+		ci_kind=full
+	fi
+}
+
+# "A precheck": every commit's, before the admission and before any build.
+# Not in the run started under `wcp build`, whose asker ran them, nor in a
+# lint-only run, which is repeated only to fill the lint cache.
+if [ "$mode" != false ] && [ -z "$prechecked" ] && [ "$CI_LINT_ONLY" != 1 ]; then
+	for sha in $shas; do
+		ci_plan "$sha"
+		[ "$ci_kind" != none ] || continue
+		printf '%s\n' "$claude" | extract_block precheck | grep -q . || continue
+		# A variable the commit's build needs is asked for first, as clearly
+		# as without a precheck, not after one that may need it too.
+		[ "$ci_kind" != full ] || check_ci_env "$sha" || exit 1
+		# Called on its own, never as a condition: in one, `set -e` would be
+		# off for everything the block runs.
+		local_ci "$sha" precheck
+		if [ $? != 0 ]; then
+			err "Push blocked by the precheck. Fix it; the review receipt stays until you commit again."
+			exit 1
+		fi
+	done
+fi
+if [ -n "$precheck_only" ]; then
+	err "=== Local CI: only the prechecks (PRE_PUSH_PRECHECK=only); the rest runs apart ==="
+	exit 0
+fi
+
+for sha in $shas; do
+	ci_plan "$sha"
+	# Said, not silent (#318): a merge queue's runner gates through this hook,
+	# and its log is all that tells a gate that ran nothing from one that passed.
+	if [ "$ci_kind" = none ]; then
+		err "$ci_note"
+		continue
+	fi
 	if [ "$mode" = false ]; then
 		err "pre-push: the local CI is off in this clone (hooks.localCi is false)."
 		break
 	fi
-	CI_CHANGED=$(printf '%s\n' "$pushed" | awk -v sha="$sha" '$1 == sha { print substr($0, length(sha) + 2) }')
-	code=$(printf '%s\n' "$CI_CHANGED" |
-		awk '$0 == "CLAUDE.md" || !($0 == "" || /\.md$/ || $0 == "LICENSE" || $0 == ".gitignore")')
-	if [ -z "$code" ]; then
-		err "=== Local CI: skipped for $(printf '%.12s' "$sha"), which changes only documentation ==="
+	[ -z "$ci_note" ] || err "$ci_note"
+	[ "$ci_kind" != docs ] || continue
+	# "A smoke gate for wcp's own hooks": nothing built, so no admission, and
+	# no variable a build would need.
+	if [ "$ci_kind" = smoke ]; then
+		err "=== Local CI: a smoke gate for $(printf '%.12s' "$sha"), which changes only stamped hooks, unedited ==="
+		gate_conf=$(gate_config) || gate_conf=''
+		gate_tools=$(gate_toolchain) || gate_tools=''
+		if ! smoke_gate "$sha" "$CI_CHANGED"; then
+			err "Push blocked by the smoke gate. Fix the hook; the review receipt stays until you commit again."
+			exit 1
+		fi
+		# It linted nothing: a lint-only run says so below.
+		[ "$CI_LINT_ONLY" = 1 ] || gate_receipt "$sha" "$CI_BASE" "$gate_conf" "$gate_tools" smoke
 		continue
 	fi
+	# Before the admission: a push whose first commit is blocked here waits for no room.
+	check_ci_env "$sha" || exit 1
+	# "One admission" above; asked once, for the whole push, and not by the
+	# run it started. Within another admission, asked only to keep to
+	# `hooks.localCiCpus` there (#493).
+	if [ -z "$admit_asked" ]; then
+		admit_asked=1
+		if [ -z "${WCP_BUILD:-}" ] || admit_pins; then
+			admit "$@"
+		fi
+	fi
+	# Read before the CI runs: a hook or setting changed while it runs is not
+	# what it ran under.
+	gate_conf=$(gate_config) || gate_conf=''
+	gate_tools=$(gate_toolchain) || gate_tools=''
 	# Called on its own, never as a condition: in one, `set -e` would be off
 	# for everything the blocks run.
 	local_ci "$sha"
@@ -2328,6 +4004,26 @@ for sha in $(printf '%s\n' "$pushed" | awk 'NF { print $1 }' | awk '!seen[$0]++'
 		err "Push blocked by the local CI. Fix it; the review receipt stays until you commit again."
 		exit 1
 	fi
+	# It ran no suite, so it vouches for nothing.
+	if [ "$CI_LINT_ONLY" = 1 ]; then
+		linted=1
+		continue
+	fi
+	if [ "$ci_env_past" != ' ' ]; then
+		err "pre-push: no gate receipt for $(printf '%.12s' "$sha"): the environment sets${ci_env_past%' '} past what hooks.localCiEnv gives the local CI, which the receipt's configuration would not record; a merge queue gates the push itself."
+		continue
+	fi
+	gate_receipt "$sha" "$CI_BASE" "$gate_conf" "$gate_tools"
 done
 
+if [ "$CI_LINT_ONLY" = 1 ]; then
+	if [ -n "$linted" ] && [ -z "$CI_TIDY_CACHE" ]; then
+		err "Push blocked: PRE_PUSH_LINT_ONLY=1 leaves each ctest's suite out, so it pushes nothing. The local CI passed, but with the tidy cache off (hooks.tidyCache) it cached nothing, and the push lints everything again."
+	elif [ -n "$linted" ]; then
+		err "Push blocked: PRE_PUSH_LINT_ONLY=1 leaves each ctest's suite out, so it pushes nothing. The local CI passed with no unit left to lint, and what the lint runner tidied is cached; push without it."
+	else
+		err "Push blocked: PRE_PUSH_LINT_ONLY=1 pushes nothing, and this push ran no local CI to lint in."
+	fi
+	exit 1
+fi
 exit 0

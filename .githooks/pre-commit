@@ -1,5 +1,5 @@
 #!/bin/sh
-# wcp: pre-commit base=c2e941e52319
+# wcp: pre-commit base=90b88b320f80
 # Check the format of the C++ sources before the commit is made.
 #
 # A real file in this repository, not a shim — see the note in `commit-msg` for
@@ -10,18 +10,42 @@
 # **Fails open, loudly.** git reads any non-zero exit as a refusal, so a hook
 # that insisted on a toolchain would refuse every commit on a machine without
 # clang installed — worse than an ungated commit. A missing tool, or a
-# clang-format of another major version than the project pins, is announced on
+# clang-format of another version than the project pins, is announced on
 # stderr and the commit proceeds.
 #
-# **Format only, for C++ (#178).** clang-tidy runs in the push gate, where its
-# passes are cached and a changed header is tidied once, on its own; tidying
-# here as well ran a header's every includer at commit and again at push. The
-# gate, and the scheduled full lint, are where clang-tidy's findings block.
+# **Format only, for C++ (#178).** Tidying here ran a header's every includer at
+# commit and again at push. Where the project registers its `clang_tidy:` tests,
+# clang-tidy runs in the push gate, from the `ctest` of its `lint` block or, with
+# none, of its `test` block, where its passes are cached and a changed header is
+# tidied once, on its own; its findings block there and in the full lint,
+# `ctest -R '^clang_tidy:'` run uncached, on the project's schedule where it has
+# one, else by hand (#668). A project without them has no hook that runs
+# clang-tidy.
 #
-# **Tracked files, not staged ones.** `git ls-files` is what clang-format is
-# pointed at: a commit is checked as the tree it leaves.
+# **Every tracked file as the working tree has it, not the staged blobs.**
+# `git ls-files` names what clang-format is pointed at, and it reads each file
+# from disk: a partially staged file is checked as the working tree holds it, so
+# an unstaged violation refuses the commit and an unstaged fix lets it through.
+#
+# **`--precheck` fails closed (#636).** The skip that suits a commit would let a
+# gate pass having checked nothing, so CLAUDE.md's `precheck` block runs this as
+# `sh .githooks/pre-commit --precheck`: a format check that cannot be run, for
+# a missing clang-format or one of another version than the pin, then fails.
+# git runs this hook with no arguments.
 
 set -u
+
+precheck=''
+case ${1-} in
+--precheck)
+	precheck=1
+	shift
+	;;
+esac
+if [ $# -gt 0 ]; then
+	printf 'pre-commit: unknown argument "%s"; the one this hook takes is --precheck.\n' "$1" >&2
+	exit 2
+fi
 
 status=0
 
@@ -39,29 +63,42 @@ if common=$(git rev-parse --git-common-dir 2>/dev/null) &&
 fi
 [ ! -d .venv/bin ] || PATH="$PWD/.venv/bin:$PATH"
 
-# **The pinned major version, when the project declares one**: the first line
-# of `.clang-format-version`, `22` or `22.1.8`, of which only the major is
-# compared. A clang-format of another major formats differently and would
-# report violations in files the commit never touched, so it is not run: the
-# format check is skipped, loudly, as for a missing tool. Without the file,
-# whichever clang-format is found is used.
-pin_major=''
+# **The pinned version, when the project declares one**: the leading
+# `N[.N...]` of the first line of `.clang-format-version`, compared in as many
+# components as it names (#616): `22` takes any 22.x, `22.1.8` only 22.1.8,
+# not 22.1.7 or 22.1.80. It is the version `clang-format --version` prints,
+# not a wheel's: `22.1.8.1` would match no clang-format at all. A clang-format
+# of another version formats differently and would report violations in files
+# the commit never touched, so it is not run: the format check is skipped,
+# loudly, as for a missing tool, and a precheck fails. pre-push's lint holds
+# clang-tidy to the same pin. Without the file, whichever clang-format is found
+# is used.
+pin=''
 if [ -f .clang-format-version ]; then
-	pin=$(sed -n '1{s/^[[:space:]]*//;s/[[:space:]]*$//;p;}' .clang-format-version)
-	pin_major=${pin%%.*}
-	case $pin_major in
+	line=$(sed -n '1{s/^[[:space:]]*//;s/[[:space:]]*$//;p;}' .clang-format-version)
+	case ${line%%.*} in
 	'' | *[!0-9]*)
 		printf 'pre-commit: .clang-format-version does not begin with a version ("%s"); the clang-format version was not checked.\n' \
-			"$pin" >&2
-		pin_major=''
+			"$line" >&2
 		;;
+	*) pin=$(printf '%s\n' "$line" | sed 's/^\([0-9][0-9]*\(\.[0-9][0-9]*\)*\).*/\1/') ;;
 	esac
 fi
-# The major version of the clang-format on PATH, or nothing when its
+# The version of the clang-format on PATH, `22.1.8`, or nothing when its
 # `--version` line cannot be read.
-format_major() {
+format_version() {
 	clang-format --version 2>/dev/null |
-		sed -n 's/.*clang-format version \([0-9][0-9]*\).*/\1/p' | sed -n 1p
+		sed -n 's/.*clang-format version \([0-9][0-9]*\(\.[0-9][0-9]*\)*\).*/\1/p' | sed -n 1p
+}
+# Is version `$1` pin `$2`, in every component the pin names?
+pinned() {
+	case $1 in "$2" | "$2".*) return 0 ;; esac
+	return 1
+}
+# What to install for pin `$1`: a full version as it is, a partial one as a
+# wildcard (`==22` would take 22.0.0 alone).
+pin_spec() {
+	case $1 in *.*.*) printf '%s' "$1" ;; *) printf '%s.*' "$1" ;; esac
 }
 
 # Newline-separated paths on stdin, run as `xargs -0 ARGS... PATHS`: a path
@@ -70,17 +107,32 @@ format_major() {
 each_path() { grep -v '^$' | tr '\n' '\000' | xargs -0 "$@"; }
 
 # quotePath off, so a non-ASCII path is listed as itself rather than C-quoted.
-sources=$(git -c core.quotePath=false ls-files -- '*.c' '*.cc' '*.cpp' '*.cxx' 2>/dev/null)
-headers=$(git -c core.quotePath=false ls-files -- '*.h' '*.hh' '*.hpp' '*.hxx' 2>/dev/null)
+# Module units (`.cppm`, `.ixx`, `.mxx`) count as sources; inline and template
+# bodies (`.inl`, `.ipp`, `.tpp`, `.tcc`) and CUDA headers as headers. Not
+# `.inc` or `.def`: those are often X-macro tables, which clang-format mangles.
+sources=$(git -c core.quotePath=false ls-files -- '*.c' '*.cc' '*.cpp' '*.cxx' '*.cppm' '*.ixx' '*.mxx' 2>/dev/null)
+headers=$(git -c core.quotePath=false ls-files -- '*.h' '*.hh' '*.hpp' '*.hxx' '*.inl' '*.ipp' '*.tpp' '*.tcc' '*.cuh' 2>/dev/null)
 formattable=$(printf '%s\n%s\n' "$sources" "$headers" | grep -v '^$')
 
+# A format check that cannot be run, for the reason `$1`, with the advice `$2`:
+# skipped, saying so; under `--precheck` a failure, when there is a file to
+# check (#636).
+format_not_run() {
+	if [ -n "$precheck" ] && [ -n "$formattable" ]; then
+		printf 'pre-commit: %s, which fails a precheck; the format check was not run.%s\n' "$1" "$2" >&2
+		status=1
+	else
+		printf 'pre-commit: %s; the format check was skipped.%s\n' "$1" "$2" >&2
+	fi
+}
+
 if ! command -v clang-format >/dev/null 2>&1; then
-	echo "pre-commit: clang-format is not on PATH; the format check was skipped." >&2
+	format_not_run "clang-format is not on PATH" ''
 elif [ -z "$formattable" ]; then
 	: # nothing to format
-elif [ -n "$pin_major" ] && found=$(format_major) && [ "$found" != "$pin_major" ]; then
-	printf 'pre-commit: %s is clang-format %s, not %s as .clang-format-version pins; the format check was skipped. Put clang-format %s first on PATH, or in .venv/bin.\n' \
-		"$(command -v clang-format)" "${found:-of an unknown version}" "$pin_major" "$pin_major" >&2
+elif [ -n "$pin" ] && found=$(format_version) && ! pinned "$found" "$pin"; then
+	format_not_run "$(command -v clang-format) is clang-format ${found:-of an unknown version}, not $pin as .clang-format-version pins" \
+		" Put clang-format $pin first on PATH, or in .venv/bin: uv tool install clang-format==$(pin_spec "$pin"), say."
 else
 	echo "pre-commit: clang-format --dry-run -Werror" >&2
 	# One process over every tracked file (xargs splits only at the argument
@@ -88,7 +140,9 @@ else
 	printf '%s\n' "$formattable" | each_path clang-format --dry-run -Werror -- || status=1
 fi
 
-if [ "$status" -ne 0 ]; then
+if [ "$status" -ne 0 ] && [ -n "$precheck" ]; then
+	echo "Precheck failed: fix the failures above." >&2
+elif [ "$status" -ne 0 ]; then
 	echo "Commit blocked: fix the failures above and commit again." >&2
 fi
 exit "$status"

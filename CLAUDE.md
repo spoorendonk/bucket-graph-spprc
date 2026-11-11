@@ -12,6 +12,8 @@
 <!-- wcp-declined: 027569c8a6fc Common Mistakes -->
 <!-- wcp-declined: e9feadcddcb5 Testing (GoogleTest) -->
 <!-- wcp-declined: 913ba5bd4d6f LSP -->
+<!-- wcp-declined: 52f74794c76e Git Workflow -->
+<!-- wcp-declined: 40f7d86bc594 Issue Tracking -->
 # Project: bucket-graph-spprc
 
 Header-only C++23 template library implementing the bucket graph labeling algorithm for SPPRC (Shortest Path Problem with Resource Constraints) and vehicle routing variants. Based on Sadykov/Uchoa/Pessoa 2021, with extensions from Meta-Solver 2026.
@@ -163,8 +165,8 @@ once sets it: CMake points it at `.githooks` whenever it is anything else
 only `wcp init`; the CMake route gates a clone just as well.
 
 - **pre-commit** — `clang-format --dry-run -Werror` over every tracked C++ file. It checks, it does not reformat: run `clang-format -i` and commit again. No tests at commit.
-- **commit-msg** — Conventional Commits, subject ≤72 chars. `fixup!`/`squash!`/`amend!` pass through so `git rebase --autosquash` works, and `type!:` marks a breaking change (both local edits to wcp's hook).
-- **pre-push** — refuses merge commits and unsquashed `fixup!`/`squash!`/`amend!` commits on the trunk (the latter a local edit to wcp's hook) and a HEAD without a review receipt (`## Self-Review`), then runs the clean/build/test fences above in a fresh worktree of the pushed commit. Docs-only pushes skip the build.
+- **commit-msg** — Conventional Commits, subject ≤72 chars. `fixup!`/`squash!`/`amend!` pass through so `git rebase --autosquash` works (pre-push stops them at the trunk), and `type!:` marks a breaking change. For an `amend!` it judges the replacement message after the blank line.
+- **pre-push** — refuses merge commits and unsquashed `fixup!`/`squash!`/`amend!` commits on the trunk and a HEAD without a review receipt (`## Self-Review`), then runs the clean/build/test fences above in a fresh worktree of the pushed commit, inside the host's build budget (`wcp build`) where wcp is installed. Docs-only pushes skip the build.
 - A `build/` configured with another generator makes the build fence abort with "generator does not match": run the `clean` fence first.
 - **Lint as ctest tests** (`cmake/Lint.cmake`, label `lint`) — `clang_format` checks every tracked C++ file, and `clang_tidy:<path>` tidies one translation unit with warnings as errors, one test per unit in `BGSPPRC_LINT_UNITS` (every test, CLI and example source; headers are reached through them, all but the umbrella `bgspprc.h`, which only includes the others). pre-push runs the suite without them, then only the `clang_tidy:` tests the push reaches, through its cached runner; the build fence uses Ninja when it is installed (`ninja-build`; stock Ubuntu lacks it, and then the gate falls back to running every `clang_tidy:` test uncached), which gives it the dependency log it needs for that. A missing clang tool is a configure warning and drops its tests. `ctest -LE lint` skips them while iterating. A changed header is tidied at push only through a one-line stub unit, not through its includers, and there is no scheduled full lint: **after a header change, run the whole lint yourself** (`ctest --test-dir build -L lint -j4`), since a finding that shows only when a template is instantiated surfaces there and nowhere else.
 - **Local CI is the gate.** A change lands on its review plus a green pre-push, run under the machine lock where one is shared (`xk lock -- git push …`). Nothing waits on GitHub: there are no GitHub Actions workflows, and any added later runs only on `workflow_dispatch` and a `schedule` at most weekly — never on push or pull request. A `--no-verify` push is therefore caught by nothing; don't make one.
@@ -200,22 +202,22 @@ are now conventions, stated here:
 
 ## Hooks Are Files In This Repository
 
-The git hooks live in `.githooks/` as ordinary shell scripts, committed like any other file. `wcp init` copies them there and points `core.hooksPath` at them; wcp installs no Claude Code hooks at all. The gate is those files and nothing else, so a clone without wcp installed is still gated — including the review receipt, which is a line of plain git the Self-Review section documents rather than anything wcp runs.
+The git hooks live in `.githooks/` as ordinary shell scripts, committed like any other file. `wcp init` copies them there and points `core.hooksPath` at them; it puts no Claude Code hooks in the project (the `wcp hook` entries wcp installs go into each machine's own Claude settings, not this repository). The gate is those files and nothing else, so a clone without wcp installed is still gated — including the review receipt, which is a line of plain git the Self-Review section documents rather than anything wcp runs.
 
 - **They are yours to read, and yours to edit.** Each hook carries a `# wcp:` line recording the digest of the bytes wcp wrote. That is what lets `wcp doctor` tell an edit you made from a version wcp has moved past: an untouched hook is refreshed silently, an edited one is left alone, and one that moved on both sides is reported rather than overwritten. Edit them when the project needs something different — and say so upstream if the default was wrong for everyone.
 - **A clone is not gated until someone runs `wcp init` in it.** git clones neither a hooks directory nor local config, so the files arriving with the clone is not the same as git running them. `wcp doctor` reports an unset `core.hooksPath` as an error for exactly this reason.
-- **They call no wcp.** A hook that shelled out to a missing tool would exit 127, which git reads as a refusal — so a machine without wcp could not commit, and could not commit the fix either. What the hooks do call is the project's own toolchain, and there they fail open and say so on stderr.
+- **They need no wcp.** A hook that shelled out to a missing tool would exit 127, which git reads as a refusal — so a machine without wcp could not commit, and could not commit the fix either. The one call is pre-push's: where wcp is on PATH, it asks `wcp build` for room in the host's build budget before its local CI; without wcp, or when that call fails to start, the local CI runs as it is and says so. What the hooks otherwise call is the project's own toolchain, and there they fail open and say so on stderr.
 - **Never use `git push --no-verify` or `git commit --no-verify`** unless explicitly asked. A failing hook is a signal — fix the root cause, or change the hook deliberately and commit that.
 
 ## This Document Carries A Provenance Line
 
 The comment at the top of this file is wcp's record of the bytes it wrote, in the same scheme the hooks use. `wcp doctor` reads it to tell an edit you made from a version wcp has moved past, and it is where this project's type is recorded — there is no `.wcp/` directory and no config file beside it.
 
-**The prose is yours.** wcp writes this document once and never rewrites it unasked; edit it freely. When wcp adds or changes a section you have not edited, `wcp doctor` names it and `wcp init --interactive` offers it, one section at a time; answering `n` declines that version for good. Leave the top line in place, and the tooling stays able to tell your changes from its own.
+**The prose is yours.** wcp writes this document once and never rewrites it unasked; edit it freely. When wcp adds or changes a section you have not edited, `wcp doctor` names it and `wcp init --interactive` offers it, one section at a time; answering `n` declines that version for good. Without a terminal, `wcp init --plan` lists them, and `wcp init --take-section HEADING` or `--decline-section HEADING` settles each. Leave the top line in place, and the tooling stays able to tell your changes from its own.
 
 ## Running wcp
 
-wcp is a command-line tool installed once per machine, outside any repository. The hooks never call it, so a machine without it is still gated.
+wcp is a command-line tool installed once per machine, outside any repository. The hooks need it nowhere (pre-push asks `wcp build` for room only where it is installed), so a machine without it is still gated.
 
 ```sh
 uv tool install git+https://github.com/spoorendonk/wcp   # once per machine; @vX.Y.Z for a release
@@ -230,7 +232,7 @@ wcp --help                                                # the commands; `wcp <
 
 ## Working Through Issues
 
-A session's goal is often a list of issues (`wcp goal`). Work through them in the order given, one at a time:
+A session's goal is often a list of issues (`wcp goal`). Work through them in the order given, one at a time: the first is your active issue and the rest are queued (`next:<name>`), so `wcp claim <num>` makes each active as you start it, and an issue split into sub-issues has them claimed `--next --parent <parent>`, which links each to the parent as a GitHub sub-issue, so the pull stops offering the parent.
 
 1. **Issue check.** Read the issue and what it links. If it is clear and implementable, say so in one line and go on; this should be fast. If not, write a plan as a comment on the issue (plans go on issues, never in git) and work from it. If a later issue's plan changes an earlier one, re-plan then.
 2. **Implement.**

@@ -1,5 +1,5 @@
 #!/bin/sh
-# wcp: commit-msg base=f49666df061f
+# wcp: commit-msg base=fb8fed3cdae2
 # Conventional Commits, enforced.
 #
 # A real file in this repository, not a shim. `wcp init` copied it here from the
@@ -42,20 +42,34 @@ fi
 
 subject=$(sed -n '1p' "$msg_file")
 
-# git writes these itself. Holding its own wording to the format would refuse
-# the merge and the revert git just asked for.
+# git writes these (#245): `git commit --fixup`, `--squash` and
+# `--fixup=amend:`, and `git rebase -i --autosquash` folds them into the commit
+# they name. The prefix pushes a subject at the limit past it, so the checks
+# below judge not the subject but what lands: for `amend!`, the message after
+# it, which replaces the named commit's and is not judged again by the rebase.
+# pre-push refuses one headed for the trunk, where it has to be squashed before
+# it lands.
+case $subject in
+fixup!\ * | squash!\ *) exit 0 ;;
+amend!\ *)
+	# The first content line after the subject's paragraph. Spaces, tabs and
+	# CRs spelled out: mawk 1.3.3 has no `[:space:]`.
+	subject=$(awk 'NR == 1 { next } !body && /^[ \t\r]*$/ { body = 1; next }
+		body && !/^#/ && /[^ \t\r]/ { print; exit }' "$msg_file")
+	if [ -z "$subject" ]; then
+		echo "ERROR: an amend! commit needs the message that replaces its commit's, after a blank line." >&2
+		exit 1
+	fi
+	;;
+esac
+
+# git writes these itself too. Holding its own wording to the format would
+# refuse the merge and the revert git just asked for, or an amend! of one.
 case $subject in
 Merge\ * | Revert\ *) exit 0 ;;
 esac
 
-# This project's own: `git commit --fixup` subjects pass, so `git rebase
-# --autosquash` works. Folded away before a push, they never reach main.
-# Also this project's: `type!:` marks a breaking change, as Conventional
-# Commits allows (the `!?` in the pattern below).
-case $subject in
-fixup!\ * | squash!\ * | amend!\ *) exit 0 ;;
-esac
-
+# `!` before the colon marks a breaking change (`feat!:`, `fix(api)!:`).
 if ! printf '%s\n' "$subject" | grep -qE "^($TYPES)(\(.+\))?!?: .+"; then
 	cat >&2 <<'EOF'
 ERROR: commit message does not follow Conventional Commits.
