@@ -14,9 +14,11 @@ repository-code: "https://github.com/spoorendonk/bucket-graph-spprc"
 url: "https://github.com/spoorendonk/bucket-graph-spprc"
 date-released: "2026-11-11"
 license: MIT
-# Version DOI: this exact release, the one to cite for reproducibility. Zenodo
-# mints it only when the GitHub Release is published, so a release commit
-# carries the concept DOI here and the commit after it the version DOI.
+# The version DOI belongs here: it pins this exact release, so cite it for
+# reproducibility. Zenodo mints it only when the GitHub Release is published,
+# so a release's tagged commit holds the concept DOI here, which resolves to
+# the latest version, not this one. The commit after the tag puts in the
+# version DOI.
 doi: 10.5281/zenodo.20819208
 identifiers:
   - type: doi
