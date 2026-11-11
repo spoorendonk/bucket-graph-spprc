@@ -27,6 +27,9 @@ bucket-graph-spprc 0.2.0 carries the shared pricer contract (flowty/flowty#58) a
 - `executor.h`: the `Executor` concept, `SequentialExecutor`, and `ThreadPoolExecutor` over a caller-owned `ThreadPool`.
 - `AdjacencyView` / `CsrAdjacency`. `BucketGraph` and `Solver` can borrow a caller's CSR (#133).
 - Borrowing split: `NgPathData`/`R1CData` own the tables, and the 8-byte `NgPathView`/`R1CView` borrow them.
+- The README shows how to share one pool, one adjacency and one set of ng/R1C data across solvers (#138).
+- A nested dispatch fans out on `StdThreadExecutor` but runs inline on `ThreadPoolExecutor`, so parallel bidir's compaction there uses at most 2 threads (#136). A `Solver` on a `ThreadPoolExecutor` is tested end to end (#135).
+- The contract headers carry the shared reference comments, which read correctly in every copy (#134, #137).
 
 ### Features
 
@@ -57,6 +60,7 @@ bucket-graph-spprc 0.2.0 carries the shared pricer contract (flowty/flowty#58) a
 ### Tooling
 
 - Local CI is the gate: clang-format and clang-tidy 22.1.8 as ctest lint tests, with pre-push running the build and test fences. There are no GitHub Actions.
+- ruff, mypy `--strict` and shellcheck run as lint tests too, at versions pinned in `requirements-dev.txt` (#140). Configure holds clang-format and clang-tidy to the full 22.1.8 pin, as the hooks do (#139).
 
 Full list: https://github.com/spoorendonk/bucket-graph-spprc/compare/v0.1.0...v0.2.0
 
