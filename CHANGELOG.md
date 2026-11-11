@@ -7,10 +7,18 @@ bucket-graph-spprc 0.2.0 carries the shared pricer contract (flowty/flowty#58) a
 ### Breaking changes
 
 - **Default bucket steps come from ξ** (BG2021 §6.3, #106): a step left at 0 is range/ξ^(1/n_main), ξ = 25 by default. Explicit steps are kept.
+  - The new `xi` field follows `bucket_steps` in `BucketGraph::Options` and `Solver::Options`, so every later member moves. Positional aggregate initialisation from 0.1.0 still compiles but fills the wrong fields: use designated initialisers.
+  - `BucketGraph::halve_bucket_steps()` is gone. `double_xi()` replaces it, and it divides 2D steps by √2, not 2.
 - **One s-t path, outside symmetric mode**: a path ends at its first arrival at the sink and leaves the source once (#124, #125). `source == sink` is the empty path there (#110). Symmetric mode needs `source == sink`, and the constructor throws otherwise (#126). Its depot tours are single (#123).
-- **A view without a main resource is refused**: `BucketGraph` throws `std::invalid_argument` (#119). A view's non-main resources are enforced by `SideResources`.
+- **A view the grid cannot read is refused** (#119). `BucketGraph` throws `std::invalid_argument` in three cases:
+  - the view has no main resource;
+  - `n_resources` is smaller than the number of main resources;
+  - `arc_resource`, `vertex_lb` or `vertex_ub` is null.
+
+  A view's non-main resources are enforced by `SideResources`.
 - **The rank-1 cut sign is corrected**: R1C domination, extension and concatenation now charge a non-negative penalty, and `precompute_betas` clamps β ≥ 0. Pricing with active rank-1 cuts gives different results from 0.1.0.
-- **`Stage::Fixing` is removed** from the `Stage` enum. It was unused.
+- **`Stage::Fixing` is removed** from the `Stage` enum. It was unused, but the stages after it are renumbered: `Exact` goes from 3 to 2 and `Enumerate` from 4 to 3. A stage stored or sent as an integer must be mapped again.
+- **The `.graph` reader throws on malformed lines** where it used to skip them, and it keeps `:` in names (#127).
 - **`parallel_sort` is no longer reachable from `executor.h` alone**: include `parallel_sort.h`. `ThreadPool` and `ThreadPoolExecutor` are new names in the `bgspprc` namespace.
 - The CLI, tests and examples need `<print>` (libstdc++ ≥ 14, libc++ ≥ 17), and configure checks for it (#131). The header-only library does not.
 
@@ -37,6 +45,7 @@ bucket-graph-spprc 0.2.0 carries the shared pricer contract (flowty/flowty#58) a
   - Enumerate buckets are sorted for the join (#117).
   - Elimination stays sound when the midpoint moves (#104), and label-based elimination decides only arcs that cross the midpoint (#111).
 - Warm-started solves return paths that start at the source (#113).
+- `StdThreadExecutor` no longer starts a chunk past the end of a short range, and a waiting thread runs queued tasks (#99).
 - Fixing and elimination no longer read out of range after a solve with an infeasible source or sink (#118).
 
 ### Performance

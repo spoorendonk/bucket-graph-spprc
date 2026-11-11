@@ -26,6 +26,9 @@ identifiers:
     description: >-
       Concept DOI, resolving to the latest version of the software. Cite this
       when you mean "bucket-graph-spprc" rather than one specific release.
+  - type: doi
+    value: 10.5281/zenodo.20819209
+    description: Version DOI of v0.1.0.
 preferred-citation:
   type: article
   title: "bucket-graph-spprc: an extensible C++ library for the shortest path problem with resource constraints"
