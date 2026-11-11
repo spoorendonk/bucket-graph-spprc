@@ -45,10 +45,8 @@ struct ProblemView {
     // nullptr means all resources are disposable (default).
     const bool* resource_nondisposable = nullptr;
 
-    // Adjacency (caller-built or we build internally)
-    // outgoing_arcs[v] = span of arc indices leaving v
-    // incoming_arcs[v] = span of arc indices entering v
-    // These are optional — bucket_graph builds its own if null.
+    // A prebuilt adjacency is not part of the view: pass an AdjacencyView to
+    // the BucketGraph or Solver constructor after the ProblemView.
 };
 
 /// Helper to build adjacency lists from arc arrays.
