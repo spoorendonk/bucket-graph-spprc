@@ -199,6 +199,50 @@ dispatch, which the parallel bidirectional solve makes: it runs
 Results are identical; only speed differs, so `StdThreadExecutor` timings
 overstate what a `ThreadPoolExecutor` of the same size gives a bidir solve.
 
+### Sharing a pool, an adjacency and ng/R1C data
+
+A column-generation core that prices several s-t pricing problems over the same
+graph can build the expensive parts once and lend them to every solver (the
+shared pricer contract, flowty/flowty#58). Each piece is a small non-owning
+handle over something the caller owns, so **the caller keeps the owner alive,
+and unchanged, for as long as any solver borrowing it lives**.
+
+```cpp
+#include <bgspprc/bgspprc.h>
+
+using namespace bgspprc;
+
+// Owned by the core, built once.
+ThreadPool pool(8);                       // 8 threads, the calling one included
+CsrAdjacency adj;
+adj.build(pv);                            // CSR of pv's arcs
+const NgPathData ng(pv.n_vertices, pv.n_arcs, pv.arc_from, pv.arc_to, ng_neighbors);
+R1CData r1c;
+r1c.set_cuts(cuts, pv.n_vertices, pv.n_arcs);  // again whenever cuts or duals change
+
+// Borrowed by each solver: all three handles are 8 bytes or a few pointers.
+using Pack = ResourcePack<NgPathView, R1CView>;
+Solver<Pack, ThreadPoolExecutor> solver(
+    pv, adj.view(), Pack(NgPathView(ng), R1CView(r1c)), {}, ThreadPoolExecutor(pool));
+```
+
+- **Pool.** `ThreadPoolExecutor` is a handle to a caller-owned `ThreadPool`
+  (`executor.h`); copies of it share the pool. The pool runs one dispatch at a
+  time, so solvers that solve concurrently on one pool do not oversubscribe it:
+  a dispatch that finds the pool busy runs inline on its calling thread.
+- **Adjacency.** Pass an `AdjacencyView` after the `ProblemView` and the solver
+  builds no CSR of its own (`owns_adjacency()` is false). It must describe the
+  view's arcs (a vertex or arc count that differs throws
+  `std::invalid_argument`) and may list a vertex's arcs in any order. A
+  `CsrAdjacency` builds one; `view()` on a temporary does not compile. Without
+  the argument the solver builds and owns its own.
+- **ng and R1C data.** `NgPathData` and `R1CData` own the derived tables;
+  `NgPathView` and `R1CView` are the resources that borrow them, and neither
+  binds to a temporary. `NgPathResource` and `R1CResource` are the owning
+  forms, for a solver that needs no sharing. Update `R1CData` (`set_cuts`)
+  between solves, never while a solver borrowing it is solving; a view with no
+  cuts borrows an `R1CData` that has none.
+
 ## Custom Resources
 
 Implement the `Resource` concept to define custom resource types:
