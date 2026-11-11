@@ -3608,11 +3608,12 @@ TEST_CASE(
         std::ranges::sort(v);
         return v;
     };
-    auto run = [&]<typename Exec>(Exec, bool parallel_bidir) {
+    auto run = [&]<typename Exec>(Exec exec, bool bidirectional, bool parallel_bidir) {
         for (int mode = 0; mode < 3; ++mode) {
             int64_t reduced = 0;
             for (int n_main = 1; n_main <= 2; ++n_main) {
                 for (int seed = 0; seed < 200; ++seed) {
+                    CAPTURE(bidirectional);
                     CAPTURE(parallel_bidir);
                     CAPTURE(mode);
                     CAPTURE(n_main);
@@ -3620,6 +3621,7 @@ TEST_CASE(
                     RandomTwInstance inst(seed, n_main);
                     const typename Solver<EmptyPack, Exec>::Options opts{
                         .bucket_steps = {2.0, n_main == 2 ? 2.0 : 0.0},
+                        .bidirectional = bidirectional,
                         .parallel_bidir = parallel_bidir};
                     Solver<EmptyPack> fresh(
                         inst.pv, EmptyPack{},
@@ -3627,7 +3629,7 @@ TEST_CASE(
                     fresh.build();
                     const auto all = enumerate(fresh);
 
-                    Solver<EmptyPack, Exec> solver(inst.pv, EmptyPack{}, opts);
+                    Solver<EmptyPack, Exec> solver(inst.pv, EmptyPack{}, opts, exec);
                     solver.set_stage(Stage::Exact);
                     solver.build();
                     for (int k = 0; k < 4; ++k) {
@@ -3648,8 +3650,13 @@ TEST_CASE(
             CHECK(reduced > 0);  // the gap still lets something go
         }
     };
-    run(SequentialExecutor{}, false);
-    run(StdThreadExecutor{}, true);
+    run(SequentialExecutor{}, true, false);
+    run(StdThreadExecutor{}, true, true);
+    // The executor flowty passes in, over a caller-owned pool (#135): no
+    // other test instantiates Solver<Pack, ThreadPoolExecutor>.
+    ThreadPool pool(4);
+    run(ThreadPoolExecutor(pool), false, false);
+    run(ThreadPoolExecutor(pool), true, true);
 }
 
 TEST_CASE("bounds_cover_gap: the theta a solve pruned against bounds the gap (#116)") {
