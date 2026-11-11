@@ -2314,10 +2314,16 @@ static void check_same_paths(const std::vector<Path>& a, const std::vector<Path>
     }
 }
 
-// An owning graph's view points into its own CSR; a copy or move of the graph
-// would have to rebind it, so neither exists.
-static_assert(!std::is_copy_constructible_v<BucketGraph<ResourcePack<>>>);
-static_assert(!std::is_move_constructible_v<BucketGraph<ResourcePack<>>>);
+// A temporary CsrAdjacency would dangle once the constructor returns, so it
+// does not convert; an lvalue one and a plain view do.
+static_assert(!std::is_constructible_v<BucketGraph<ResourcePack<>>, const ProblemView&,
+                                       CsrAdjacency, ResourcePack<>>);
+static_assert(std::is_constructible_v<BucketGraph<ResourcePack<>>, const ProblemView&,
+                                      const CsrAdjacency&, ResourcePack<>>);
+static_assert(std::is_constructible_v<Solver<ResourcePack<>>, const ProblemView&, AdjacencyView,
+                                      ResourcePack<>>);
+static_assert(!std::is_constructible_v<Solver<ResourcePack<>>, const ProblemView&, CsrAdjacency,
+                                       ResourcePack<>>);
 
 /// The CSR of `pv`'s arcs with each vertex's arcs in reverse arc-index order,
 /// as a caller's own CSR might list them.

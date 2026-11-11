@@ -123,12 +123,15 @@ public:
     EngineAdjacency(const EngineAdjacency&) = delete;
     EngineAdjacency& operator=(const EngineAdjacency&) = delete;
     EngineAdjacency(EngineAdjacency&& o) noexcept
-        : owned_(std::move(o.owned_)), owns_(o.owns_), view_(o.owns_ ? owned_.view() : o.view_) {}
+        : owned_(std::move(o.owned_)), owns_(o.owns_), view_(o.owns_ ? owned_.view() : o.view_) {
+        o.reset();
+    }
     EngineAdjacency& operator=(EngineAdjacency&& o) noexcept {
         if (this != &o) {
             owned_ = std::move(o.owned_);
             owns_ = o.owns_;
             view_ = owns_ ? owned_.view() : o.view_;
+            o.reset();
         }
         return *this;
     }
@@ -138,6 +141,13 @@ public:
     [[nodiscard]] bool owns() const noexcept { return owns_; }
 
 private:
+    /// A moved-from one is empty: it owns nothing and views nothing.
+    void reset() noexcept {
+        owned_ = CsrAdjacency();
+        owns_ = false;
+        view_ = AdjacencyView();
+    }
+
     /// Every arc once in outgoing(arc_from[a]) and once in incoming(arc_to[a]),
     /// the `CsrAdjacency` invariant. Debug builds only: O(n_vertices + n_arcs).
     [[nodiscard]] bool matches(const ProblemView& pv) const {
@@ -146,13 +156,17 @@ private:
             view_.in_begin[pv.n_vertices] != pv.n_arcs) {
             return false;
         }
-        std::vector<int> seen_out(static_cast<std::size_t>(pv.n_arcs), 0);
-        std::vector<int> seen_in(static_cast<std::size_t>(pv.n_arcs), 0);
+        // Offsets non-decreasing everywhere before any arc is read, so no
+        // vertex's span runs past the arc arrays.
         for (int v = 0; v < pv.n_vertices; ++v) {
             if (view_.out_begin[v] > view_.out_begin[v + 1] ||
                 view_.in_begin[v] > view_.in_begin[v + 1]) {
                 return false;
             }
+        }
+        std::vector<int> seen_out(static_cast<std::size_t>(pv.n_arcs), 0);
+        std::vector<int> seen_in(static_cast<std::size_t>(pv.n_arcs), 0);
+        for (int v = 0; v < pv.n_vertices; ++v) {
             for (int a : view_.outgoing(v)) {
                 if (a < 0 || a >= pv.n_arcs || pv.arc_from[a] != v) {
                     return false;
@@ -249,6 +263,8 @@ public:
     /// must outlive this graph, unchanged. Its arc order within a vertex may
     /// differ from arc-index order. Throws std::invalid_argument when its
     /// vertex or arc count differs from the view's.
+    ///
+    /// An lvalue `CsrAdjacency` converts; a temporary one does not, so cannot dangle.
     BucketGraph(const ProblemView& pv, AdjacencyView adj, Pack pack, Options opts = {},
                 Exec executor = {})
         : pv_(pv), pack_(std::move(pack)), opts_(opts), executor_(std::move(executor)) {
@@ -982,7 +998,9 @@ private:
         const bool fw = dir == Direction::Forward;
         const int* begin = fw ? av.out_begin : av.in_begin;
         const int* arcs = fw ? av.out_arcs : av.in_arcs;
-        return [begin, arcs](int v) {
+        return [begin, arcs, n = av.n_vertices](int v) {
+            assert(v >= 0 && v < n);
+            (void)n;
             const auto b = static_cast<std::size_t>(begin[v]);
             const auto e = static_cast<std::size_t>(begin[v + 1]);
             return std::span<const int>(arcs + b, e - b);
