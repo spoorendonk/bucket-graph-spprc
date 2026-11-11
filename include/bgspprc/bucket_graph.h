@@ -4150,6 +4150,9 @@ private:
             // would leave one side's SCC traversal past the region the other
             // side is trying to newly cover, dropping concatenation paths.
             // Between-solve balancing is handled by adjust_midpoint().
+            // Each side's compact_labels then dispatches a nested parallel_for:
+            // StdThreadExecutor fans it out, ThreadPoolExecutor runs it inline,
+            // so there compaction uses at most these 2 threads (#136).
             SolveTimings::Duration bw_duration{};
             executor_.parallel_invoke(
                 [this, &bw_duration]() {

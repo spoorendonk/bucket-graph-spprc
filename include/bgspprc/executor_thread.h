@@ -170,6 +170,12 @@ inline ThreadPool& global_thread_pool() {
 /// parallel_for distributes work across pool threads + the calling thread.
 /// parallel_invoke runs two tasks concurrently (one on pool, one on caller).
 ///
+/// Nested dispatch fans out: a waiter runs queued tasks, so a parallel_for
+/// inside a parallel_invoke task uses the whole pool. ThreadPoolExecutor
+/// (executor.h) differs: one dispatch at a time per pool, a nested one inline.
+/// So its parallel bidir solve compacts labels on at most 2 threads, where
+/// this executor uses all of them. Results are the same; only speed differs.
+///
 /// Exception safety: if a pool task throws, the exception is captured and
 /// rethrown on the calling thread after all tasks complete.
 struct StdThreadExecutor {

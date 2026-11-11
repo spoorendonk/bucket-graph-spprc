@@ -180,6 +180,25 @@ as labelling would, under the current reduced costs and resource states: an
 `optional` of its reduced and original cost, empty when the walk is
 infeasible. Use it to reprice a column the solver did not generate.
 
+### Executors
+
+`Solver` and `BucketGraph` take an executor as their second template argument
+(default `SequentialExecutor`). The two threaded ones differ on a nested
+dispatch, which the parallel bidirectional solve makes: it runs
+`parallel_invoke(bw, fw)`, and each side's label compaction calls
+`parallel_for` on the same executor.
+
+- `ThreadPoolExecutor` (`executor.h`, over a caller-owned `ThreadPool`) runs
+  one dispatch at a time per pool; a nested one runs inline on its calling
+  thread. So in a parallel bidir solve, compaction uses at most 2 threads
+  however large the pool.
+- `StdThreadExecutor` (`executor_thread.h`, a process-wide pool) lets a
+  waiting thread run queued tasks, so a nested `parallel_for` fans out across
+  the whole pool.
+
+Results are identical; only speed differs, so `StdThreadExecutor` timings
+overstate what a `ThreadPoolExecutor` of the same size gives a bidir solve.
+
 ## Custom Resources
 
 Implement the `Resource` concept to define custom resource types:
