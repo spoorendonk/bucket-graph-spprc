@@ -35,7 +35,7 @@ benchmarks/fetch_instances.sh
 Sample output:
 
 ```
-bgspprc 0.1.0 (v0.1.0-0-g2eb4a85)
+bgspprc 0.2.0 (v0.2.0-0-g32a8c1c)
 bgspprc: executor=StdThread  bidir=parallel
 A-n54-k7-149                    sppcc  n=55    arcs=2862    theta=-1e-06  cost=-56718.000  paths=1    26.5ms
   0 34 41 25 47 25 47 25 41 34 54
@@ -343,8 +343,8 @@ The paper is **arXiv:2606.30847**, <https://arxiv.org/abs/2606.30847>.
 
 The archived code is on Zenodo. The concept DOI
 [10.5281/zenodo.20819208](https://doi.org/10.5281/zenodo.20819208) always resolves to the latest version;
-v0.1.0 is [10.5281/zenodo.20819209](https://doi.org/10.5281/zenodo.20819209), and v0.2.0's version DOI is
-added here once Zenodo mints it from the release. Cite a version DOI when
+v0.1.0 is [10.5281/zenodo.20819209](https://doi.org/10.5281/zenodo.20819209) and v0.2.0 is
+[10.5281/zenodo.24137027](https://doi.org/10.5281/zenodo.24137027). Cite a version DOI when
 reproducibility matters — it pins one tree and one set of benchmark results:
 
 ```bibtex
@@ -354,8 +354,8 @@ reproducibility matters — it pins one tree and one set of benchmark results:
   author    = {Spoorendonk, Simon},
   year      = {2026},
   version   = {0.2.0},
-  doi       = {10.5281/zenodo.20819208},
-  url       = {https://doi.org/10.5281/zenodo.20819208}
+  doi       = {10.5281/zenodo.24137027},
+  url       = {https://doi.org/10.5281/zenodo.24137027}
 }
 ```
 

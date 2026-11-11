@@ -14,12 +14,11 @@ repository-code: "https://github.com/spoorendonk/bucket-graph-spprc"
 url: "https://github.com/spoorendonk/bucket-graph-spprc"
 date-released: "2026-11-11"
 license: MIT
-# The version DOI belongs here: it pins this exact release, so cite it for
+# The version DOI of v0.2.0: it pins this exact release, so cite it for
 # reproducibility. Zenodo mints it only when the GitHub Release is published,
-# so a release's tagged commit holds the concept DOI here, which resolves to
-# the latest version, not this one. The commit after the tag puts in the
-# version DOI.
-doi: 10.5281/zenodo.20819208
+# so the tagged commit v0.2.0 held the concept DOI here; this commit, after
+# the tag, puts in the version DOI. The next release repeats that.
+doi: 10.5281/zenodo.24137027
 identifiers:
   - type: doi
     value: 10.5281/zenodo.20819208
@@ -29,6 +28,9 @@ identifiers:
   - type: doi
     value: 10.5281/zenodo.20819209
     description: Version DOI of v0.1.0.
+  - type: doi
+    value: 10.5281/zenodo.24137027
+    description: Version DOI of v0.2.0.
 preferred-citation:
   type: article
   title: "bucket-graph-spprc: an extensible C++ library for the shortest path problem with resource constraints"
