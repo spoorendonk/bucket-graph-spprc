@@ -175,8 +175,11 @@ The old hooks also auto-formatted and re-staged (with shfmt and ruff too),
 applied safe clang-tidy fixes and ran the suite at commit, and ran
 shellcheck, ruff complexity and mypy as push warnings; those are gone.
 
-On a shared machine, pin the local CI to the job budget: `git config
-hooks.localCiCpus 0-3` makes the fences' `-j"$(nproc)"` see four CPUs.
+On a host with wcp, pre-push takes its CPUs and jobs from the host's build
+budget (`wcp build`), and `wcp doctor` shows that budget. Without wcp, or to
+narrow it for one clone, `git config hooks.localCiCpus 0-3` makes the fences'
+`-j"$(nproc)"` see four CPUs; inside a wcp admission that narrows the CPUs wcp
+placed the run on, so set it per clone only to differ from the host.
 
 Disabling a check is a decision, not a way out of a finding. `.clang-tidy`
 records a reason per disabled check, and there are only two acceptable ones:
@@ -190,9 +193,11 @@ on every machine and in every repo; a bump is made for all of them together).
 `.clang-format-version` pins it and `requirements-dev.txt` installs it from
 PyPI: `uv venv && uv pip install -r requirements-dev.txt`. The hooks and
 `cmake/Lint.cmake` look in `.venv/bin` (the worktree's, then the main
-checkout's) before PATH. pre-commit skips the format check, loudly, for a
-clang-format of another major; configure warns for another major and drops
-that tool's lint tests, so a push from such a machine is not linted.
+checkout's) before PATH. The version must match the pin in every component
+it names (22.1.8 exactly, not 22.1.7): pre-commit skips the format check,
+loudly, for any other clang-format, pre-push skips each `clang_tidy:` test
+run by another clang-tidy, and configure warns and drops that tool's lint
+tests, so a push from such a machine is not linted.
 
 There are deliberately **no Claude Code hooks**. The rules they used to enforce
 are now conventions, stated here:

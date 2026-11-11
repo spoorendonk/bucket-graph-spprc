@@ -38,29 +38,30 @@ find_program(BGSPPRC_CLANG_TIDY clang-tidy HINTS ${_bgspprc_lint_hint} NO_CACHE)
 
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/.clang-format-version" _bgspprc_pin LIMIT_COUNT 1)
 string(STRIP "${_bgspprc_pin}" _bgspprc_pin)
-string(REGEX MATCH "^[0-9]+" _bgspprc_pin_major "${_bgspprc_pin}")
-if(NOT _bgspprc_pin_major)
-    message(FATAL_ERROR ".clang-format-version does not begin with a version (\"${_bgspprc_pin}\")")
+# The leading N[.N...] of the pin, matched in as many components as it names
+# (`22` takes any 22.x, `22.1.8` only 22.1.8): the rule pre-commit and
+# pre-push apply, so configure registers a lint test only for a tool the hooks
+# would run.
+string(REGEX MATCH "^[0-9]+(\\.[0-9]+)*" _bgspprc_pin "${_bgspprc_pin}")
+if(NOT _bgspprc_pin)
+    message(FATAL_ERROR ".clang-format-version does not begin with a version")
 endif()
+string(REPLACE "." "\\." _bgspprc_pin_re "${_bgspprc_pin}")
 
-# Clears <var> when the tool's major version is not the pinned one, with a
-# warning naming the fix.
+# Clears <var> when the tool's version is not the pinned one, with a warning
+# naming the fix.
 function(_bgspprc_lint_require_pin var)
     if(NOT ${var})
         return()
     endif()
     execute_process(COMMAND ${${var}} --version
         OUTPUT_VARIABLE _v ERROR_QUIET RESULT_VARIABLE _rc)
-    string(REGEX MATCH "version ([0-9]+)\\." _m "${_v}")
-    if(NOT _rc EQUAL 0 OR NOT CMAKE_MATCH_1 STREQUAL _bgspprc_pin_major)
+    if(NOT _rc EQUAL 0 OR NOT _v MATCHES "version ${_bgspprc_pin_re}([^.0-9]|\\.[0-9]|$)")
         string(STRIP "${_v}" _v)
         message(WARNING "${${var}} is not version ${_bgspprc_pin} (\"${_v}\"): "
                         "its lint tests are not registered. Install the pinned "
                         "tools with: uv venv && uv pip install -r requirements-dev.txt")
         set(${var} "" PARENT_SCOPE)
-    elseif(NOT _v MATCHES "version ${_bgspprc_pin}([^0-9]|$)")
-        message(WARNING "${${var}} is not exactly ${_bgspprc_pin} (\"${_v}\"); "
-                        "its lint tests run, but may differ from the group's.")
     endif()
 endfunction()
 _bgspprc_lint_require_pin(BGSPPRC_CLANG_FORMAT)
