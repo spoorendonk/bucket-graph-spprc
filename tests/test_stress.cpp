@@ -2301,10 +2301,16 @@ static std::vector<std::vector<JumpKey>> reference_jump_arcs(const BG& bg, const
     return out;
 }
 
+// Jump arcs checked, and the (bucket, arc) pairs whose front has two or more.
+struct JumpCount {
+    int arcs = 0;
+    int multi = 0;
+};
+
 template <typename BG>
-static int check_jump_arcs(const BG& bg, const ProblemView& pv, bool fw) {
+static JumpCount check_jump_arcs(const BG& bg, const ProblemView& pv, bool fw) {
     const auto want = reference_jump_arcs(bg, pv, fw);
-    int n = 0;
+    JumpCount n;
     for (int bi = 0; bi < bg.n_buckets(); ++bi) {
         CAPTURE(bi);
         std::vector<JumpKey> got;
@@ -2315,13 +2321,20 @@ static int check_jump_arcs(const BG& bg, const ProblemView& pv, bool fw) {
         }
         std::ranges::sort(got);
         CHECK(got == want[bi]);
-        n += static_cast<int>(got.size());
+        n.arcs += static_cast<int>(got.size());
+        for (size_t i = 1; i < got.size(); ++i) {
+            // got is sorted, so a run of one arc id is one front.
+            n.multi +=
+                (got[i][0] == got[i - 1][0] && (i == 1 || got[i - 2][0] != got[i][0])) ? 1 : 0;
+        }
     }
     return n;
 }
 
 TEST_CASE("jump arcs after elimination match their definition (#128)") {
     int jumps = 0;
+    // Fronts of two or more buckets exist only in 2D: count them per direction.
+    std::array<int, 2> multi_2d{};
     for (int n_main = 1; n_main <= 2; ++n_main) {
         for (int seed = 0; seed < 60; ++seed) {
             CAPTURE(n_main);
@@ -2359,14 +2372,22 @@ TEST_CASE("jump arcs after elimination match their definition (#128)") {
                 } else {
                     bg.eliminate_arcs(gap);
                 }
-                jumps += check_jump_arcs(bg, inst.pv, true);
-                if (bidir) {
-                    jumps += check_jump_arcs(bg, inst.pv, false);
+                for (bool fw : {true, false}) {
+                    if (!fw && !bidir) {
+                        continue;
+                    }
+                    const auto n = check_jump_arcs(bg, inst.pv, fw);
+                    jumps += n.arcs;
+                    if (n_main == 2) {
+                        multi_2d[fw ? 0 : 1] += n.multi;
+                    }
                 }
             }
         }
     }
     CHECK(jumps > 1000);
+    CHECK(multi_2d[0] > 0);
+    CHECK(multi_2d[1] > 0);
 }
 
 TEST_CASE("cost_of matches labelling with an R1C dual, through Solver") {
