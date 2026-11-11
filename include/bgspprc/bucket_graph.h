@@ -1371,114 +1371,130 @@ private:
         // Use precomputed adjacency lists
         const auto arcs_by_vertex = adjacency(dir);
 
-        struct Candidate {
-            int k0, k1, bi;
+        auto make_jump_arc = [&](int a, int jump_bucket) {
+            JumpArc ja;
+            ja.jump_bucket = jump_bucket;
+            ja.arc_id = a;
+            // fw: head vertex; bw: tail vertex
+            ja.to_vertex = (dir == Direction::Forward) ? pv_.arc_to[a] : pv_.arc_from[a];
+            ja.real_cost = pv_.arc_base_cost[a];
+            ja.cost = reduced_costs_ ? reduced_costs_[a] : ja.real_cost;
+            ja.resource[0] = pv_.arc_resource[0][a];
+            ja.resource[1] = (n_main_ >= 2) ? pv_.arc_resource[1][a] : 0.0;
+            return ja;
         };
 
         // Per-vertex loop: each vertex reads shared CSR (read-only) and writes
         // only to its own buckets' jump_arcs/bw_jump_arcs — no synchronization needed.
+        //
+        // For a bucket b = (k0, k1) lacking arc a, the jump targets are the
+        // component-wise minimal (fw) / maximal (bw) buckets b' ≻ b of the
+        // same vertex that hold a. Per row r only the holder with the smallest
+        // k1' >= k1 (fw) / largest k1' <= k1 (bw) can be on that front; call
+        // its column m(r, k1). Walking rows away from b, a row is on the front
+        // exactly when m(r, k1) improves on every row before it, so the front
+        // is the chain of "next improving row" links from b's own row, and it
+        // stops at m == k1, which no row can improve on. Per arc, m and the
+        // links take one pass over the vertex's buckets (a monotonic stack per
+        // column); each bucket then follows its chain, one step per jump arc
+        // built. This builds the same arcs in the same order (arcs in adjacency
+        // order, rows ascending fw / descending bw) as testing every holder
+        // against every bucket, which was quadratic in the buckets per vertex
+        // (#128).
         executor_.parallel_for(0, pv_.n_vertices, [&](int v) {
             if (arcs_by_vertex(v).empty()) {
                 return;
             }
 
             auto [vstart, vend] = vertex_bucket_range(v);
-            auto& nb_v = vertex_n_buckets_[v];
-            int n_buckets_v = vend - vstart;
-            if (n_buckets_v <= 1) {
+            const int n_bv = vend - vstart;
+            if (n_bv <= 1) {
                 return;
             }
+            const int n0 = vertex_n_buckets_[v][0];
+            const int n1 = vertex_n_buckets_[v][1];
+            const bool fw = dir == Direction::Forward;
+            // No holder in the row: a column no real one can beat or tie.
+            const int none = fw ? n1 : -1;
 
-            std::vector<Candidate> candidates;
+            // m[r * n1 + k1] = m(r, k1); next[r * n1 + k1] = the nearest row
+            // after r (fw: above, bw: below) with a better m(·, k1), or -1.
+            std::vector<int> m(n_bv);
+            std::vector<int> next(n_bv);
+            std::vector<int> stack;
+            stack.reserve(n0);
 
-            for (int bi = vstart; bi < vend; ++bi) {
-                if (fixed_.test(bi)) {
-                    continue;
+            for (int a : arcs_by_vertex(v)) {
+                // Holders of arc a at this vertex, sorted by bucket index.
+                const int* csr_begin = scratch_arc_bucket_data_.data() + scratch_arc_offset_[a];
+                const int* csr_end = scratch_arc_bucket_data_.data() + scratch_arc_offset_[a + 1];
+                const int* lo = std::lower_bound(csr_begin, csr_end, vstart);
+                const int* hi = std::lower_bound(lo, csr_end, vend);
+                if (lo == hi) {
+                    continue;  // no bucket keeps a: nothing to jump to
                 }
-                int k0 = (bi - vstart) / nb_v[1];
-                int k1 = (bi - vstart) % nb_v[1];
 
-                for (int a : arcs_by_vertex(v)) {
-                    // CSR range of buckets that have arc a (sorted by bucket index)
-                    const int* csr_begin = scratch_arc_bucket_data_.data() + scratch_arc_offset_[a];
-                    const int* csr_end =
-                        scratch_arc_bucket_data_.data() + scratch_arc_offset_[a + 1];
-
-                    // Does bucket bi already have a bucket arc for arc a?
-                    if (std::binary_search(csr_begin, csr_end, bi)) {
-                        continue;
-                    }
-
-                    // Find B̄ = {b' at same vertex : b' ≻ b AND b' has arc a}
-                    // Forward: b' ≻ b means k' component-wise > k (jump UP)
-                    // Backward: b' ≻ b means k' component-wise < k (jump DOWN)
-                    candidates.clear();
-
-                    for (const int* p = csr_begin; p != csr_end; ++p) {
-                        int bi2 = *p;
-                        if (bi2 < vstart || bi2 >= vend || bi2 == bi) {
-                            continue;
-                        }
-                        int k0_2 = (bi2 - vstart) / nb_v[1];
-                        int k1_2 = (bi2 - vstart) % nb_v[1];
-
-                        bool succeeds;
-                        if (dir == Direction::Forward) {
-                            succeeds = (k0_2 >= k0 && k1_2 >= k1 && (k0_2 > k0 || k1_2 > k1));
-                        } else {
-                            succeeds = (k0_2 <= k0 && k1_2 <= k1 && (k0_2 < k0 || k1_2 < k1));
-                        }
-                        if (!succeeds) {
-                            continue;
-                        }
-
-                        candidates.push_back({k0_2, k1_2, bi2});
-                    }
-
-                    // Filter to Pareto front: component-wise minimal (fw) / maximal (bw)
-                    // O(n log n) sort+sweep instead of O(n²) pairwise check
-                    if (dir == Direction::Forward) {
-                        std::sort(candidates.begin(), candidates.end(),
-                                  [](const auto& lhs, const auto& rhs) {
-                                      return lhs.k0 < rhs.k0 ||
-                                             (lhs.k0 == rhs.k0 && lhs.k1 < rhs.k1);
-                                  });
-                        int min_k1 = std::numeric_limits<int>::max();
-                        for (auto& c : candidates) {
-                            if (c.k1 < min_k1) {
-                                JumpArc ja;
-                                ja.jump_bucket = c.bi;
-                                ja.arc_id = a;
-                                ja.to_vertex = pv_.arc_to[a];  // fw: head vertex
-                                ja.real_cost = pv_.arc_base_cost[a];
-                                ja.cost = reduced_costs_ ? reduced_costs_[a] : ja.real_cost;
-                                ja.resource[0] = pv_.arc_resource[0][a];
-                                ja.resource[1] = (n_main_ >= 2) ? pv_.arc_resource[1][a] : 0.0;
-                                buckets_[bi].jump_arcs.push_back(ja);
-                                min_k1 = c.k1;
+                // m(r, ·): fw sweeps each row right to left, carrying the
+                // nearest holder at or right of k1; bw sweeps left to right.
+                std::ranges::fill(m, none);
+                for (const int* p = lo; p != hi; ++p) {
+                    m[*p - vstart] = (*p - vstart) % n1;
+                }
+                for (int r = 0; r < n0; ++r) {
+                    int* row = m.data() + (static_cast<std::ptrdiff_t>(r) * n1);
+                    if (fw) {
+                        for (int k1 = n1 - 2; k1 >= 0; --k1) {
+                            if (row[k1] == none) {
+                                row[k1] = row[k1 + 1];
                             }
                         }
                     } else {
-                        std::sort(candidates.begin(), candidates.end(),
-                                  [](const auto& lhs, const auto& rhs) {
-                                      return lhs.k0 > rhs.k0 ||
-                                             (lhs.k0 == rhs.k0 && lhs.k1 > rhs.k1);
-                                  });
-                        int max_k1 = std::numeric_limits<int>::min();
-                        for (auto& c : candidates) {
-                            if (c.k1 > max_k1) {
-                                JumpArc ja;
-                                ja.jump_bucket = c.bi;
-                                ja.arc_id = a;
-                                ja.to_vertex = pv_.arc_from[a];  // bw: tail vertex
-                                ja.real_cost = pv_.arc_base_cost[a];
-                                ja.cost = reduced_costs_ ? reduced_costs_[a] : ja.real_cost;
-                                ja.resource[0] = pv_.arc_resource[0][a];
-                                ja.resource[1] = (n_main_ >= 2) ? pv_.arc_resource[1][a] : 0.0;
-                                buckets_[bi].bw_jump_arcs.push_back(ja);
-                                max_k1 = c.k1;
+                        for (int k1 = 1; k1 < n1; ++k1) {
+                            if (row[k1] == none) {
+                                row[k1] = row[k1 - 1];
                             }
                         }
+                    }
+                }
+
+                // next(r, k1): per column, rows from the far end with a stack of
+                // rows whose m strictly improves toward the far end.
+                auto better = [fw](int x, int y) { return fw ? x < y : x > y; };
+                for (int k1 = 0; k1 < n1; ++k1) {
+                    stack.clear();
+                    for (int i = 0; i < n0; ++i) {
+                        const int r = fw ? n0 - 1 - i : i;
+                        const int mr = m[(r * n1) + k1];
+                        while (!stack.empty() && !better(m[(stack.back() * n1) + k1], mr)) {
+                            stack.pop_back();
+                        }
+                        next[(r * n1) + k1] = stack.empty() ? -1 : stack.back();
+                        stack.push_back(r);
+                    }
+                }
+
+                for (int bi = vstart; bi < vend; ++bi) {
+                    if (fixed_.test(bi)) {
+                        continue;
+                    }
+                    const int k0 = (bi - vstart) / n1;
+                    const int k1 = (bi - vstart) % n1;
+                    int r = k0;
+                    int mr = m[bi - vstart];
+                    if (mr == k1) {
+                        continue;  // b keeps arc a
+                    }
+                    auto& out = fw ? buckets_[bi].jump_arcs : buckets_[bi].bw_jump_arcs;
+                    if (mr == none) {
+                        r = next[bi - vstart];  // b's row has no candidate
+                    }
+                    while (r >= 0) {
+                        mr = m[(r * n1) + k1];
+                        out.push_back(make_jump_arc(a, vstart + (r * n1) + mr));
+                        if (mr == k1) {
+                            break;
+                        }
+                        r = next[(r * n1) + k1];
                     }
                 }
             }

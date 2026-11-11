@@ -2231,6 +2231,144 @@ TEST_CASE("cost_of matches labelling on random instances with ng-paths") {
     CHECK(checked > 1000);
 }
 
+// The jump arcs of BG2021 §4.1 straight from the definition, as
+// obtain_jump_arcs built them before #128: for each unfixed bucket b and each
+// arc a at its vertex that b lacks, the component-wise minimal (fw) / maximal
+// (bw) buckets b' ≻ b of the same vertex that hold a. Entries are
+// (arc_id, jump_bucket, to_vertex), sorted per bucket.
+using JumpKey = std::array<int, 3>;
+
+template <typename BG>
+static std::vector<std::vector<JumpKey>> reference_jump_arcs(const BG& bg, const ProblemView& pv,
+                                                             bool fw) {
+    const int nb = bg.n_buckets();
+    std::vector<std::vector<JumpKey>> out(nb);
+    // Buckets of a vertex are contiguous and row-major in (k0, k1).
+    std::vector<int> start(pv.n_vertices, -1);
+    std::vector<int> count(pv.n_vertices, 0);
+    std::vector<int> n1(pv.n_vertices, 0);
+    for (int bi = 0; bi < nb; ++bi) {
+        const auto& b = bg.bucket(bi);
+        if (start[b.vertex] < 0) {
+            start[b.vertex] = bi;
+        }
+        ++count[b.vertex];
+        if (b.lb[0] == bg.bucket(start[b.vertex]).lb[0]) {
+            ++n1[b.vertex];
+        }
+    }
+    auto holds = [&](int bi, int a) {
+        const auto& arcs = fw ? bg.bucket(bi).bucket_arcs : bg.bucket(bi).bw_bucket_arcs;
+        return std::ranges::contains(arcs, a, &BucketArc::arc_id);
+    };
+    for (int bi = 0; bi < nb; ++bi) {
+        const int v = bg.bucket(bi).vertex;
+        if (bg.is_bucket_fixed(bi) || count[v] <= 1) {
+            continue;
+        }
+        const int k0 = (bi - start[v]) / n1[v];
+        const int k1 = (bi - start[v]) % n1[v];
+        for (int a = 0; a < pv.n_arcs; ++a) {
+            if ((fw ? pv.arc_from[a] : pv.arc_to[a]) != v || holds(bi, a)) {
+                continue;
+            }
+            std::vector<std::array<int, 2>> succ;
+            std::vector<int> succ_bi;
+            for (int b2 = start[v]; b2 < start[v] + count[v]; ++b2) {
+                const int j0 = (b2 - start[v]) / n1[v];
+                const int j1 = (b2 - start[v]) % n1[v];
+                const bool after = fw ? (j0 >= k0 && j1 >= k1 && (j0 > k0 || j1 > k1))
+                                      : (j0 <= k0 && j1 <= k1 && (j0 < k0 || j1 < k1));
+                if (after && holds(b2, a)) {
+                    succ.push_back({j0, j1});
+                    succ_bi.push_back(b2);
+                }
+            }
+            for (size_t i = 0; i < succ.size(); ++i) {
+                bool dominated = false;
+                for (size_t j = 0; j < succ.size() && !dominated; ++j) {
+                    dominated =
+                        j != i && (fw ? (succ[j][0] <= succ[i][0] && succ[j][1] <= succ[i][1])
+                                      : (succ[j][0] >= succ[i][0] && succ[j][1] >= succ[i][1]));
+                }
+                if (!dominated) {
+                    out[bi].push_back({a, succ_bi[i], fw ? pv.arc_to[a] : pv.arc_from[a]});
+                }
+            }
+        }
+        std::ranges::sort(out[bi]);
+    }
+    return out;
+}
+
+template <typename BG>
+static int check_jump_arcs(const BG& bg, const ProblemView& pv, bool fw) {
+    const auto want = reference_jump_arcs(bg, pv, fw);
+    int n = 0;
+    for (int bi = 0; bi < bg.n_buckets(); ++bi) {
+        CAPTURE(bi);
+        std::vector<JumpKey> got;
+        for (const auto& ja : fw ? bg.bucket(bi).jump_arcs : bg.bucket(bi).bw_jump_arcs) {
+            got.push_back({ja.arc_id, ja.jump_bucket, ja.to_vertex});
+            CHECK(ja.real_cost == pv.arc_base_cost[ja.arc_id]);
+            CHECK(ja.resource[0] == pv.arc_resource[0][ja.arc_id]);
+        }
+        std::ranges::sort(got);
+        CHECK(got == want[bi]);
+        n += static_cast<int>(got.size());
+    }
+    return n;
+}
+
+TEST_CASE("jump arcs after elimination match their definition (#128)") {
+    int jumps = 0;
+    for (int n_main = 1; n_main <= 2; ++n_main) {
+        for (int seed = 0; seed < 60; ++seed) {
+            CAPTURE(n_main);
+            CAPTURE(seed);
+            RandomTwInstance inst(seed, n_main);
+            const int n = inst.pv.n_vertices;
+            std::mt19937 rng(seed);
+            std::uniform_real_distribution<double> U(0, 1);
+            std::vector<double> dual(n, 0.0);
+            for (int v = 1; v < n - 1; ++v) {
+                dual[v] = U(rng) * 15;
+            }
+            std::vector<double> reduced(inst.cost_v);
+            for (int a = 0; a < inst.pv.n_arcs; ++a) {
+                reduced[a] -= dual[inst.to_v[a]];
+            }
+            for (int mode = 0; mode < 3; ++mode) {
+                CAPTURE(mode);
+                const bool bidir = mode > 0;
+                BucketGraph<ResourcePack<>> bg(inst.pv, ResourcePack<>{},
+                                               {.bucket_steps = {1.5, n_main == 2 ? 1.0 : 0.0},
+                                                .theta = 1e9,
+                                                .bidirectional = bidir,
+                                                .stage = Stage::Exact});
+                bg.build();
+                bg.update_arc_costs(reduced.data());
+                auto paths = bg.solve();
+                if (paths.empty()) {
+                    continue;
+                }
+                const double gap = 2.0 + U(rng) * 6.0;
+                bg.fix_buckets(gap);
+                if (mode == 2) {
+                    bg.eliminate_arcs_label_based(gap);
+                } else {
+                    bg.eliminate_arcs(gap);
+                }
+                jumps += check_jump_arcs(bg, inst.pv, true);
+                if (bidir) {
+                    jumps += check_jump_arcs(bg, inst.pv, false);
+                }
+            }
+        }
+    }
+    CHECK(jumps > 1000);
+}
+
 TEST_CASE("cost_of matches labelling with an R1C dual, through Solver") {
     constexpr int N = 6;
     int from[] = {0, 0, 1, 2, 3, 4, 1, 2};
