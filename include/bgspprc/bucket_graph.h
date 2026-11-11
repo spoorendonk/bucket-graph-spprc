@@ -92,6 +92,89 @@ struct R1CResourceIndex<ResourcePack<Rs...>> {
     static constexpr bool has_r1c = value < sizeof...(Rs);
 };
 
+/// The topology BucketGraph reads: an `AdjacencyView` borrowed from the
+/// caller, or a CSR built from the view and owned here (#133). Either way the
+/// engine reads `view()`. A move of an owning one points its view at the
+/// arrays it took over; copies, which would share them, are deleted.
+class EngineAdjacency {
+public:
+    EngineAdjacency() = default;
+
+    /// Build and own the CSR of `pv`'s arcs.
+    explicit EngineAdjacency(const ProblemView& pv) : owns_(true) {
+        owned_.build(pv);
+        view_ = owned_.view();
+    }
+
+    /// Borrow `adj`, which must stay alive and unchanged while this is used.
+    /// Throws std::invalid_argument when it does not match `pv`.
+    EngineAdjacency(AdjacencyView adj, const ProblemView& pv) : view_(adj) {
+        if (adj.n_vertices != pv.n_vertices || adj.n_arcs != pv.n_arcs) {
+            throw std::invalid_argument(
+                "BucketGraph: the adjacency's vertex and arc counts differ from the view's");
+        }
+        if (adj.out_begin == nullptr || adj.in_begin == nullptr ||
+            (adj.n_arcs > 0 && (adj.out_arcs == nullptr || adj.in_arcs == nullptr))) {
+            throw std::invalid_argument("BucketGraph: the adjacency has null arrays");
+        }
+        assert(matches(pv) && "adjacency does not list the view's arcs");
+    }
+
+    EngineAdjacency(const EngineAdjacency&) = delete;
+    EngineAdjacency& operator=(const EngineAdjacency&) = delete;
+    EngineAdjacency(EngineAdjacency&& o) noexcept
+        : owned_(std::move(o.owned_)), owns_(o.owns_), view_(o.owns_ ? owned_.view() : o.view_) {}
+    EngineAdjacency& operator=(EngineAdjacency&& o) noexcept {
+        if (this != &o) {
+            owned_ = std::move(o.owned_);
+            owns_ = o.owns_;
+            view_ = owns_ ? owned_.view() : o.view_;
+        }
+        return *this;
+    }
+    ~EngineAdjacency() = default;
+
+    [[nodiscard]] const AdjacencyView& view() const noexcept { return view_; }
+    [[nodiscard]] bool owns() const noexcept { return owns_; }
+
+private:
+    /// Every arc once in outgoing(arc_from[a]) and once in incoming(arc_to[a]),
+    /// the `CsrAdjacency` invariant. Debug builds only: O(n_vertices + n_arcs).
+    [[nodiscard]] bool matches(const ProblemView& pv) const {
+        if (view_.out_begin[0] != 0 || view_.in_begin[0] != 0 ||
+            view_.out_begin[pv.n_vertices] != pv.n_arcs ||
+            view_.in_begin[pv.n_vertices] != pv.n_arcs) {
+            return false;
+        }
+        std::vector<int> seen_out(static_cast<std::size_t>(pv.n_arcs), 0);
+        std::vector<int> seen_in(static_cast<std::size_t>(pv.n_arcs), 0);
+        for (int v = 0; v < pv.n_vertices; ++v) {
+            if (view_.out_begin[v] > view_.out_begin[v + 1] ||
+                view_.in_begin[v] > view_.in_begin[v + 1]) {
+                return false;
+            }
+            for (int a : view_.outgoing(v)) {
+                if (a < 0 || a >= pv.n_arcs || pv.arc_from[a] != v) {
+                    return false;
+                }
+                ++seen_out[static_cast<std::size_t>(a)];
+            }
+            for (int a : view_.incoming(v)) {
+                if (a < 0 || a >= pv.n_arcs || pv.arc_to[a] != v) {
+                    return false;
+                }
+                ++seen_in[static_cast<std::size_t>(a)];
+            }
+        }
+        return std::ranges::all_of(seen_out, [](int c) { return c == 1; }) &&
+               std::ranges::all_of(seen_in, [](int c) { return c == 1; });
+    }
+
+    CsrAdjacency owned_;
+    bool owns_ = false;
+    AdjacencyView view_;
+};
+
 }  // namespace detail
 
 /// Phase timing breakdown from a single solve() call.
@@ -154,8 +237,31 @@ public:
     // max_scc_labels: without dominance it needs more.
     static constexpr int kEnumSccLabelCap = 2000000;
 
+    /// Standalone: builds and owns the CSR adjacency of `pv`'s arcs.
     BucketGraph(const ProblemView& pv, Pack pack, Options opts = {}, Exec executor = {})
         : pv_(pv), pack_(std::move(pack)), opts_(opts), executor_(std::move(executor)) {
+        check_options_and_view();
+        adj_ = detail::EngineAdjacency(pv_);
+        init();
+    }
+
+    /// Borrows `adj`, the CSR adjacency of `pv`'s arcs, and builds none: it
+    /// must outlive this graph, unchanged. Its arc order within a vertex may
+    /// differ from arc-index order. Throws std::invalid_argument when its
+    /// vertex or arc count differs from the view's.
+    BucketGraph(const ProblemView& pv, AdjacencyView adj, Pack pack, Options opts = {},
+                Exec executor = {})
+        : pv_(pv), pack_(std::move(pack)), opts_(opts), executor_(std::move(executor)) {
+        check_options_and_view();
+        adj_ = detail::EngineAdjacency(adj, pv_);
+        init();
+    }
+
+    /// Whether this graph built its own adjacency rather than borrowing one.
+    [[nodiscard]] bool owns_adjacency() const noexcept { return adj_.owns(); }
+
+private:
+    void check_options_and_view() {
         // Symmetric mode is the depot convention: single depot tours from a
         // source that is also the sink (#126).
         if (opts_.symmetric && pv_.source != pv_.sink) {
@@ -169,7 +275,9 @@ public:
             }
         }
         check_view(pv_);
-        adj_.build(pv_);
+    }
+
+    void init() {
         shared_depot_ = pv_.source == pv_.sink ? pv_.source : -1;
         n_main_ = std::min(pv_.n_main_resources, 2);
         assert(opts_.xi > 0.0 && std::isfinite(opts_.xi) && "xi must be positive and finite");
@@ -192,6 +300,7 @@ public:
         }
     }
 
+public:
     /// Build the bucket graph structure.
     void build() {
         build_buckets();
@@ -866,6 +975,20 @@ private:
         return opts_.bucket_steps;
     }
 
+    /// Arcs by vertex in labeling direction `dir`: `f(v)` spans the arcs
+    /// leaving v (Forward) or entering it (Backward).
+    [[nodiscard]] auto adjacency(Direction dir) const noexcept {
+        const AdjacencyView& av = adj_.view();
+        const bool fw = dir == Direction::Forward;
+        const int* begin = fw ? av.out_begin : av.in_begin;
+        const int* arcs = fw ? av.out_arcs : av.in_arcs;
+        return [begin, arcs](int v) {
+            const auto b = static_cast<std::size_t>(begin[v]);
+            const auto e = static_cast<std::size_t>(begin[v + 1]);
+            return std::span<const int>(arcs + b, e - b);
+        };
+    }
+
     /// The grid reads its main resources from the view unconditionally;
     /// resources past them are the pack's (SideResources), never read here.
     static void check_view(const ProblemView& pv) {
@@ -966,7 +1089,7 @@ private:
 
         // Outer loop over buckets: each bucket independently scans arcs at its
         // vertex, making the iteration data-race-free and parallelizable.
-        const auto& arcs_by_vertex = (dir == Direction::Forward) ? adj_.outgoing : adj_.incoming;
+        const auto arcs_by_vertex = adjacency(dir);
 
         executor_.parallel_for(0, nb, [&](int bi) {
             auto& b = buckets_[bi];
@@ -991,7 +1114,7 @@ private:
 
             // Count feasible arcs for this bucket, then reserve and fill.
             int count = 0;
-            for (int a : arcs_by_vertex[v]) {
+            for (int a : arcs_by_vertex(v)) {
                 if (off_path(a)) {
                     continue;
                 }
@@ -1022,7 +1145,7 @@ private:
             ba_vec.reserve(count);
 
             // Fill: same iteration, now constructing BucketArcs.
-            for (int a : arcs_by_vertex[v]) {
+            for (int a : arcs_by_vertex(v)) {
                 if (off_path(a)) {
                     continue;
                 }
@@ -1228,7 +1351,7 @@ private:
         }
 
         // Use precomputed adjacency lists
-        const auto& arcs_by_vertex = (dir == Direction::Forward) ? adj_.outgoing : adj_.incoming;
+        const auto arcs_by_vertex = adjacency(dir);
 
         struct Candidate {
             int k0, k1, bi;
@@ -1237,7 +1360,7 @@ private:
         // Per-vertex loop: each vertex reads shared CSR (read-only) and writes
         // only to its own buckets' jump_arcs/bw_jump_arcs — no synchronization needed.
         executor_.parallel_for(0, pv_.n_vertices, [&](int v) {
-            if (arcs_by_vertex[v].empty()) {
+            if (arcs_by_vertex(v).empty()) {
                 return;
             }
 
@@ -1257,7 +1380,7 @@ private:
                 int k0 = (bi - vstart) / nb_v[1];
                 int k1 = (bi - vstart) % nb_v[1];
 
-                for (int a : arcs_by_vertex[v]) {
+                for (int a : arcs_by_vertex(v)) {
                     // CSR range of buckets that have arc a (sorted by bucket index)
                     const int* csr_begin = scratch_arc_bucket_data_.data() + scratch_arc_offset_[a];
                     const int* csr_end =
@@ -3256,7 +3379,7 @@ private:
             return true;
         }
 
-        return std::ranges::any_of(adj_.outgoing[v], [&](int arc_id) {
+        return std::ranges::any_of(adj_.view().outgoing(v), [&](int arc_id) {
             double arc_cost = reduced_costs_ ? reduced_costs_[arc_id] : pv_.arc_base_cost[arc_id];
             double base = L->cost + arc_cost;
             int j = pv_.arc_to[arc_id];
@@ -3479,18 +3602,19 @@ private:
         int n_words = (nb + 63) / 64;
 
         // Use adjacency lists and compute arc_id → local index mapping
-        const auto& arcs_by_vertex = (dir == Direction::Forward) ? adj_.outgoing : adj_.incoming;
+        const auto arcs_by_vertex = adjacency(dir);
         scratch_arc_local_.resize(pv_.n_arcs);
         for (int v = 0; v < pv_.n_vertices; ++v) {
-            for (int i = 0; i < static_cast<int>(arcs_by_vertex[v].size()); ++i) {
-                scratch_arc_local_[arcs_by_vertex[v][i]] = i;
+            const auto arcs = arcs_by_vertex(v);
+            for (int i = 0; i < static_cast<int>(arcs.size()); ++i) {
+                scratch_arc_local_[arcs[i]] = i;
             }
         }
 
         // Reusable flat buffer for B̄ bitsets — sized to max across all vertices
         int max_flat_size = 0;
         for (int v = 0; v < pv_.n_vertices; ++v) {
-            const auto& arcs_v = arcs_by_vertex[v];
+            const auto arcs_v = arcs_by_vertex(v);
             if (arcs_v.empty()) {
                 continue;
             }
@@ -3504,7 +3628,7 @@ private:
         }
 
         for (int v = 0; v < pv_.n_vertices; ++v) {
-            const auto& arcs_from_v = arcs_by_vertex[v];
+            const auto arcs_from_v = arcs_by_vertex(v);
             if (arcs_from_v.empty()) {
                 continue;
             }
@@ -4626,7 +4750,7 @@ private:
     Pack pack_;
     Options opts_;
     [[no_unique_address]] Exec executor_;
-    Adjacency adj_;
+    detail::EngineAdjacency adj_;
     int n_main_ = 1;
     // The depot when the source is also the sink (#110), else -1: read by
     // dominates() on every call, so kept here rather than behind pv_ (#130).

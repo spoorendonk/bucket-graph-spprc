@@ -35,25 +35,25 @@ public:
         int max_scc_labels = 500000;  // see BucketGraph::Options
     };
 
+    /// Standalone: the bucket graph builds and owns the CSR adjacency.
     Solver(const ProblemView& problem, Pack resources, Options opts = {}, Exec executor = {})
         : pv_(problem),
           pack_(std::move(resources)),
           opts_(opts),
-          bg_(pv_, pack_,
-              typename BucketGraph<Pack, Exec>::Options{
-                  .bucket_steps = opts_.bucket_steps,
-                  .xi = opts_.xi,
-                  .max_paths = opts_.max_paths,
-                  .theta = opts_.theta,
-                  .bidirectional = opts_.bidirectional,
-                  .symmetric = opts_.symmetric,
-                  .no_jump_arcs = opts_.no_jump_arcs,
-                  .parallel_bidir = opts_.parallel_bidir,
-                  .stage = Stage::Exact,
-                  .max_enum_labels = opts_.max_enum_labels,
-                  .max_scc_labels = opts_.max_scc_labels,
-              },
-              std::move(executor)) {}
+          bg_(pv_, pack_, graph_options(opts_), std::move(executor)) {}
+
+    /// Borrows `adjacency`, the CSR adjacency of `problem`'s arcs, and builds
+    /// none (#133): it must outlive the solver, unchanged. Throws
+    /// std::invalid_argument when its vertex or arc count differs from the view's.
+    Solver(const ProblemView& problem, AdjacencyView adjacency, Pack resources, Options opts = {},
+           Exec executor = {})
+        : pv_(problem),
+          pack_(std::move(resources)),
+          opts_(opts),
+          bg_(pv_, adjacency, pack_, graph_options(opts_), std::move(executor)) {}
+
+    /// Whether the bucket graph built its own adjacency rather than borrowing one.
+    [[nodiscard]] bool owns_adjacency() const noexcept { return bg_.owns_adjacency(); }
 
     /// Build bucket graph (call once, or after step size changes).
     void build() {
@@ -279,6 +279,22 @@ private:
             return true;
         }
         return false;
+    }
+
+    static BucketGraph<Pack, Exec>::Options graph_options(const Options& o) {
+        return {
+            .bucket_steps = o.bucket_steps,
+            .xi = o.xi,
+            .max_paths = o.max_paths,
+            .theta = o.theta,
+            .bidirectional = o.bidirectional,
+            .symmetric = o.symmetric,
+            .no_jump_arcs = o.no_jump_arcs,
+            .parallel_bidir = o.parallel_bidir,
+            .stage = Stage::Exact,
+            .max_enum_labels = o.max_enum_labels,
+            .max_scc_labels = o.max_scc_labels,
+        };
     }
 
     void update_stage(const std::vector<Path>& paths) {

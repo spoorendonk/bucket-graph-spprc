@@ -12,6 +12,8 @@
 #include <cmath>
 #include <doctest/doctest.h>
 #include <random>
+#include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 using namespace bgspprc;
@@ -2294,6 +2296,157 @@ TEST_CASE("cost_of matches labelling with an R1C dual, through Solver") {
         CHECK(w.reduced_cost == doctest::Approx(16.0));
         CHECK(w.original_cost == doctest::Approx(11.0));
     }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Borrowed adjacency (#133)
+// ════════════════════════════════════════════════════════════════════
+
+template <typename Path>
+static void check_same_paths(const std::vector<Path>& a, const std::vector<Path>& b) {
+    REQUIRE(a.size() == b.size());
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        CAPTURE(i);
+        CHECK(a[i].arcs == b[i].arcs);
+        CHECK(a[i].vertices == b[i].vertices);
+        CHECK(a[i].reduced_cost == b[i].reduced_cost);
+        CHECK(a[i].original_cost == b[i].original_cost);
+    }
+}
+
+// An owning graph's view points into its own CSR; a copy or move of the graph
+// would have to rebind it, so neither exists.
+static_assert(!std::is_copy_constructible_v<BucketGraph<ResourcePack<>>>);
+static_assert(!std::is_move_constructible_v<BucketGraph<ResourcePack<>>>);
+
+/// The CSR of `pv`'s arcs with each vertex's arcs in reverse arc-index order,
+/// as a caller's own CSR might list them.
+struct ReversedCsr {
+    std::vector<int> out_begin, out_arcs, in_begin, in_arcs;
+
+    explicit ReversedCsr(const ProblemView& pv) {
+        CsrAdjacency csr;
+        csr.build(pv);
+        for (int v = 0; v < pv.n_vertices; ++v) {
+            out_begin.push_back(static_cast<int>(out_arcs.size()));
+            in_begin.push_back(static_cast<int>(in_arcs.size()));
+            const auto o = csr.outgoing(v);
+            const auto i = csr.incoming(v);
+            out_arcs.insert(out_arcs.end(), o.rbegin(), o.rend());
+            in_arcs.insert(in_arcs.end(), i.rbegin(), i.rend());
+        }
+        out_begin.push_back(pv.n_arcs);
+        in_begin.push_back(pv.n_arcs);
+    }
+
+    [[nodiscard]] AdjacencyView view() const {
+        return {.out_begin = out_begin.data(),
+                .out_arcs = out_arcs.data(),
+                .in_begin = in_begin.data(),
+                .in_arcs = in_arcs.data(),
+                .n_vertices = static_cast<int>(out_begin.size()) - 1,
+                .n_arcs = static_cast<int>(out_arcs.size())};
+    }
+};
+
+TEST_CASE("a borrowed adjacency gives the same paths as an owned one (#133)") {
+    using Pack = ResourcePack<NgPathResource>;
+    using BG = BucketGraph<Pack>;
+    int checked = 0;
+    for (int n_main = 1; n_main <= 2; ++n_main) {
+        for (int seed = 0; seed < 40; ++seed) {
+            CAPTURE(n_main);
+            CAPTURE(seed);
+            RandomTwInstance inst(seed, n_main);
+            const int n = inst.pv.n_vertices;
+            std::vector<std::vector<int>> neighbors(n);
+            for (int v = 0; v < n; ++v) {
+                neighbors[v] = {v, (v + 1) % n, (v + 2) % n};
+            }
+            NgPathResource ng(n, inst.pv.n_arcs, inst.from_v.data(), inst.to_v.data(), neighbors);
+            std::mt19937 rng(seed);
+            std::uniform_real_distribution<double> U(0, 1);
+            std::vector<double> reduced(inst.cost_v);
+            for (int a = 0; a < inst.pv.n_arcs; ++a) {
+                reduced[a] -= inst.to_v[a] < n - 1 ? U(rng) * 15 : 0.0;
+            }
+            CsrAdjacency csr;
+            csr.build(inst.pv);
+            const ReversedCsr reversed(inst.pv);
+            for (bool bidir : {false, true}) {
+                CAPTURE(bidir);
+                const BG::Options opts{.bucket_steps = {2.0, n_main == 2 ? 2.0 : 0.0},
+                                       .theta = 1e9,
+                                       .bidirectional = bidir};
+                BG owned(inst.pv, Pack(ng), opts);
+                BG borrowed(inst.pv, csr, Pack(ng), opts);
+                BG reordered(inst.pv, reversed.view(), Pack(ng), opts);
+                CHECK(owned.owns_adjacency());
+                CHECK_FALSE(borrowed.owns_adjacency());
+                CHECK_FALSE(reordered.owns_adjacency());
+                std::vector<std::vector<BG::Path>> paths;
+                for (BG* bg : {&owned, &borrowed, &reordered}) {
+                    bg->build();
+                    bg->update_arc_costs(reduced.data());
+                    paths.push_back(bg->solve());
+                }
+                // The same CSR order labels identically; another order may
+                // break ties apart but finds the same optimum.
+                check_same_paths(paths[0], paths[1]);
+                CHECK(best_reduced_cost(paths[2]) ==
+                      doctest::Approx(best_reduced_cost(paths[0])).epsilon(1e-9));
+                CHECK(paths[2].empty() == paths[0].empty());
+                checked += static_cast<int>(paths[0].size());
+            }
+        }
+    }
+    CHECK(checked > 100);
+}
+
+TEST_CASE("Solver with a borrowed adjacency matches the owning one (#133)") {
+    using Pack = ResourcePack<>;
+    using S = Solver<Pack>;
+    for (int seed = 0; seed < 20; ++seed) {
+        CAPTURE(seed);
+        RandomTwInstance inst(seed, 1);
+        std::vector<double> reduced(inst.cost_v);
+        for (int a = 0; a < inst.pv.n_arcs; ++a) {
+            reduced[a] -= 6.0;
+        }
+        CsrAdjacency csr;
+        csr.build(inst.pv);
+        const S::Options opts{.bucket_steps = {2.0, 0.0}, .theta = 1e9};
+        S owned(inst.pv, Pack{}, opts);
+        S borrowed(inst.pv, csr.view(), Pack{}, opts);
+        CHECK(owned.owns_adjacency());
+        CHECK_FALSE(borrowed.owns_adjacency());
+        for (S* s : {&owned, &borrowed}) {
+            s->set_stage(Stage::Exact);
+            s->build();
+            s->update_arc_costs(reduced);
+        }
+        check_same_paths(owned.solve(), borrowed.solve());
+    }
+}
+
+TEST_CASE("a borrowed adjacency that does not match the view is refused (#133)") {
+    using Pack = ResourcePack<>;
+    RandomTwInstance inst(3, 1);
+    CsrAdjacency csr;
+    csr.build(inst.pv);
+
+    AdjacencyView fewer_arcs = csr.view();
+    --fewer_arcs.n_arcs;
+    CHECK_THROWS_AS(BucketGraph<Pack>(inst.pv, fewer_arcs, Pack{}), std::invalid_argument);
+
+    AdjacencyView fewer_vertices = csr.view();
+    --fewer_vertices.n_vertices;
+    CHECK_THROWS_AS(BucketGraph<Pack>(inst.pv, fewer_vertices, Pack{}), std::invalid_argument);
+
+    AdjacencyView no_arrays = csr.view();
+    no_arrays.in_arcs = nullptr;
+    CHECK_THROWS_AS(BucketGraph<Pack>(inst.pv, no_arrays, Pack{}), std::invalid_argument);
+    CHECK_THROWS_AS(Solver<Pack>(inst.pv, AdjacencyView{}, Pack{}), std::invalid_argument);
 }
 
 TEST_CASE("cost_of refuses walks labelling would not produce") {
