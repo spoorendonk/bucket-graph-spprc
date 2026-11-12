@@ -150,7 +150,7 @@ public:
             norm[c] = normalize(cuts[c], static_cast<int>(c), pv.n_vertices, pv.n_arcs);
             add_arc_ends(norm[c], pv);
         }
-        next.build_per_vertex(norm, pv, std::forward<Exec>(exec));
+        next.build_per_vertex(norm, pv, /*vertex_memory=*/false, std::forward<Exec>(exec));
         *this = std::move(next);
     }
 
@@ -169,7 +169,7 @@ public:
         for (std::size_t c = 0; c < cuts.size(); ++c) {
             norm[c] = normalize(cuts[c], static_cast<int>(c), pv.n_vertices);
         }
-        next.build_per_vertex(norm, pv, std::forward<Exec>(exec));
+        next.build_per_vertex(norm, pv, /*vertex_memory=*/true, std::forward<Exec>(exec));
         *this = std::move(next);
     }
 
@@ -214,7 +214,6 @@ private:
         std::vector<std::pair<int, int>> numerators;  // (vertex, k_v), sorted, merged
         int denominator = 2;
         double beta = 0.0;
-        bool vertex_memory = false;
         std::vector<int> memory_arcs;    // arc memory: the arcs that keep the sum
         std::vector<int> slot_vertices;  // M', sorted, unique (per-vertex layouts)
     };
@@ -345,7 +344,7 @@ private:
             }
             out.memory_arcs.push_back(arc.first);
         }
-        sort_unique(out.memory_arcs);  // an arc listed twice would move its field twice
+        sort_unique(out.memory_arcs);  // a duplicate would only repeat a move
         return out;
     }
 
@@ -370,7 +369,6 @@ private:
         NormCut out;
         out.beta = beta_of(cut.dual, c);
         out.denominator = d;
-        out.vertex_memory = true;
         auto in_range = [&](int v) {
             if (v < 0 || v >= n_vertices) {
                 throw R1CError(R1CErrc::InvalidCut, "R1CResource: a cut's vertex is out of range",
@@ -486,7 +484,8 @@ private:
     }
 
     template <Executor Exec>
-    void build_per_vertex(std::span<const NormCut> cuts, const ProblemView& pv, Exec&& exec) {
+    void build_per_vertex(std::span<const NormCut> cuts, const ProblemView& pv, bool vertex_memory,
+                          Exec&& exec) {
         per_vertex_ = true;
         const auto n_v = static_cast<std::size_t>(n_vertices_);
         init_cuts(cuts, n_v);
@@ -520,7 +519,7 @@ private:
             const Field f = field(static_cast<int>(c), v);
             return std::pair{f.word, f.shift};
         });
-        build_arc_tables(cuts, pv, std::forward<Exec>(exec));
+        build_arc_tables(cuts, pv, vertex_memory, std::forward<Exec>(exec));
     }
 
     // Per vertex: the toggle mask of the 1-bit fast path (d = 2, numerator 1)
@@ -567,7 +566,8 @@ private:
     // with both ends in M', i.e. with a slot at both. Two passes over the
     // arcs on the executor (count, then fill); each arc writes its own words.
     template <Executor Exec>
-    void build_arc_tables(std::span<const NormCut> cuts, const ProblemView& pv, Exec&& exec) {
+    void build_arc_tables(std::span<const NormCut> cuts, const ProblemView& pv, bool vertex_memory,
+                          Exec&& exec) {
         const auto n_a = static_cast<std::size_t>(n_arcs_);
         // Arc-form memories, bucketed by arc in cut order.
         std::vector<uint32_t> mem_begin(n_a + 1, 0);
@@ -590,10 +590,6 @@ private:
             }
         }
 
-        // Each overload takes one form, so either every cut has vertex memory
-        // or none does.
-        const bool any_vertex_memory = std::ranges::any_of(cuts, &NormCut::vertex_memory);
-
         // Visit each kept cut of arc a with its slots at the two ends.
         auto for_each_kept = [&](int a, auto&& visit) {
             const auto ia = static_cast<std::size_t>(a);
@@ -609,7 +605,7 @@ private:
             // Vertex-form cuts: the cuts with a slot at both ends.
             std::size_t p = 0;
             std::size_t q = 0;
-            while (any_vertex_memory && p < at_i.size() && q < at_j.size()) {
+            while (vertex_memory && p < at_i.size() && q < at_j.size()) {
                 if (at_i[p].cut < at_j[q].cut) {
                     ++p;
                 } else if (at_j[q].cut < at_i[p].cut) {
@@ -750,7 +746,9 @@ public:
         }
         const auto a = static_cast<std::size_t>(arc_id);
         const auto& keep = data_->keep_[a];
-        if (!data_->per_vertex_) {
+        const uint32_t move_begin = data_->per_vertex_ ? data_->move_begin_[a] : 0;
+        const uint32_t move_end = data_->per_vertex_ ? data_->move_begin_[a + 1] : 0;
+        if (move_begin == move_end) {
             for (std::size_t w = 0; w < Words; ++w) {
                 word_ref(state, w) &= keep[w];
             }
@@ -762,7 +760,7 @@ public:
         }
         // Fields kept at another place at the target end (per-vertex layout).
         const bool fw = dir == Direction::Forward;
-        for (uint32_t m = data_->move_begin_[a]; m < data_->move_begin_[a + 1]; ++m) {
+        for (uint32_t m = move_begin; m < move_end; ++m) {
             const auto& mv = data_->moves_[m];
             const auto [from_w, from_s, to_w, to_s] =
                 fw ? std::array{mv.tail_word, mv.tail_shift, mv.head_word, mv.head_shift}

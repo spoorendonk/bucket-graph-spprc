@@ -9,7 +9,6 @@
 #include <bgspprc/resources/ng_path.h>
 #include <bgspprc/resources/pickup_delivery.h>
 #include <bgspprc/solver.h>
-#include <bit>
 #include <cmath>
 #include <doctest/doctest.h>
 #include <random>
@@ -3983,6 +3982,8 @@ TEST_CASE("R1C with denominators 2-8: labelling finds the brute-force best path"
     int checked = 0;
     int long_mono = 0;
     int long_bidir = 0;
+    int long_mono_pv = 0;  // per layout, so neither can lean on the other
+    int long_bidir_pv = 0;
     for (unsigned seed = 1; seed <= 25; ++seed) {
         CAPTURE(seed);
         const MixedR1CInstance inst(seed);
@@ -3997,12 +3998,13 @@ TEST_CASE("R1C with denominators 2-8: labelling finds the brute-force best path"
         for (bool bidir : {false, true}) {
             CAPTURE(bidir);
             int& long_paths = bidir ? long_bidir : long_mono;
+            int& long_paths_pv = bidir ? long_bidir_pv : long_mono_pv;
             checked += check_mixed_r1c<1>(inst, bidir, long_paths) ? 1 : 0;
             checked += check_mixed_r1c<2>(inst, bidir, long_paths) ? 1 : 0;
             // Per-vertex layout: random arc memories leave arcs between two
             // vertices of a cut's M' that reset its sum.
-            checked += check_mixed_r1c<1, false, true>(inst, bidir, long_paths) ? 1 : 0;
-            checked += check_mixed_r1c<2, false, true>(inst, bidir, long_paths) ? 1 : 0;
+            checked += check_mixed_r1c<1, false, true>(inst, bidir, long_paths_pv) ? 1 : 0;
+            checked += check_mixed_r1c<2, false, true>(inst, bidir, long_paths_pv) ? 1 : 0;
         }
         // Count instances where the cuts change the best path's cost.
         if (inst.brute_force_min() > inst.plain_min() + 0.5) {
@@ -4013,6 +4015,8 @@ TEST_CASE("R1C with denominators 2-8: labelling finds the brute-force best path"
     CHECK(with_cut_cost >= 5);  // the cuts matter on a fair share of instances
     CHECK(long_bidir >= 5);     // bidir prices joins with a nonzero bw state
     CHECK(long_mono >= 5);
+    CHECK(long_bidir_pv >= 5);
+    CHECK(long_mono_pv >= 5);
 }
 
 TEST_CASE("R1C vertex memory: both cut forms price as the brute-force best path") {
@@ -4107,7 +4111,8 @@ struct LocalR1CInstance : R1CBruteForce {
         const int denominators[] = {2, 3, 4, 5, 6, 7, 8};
         for (int t = 0; t < 400; ++t) {
             const int d = denominators[rng() % 7];
-            const int width = std::bit_width(static_cast<unsigned>(d - 1));  // ⌈log2 d⌉
+            constexpr int kWidth[] = {0, 0, 1, 2, 2, 3, 3, 3, 3};  // ⌈log2 d⌉, by hand
+            const int width = kWidth[d];
             const int len = 2 + static_cast<int>(rng() % 2);
             const int first = 1 + static_cast<int>(rng() % static_cast<unsigned>(N - 1 - len));
             std::vector<int> k(N, 0);
