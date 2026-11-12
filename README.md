@@ -248,6 +248,14 @@ Solver<Pack, ThreadPoolExecutor> solver(
   d = 2, 2 for d ≤ 4, 3 above), so one word holds 64 3/2 cuts or 21 cuts with
   d ≥ 5. `BasicR1CData<Words>` and its view and resource hold `Words` words;
   `set_cuts` throws when the cuts need more.
+- **Rank-1 cuts with vertex memory.** `set_cuts` also takes pull-rcspp's
+  cut form, `R1VertexCut` (`(vertex, numerator)` coefficients over one
+  denominator, a vertex memory and a dual), with the `ProblemView` whose arcs
+  it reads: with M' the memory and the coefficient vertices, arc (i, j)
+  keeps the running sum iff i and j are both in M'. The denominator is taken
+  as given, not reduced. Both forms throw `R1CError` (a
+  `std::invalid_argument`) with a code, `InvalidCut` or `TooManyCounters`,
+  and the offending cut and vertex.
 
 ## Custom Resources
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "executor.h"
+#include "problem_view.h"
 #include "types.h"
 
 #include <algorithm>
@@ -37,8 +38,41 @@ struct R1Cut {
     double dual_value = 0.0;  // σ_ℓ (dual variable, β = -σ_ℓ ≥ 0; clamped at 0)
 };
 
+/// Rank-1 cut with vertex memory, pull-rcspp's cut form field for field: a
+/// path's coefficient is ⌊Σ_v k_v·a_v / d⌋ over its visits a_v to the
+/// coefficient vertices while it stays inside the memory. With
+/// M' = memory ∪ coefficient vertices, arc (i, j) keeps the running sum iff
+/// both i and j are in M'; any other arc resets it. Each numerator lies in
+/// [1, d - 1], and a vertex listed twice sums its numerators. The denominator
+/// is taken as given, not reduced to the smallest one the numerators share.
+struct R1VertexCut {
+    std::vector<std::pair<int, int>> coefficients;  // (vertex, numerator k_v)
+    int denominator = 2;                            // d ∈ [2, 8]
+    std::vector<int> memory;                        // memory vertices
+    double dual = 0.0;                              // σ_ℓ (β = -σ_ℓ ≥ 0; clamped at 0)
+};
+
 /// The largest denominator of a cut's multipliers.
 inline constexpr int kR1CMaxDenominator = 8;
+
+/// Why `set_cuts` refused its cuts.
+enum class R1CErrc : uint8_t {
+    InvalidCut,       // a malformed cut: bad sizes, multiplier, numerator,
+                      // denominator, vertex or arc, or a NaN value
+    TooManyCounters,  // the fields need more bits than the state words hold
+};
+
+/// What `set_cuts` throws. Derives from `std::invalid_argument`, so callers
+/// catching that keep working. `cut` is the index of the offending cut and
+/// `vertex` the offending vertex, -1 where none applies.
+struct R1CError : std::invalid_argument {
+    R1CError(R1CErrc errc, const char* what, int cut_index, int vertex_id = -1)
+        : std::invalid_argument(what), code(errc), cut(cut_index), vertex(vertex_id) {}
+
+    R1CErrc code;
+    int cut = -1;
+    int vertex = -1;
+};
 
 /// The packed state of `Words` 64-bit words: a plain `uint64_t` for one word,
 /// so that with only 1-bit cuts, cut c is bit c.
@@ -72,17 +106,40 @@ public:
         int denominator = 2;
     };
 
-    /// Set the active cuts. Rebuilds the layout and all lookup tables.
-    /// Throws std::invalid_argument if a cut is malformed (sizes differ, a
-    /// multiplier outside (0, 1) or not k/d for some d ≤ 8, a vertex or arc
-    /// out of range, a NaN dual) or the cuts need more than `64·Words` bits.
-    /// The executor is used to parallelize the arc-memory masks over cuts.
+    /// Set the active cuts (arc memory). Rebuilds the layout and all lookup
+    /// tables. Throws `R1CError` (InvalidCut) if a cut is malformed (sizes
+    /// differ, a multiplier outside (0, 1) or not k/d for some d ≤ 8, a vertex
+    /// or arc out of range, a NaN dual), or (TooManyCounters) if the cuts need
+    /// more than `64·Words` bits. The executor is used to parallelize the
+    /// arc-memory masks over cuts.
     template <Executor Exec = SequentialExecutor>
     void set_cuts(std::span<const R1Cut> cuts, int n_vertices, int n_arcs, Exec&& exec = {}) {
         BasicR1CData next;
         next.n_vertices_ = n_vertices;
         next.n_arcs_ = n_arcs;
-        next.build(cuts, std::forward<Exec>(exec));
+        std::vector<NormCut> norm(cuts.size());
+        for (std::size_t c = 0; c < cuts.size(); ++c) {
+            norm[c] = normalize(cuts[c], static_cast<int>(c), n_vertices, n_arcs);
+        }
+        next.build(norm, nullptr, nullptr, std::forward<Exec>(exec));
+        *this = std::move(next);  // in place: borrowing views stay valid
+    }
+
+    /// Set the active cuts (vertex memory, pull-rcspp's form). The view gives
+    /// the arc endpoints the memory is read on, and must be the one the
+    /// resource prices. Throws as the `R1Cut` overload, InvalidCut also for a
+    /// denominator outside [2, 8], a numerator outside [1, d - 1] or a memory
+    /// vertex out of range.
+    template <Executor Exec = SequentialExecutor>
+    void set_cuts(std::span<const R1VertexCut> cuts, const ProblemView& pv, Exec&& exec = {}) {
+        BasicR1CData next;
+        next.n_vertices_ = pv.n_vertices;
+        next.n_arcs_ = pv.n_arcs;
+        std::vector<NormCut> norm(cuts.size());
+        for (std::size_t c = 0; c < cuts.size(); ++c) {
+            norm[c] = normalize(cuts[c], static_cast<int>(c), pv.n_vertices);
+        }
+        next.build(norm, pv.arc_from, pv.arc_to, std::forward<Exec>(exec));
         *this = std::move(next);  // in place: borrowing views stay valid
     }
 
@@ -98,6 +155,16 @@ private:
     friend class BasicR1CView<Words>;
 
     static constexpr int kBits = 64;
+
+    // The one form both cut types are built from: merged numerators, the
+    // denominator, β, and the memory as either arc ids or a vertex set.
+    struct NormCut {
+        std::vector<std::pair<int, int>> numerators;  // (vertex, k_v), sorted, merged
+        int denominator = 2;
+        double beta = 0.0;
+        std::vector<int> memory_arcs;  // arc memory: the arcs that keep the sum
+        std::vector<char> in_memory;   // vertex memory: [vertex] ∈ M'; empty for arc memory
+    };
 
     // A cut a vertex adds to off the 1-bit fast path: its field and the
     // vertex's numerator k_v (summed when listed twice, so it may reach d).
@@ -128,8 +195,110 @@ private:
         return std::bit_width(static_cast<unsigned>(denominator - 1));
     }
 
+    // β = -σ_ℓ ≥ 0 for a valid R1C dual (σ_ℓ ≤ 0). Clamp at 0 so a malformed /
+    // LP-noisy positive dual cannot make β negative — a negative β would turn
+    // the overflow penalty into a credit and break the min_domination_cost()
+    // == 0 lower bound (→ unsound over-pruning).
+    static double beta_of(double dual, int c) {
+        if (std::isnan(dual)) {
+            throw R1CError(R1CErrc::InvalidCut, "R1CResource: a cut's dual is NaN", c);
+        }
+        return std::max(0.0, -dual);
+    }
+
+    // Sort and merge (vertex, k) pairs: a vertex listed twice sums its
+    // numerators, as pull-rcspp does.
+    static void merge_numerators(std::vector<std::pair<int, int>>& numerators) {
+        std::ranges::sort(numerators);
+        std::size_t out = 0;
+        for (std::size_t i = 0; i < numerators.size();) {
+            const int v = numerators[i].first;
+            int k = 0;
+            for (; i < numerators.size() && numerators[i].first == v; ++i) {
+                k += numerators[i].second;
+            }
+            numerators[out++] = {v, k};
+        }
+        numerators.resize(out);
+    }
+
+    static NormCut normalize(const R1Cut& cut, int c, int n_vertices, int n_arcs) {
+        if (cut.base_set.size() != cut.multipliers.size()) {
+            throw R1CError(R1CErrc::InvalidCut,
+                           "R1CResource: base_set and multipliers must have equal size", c);
+        }
+        for (std::size_t i = 0; i < cut.multipliers.size(); ++i) {
+            const double p = cut.multipliers[i];
+            if (std::isnan(p) || p <= 1e-9 || p >= 1.0 - 1e-9) {
+                throw R1CError(R1CErrc::InvalidCut, "R1CResource: multipliers must lie in (0, 1)",
+                               c, cut.base_set[i]);
+            }
+        }
+        NormCut out;
+        out.beta = beta_of(cut.dual_value, c);
+        out.denominator = cut.multipliers.empty() ? 2 : common_denominator(cut.multipliers);
+        if (out.denominator == 0) {
+            throw R1CError(R1CErrc::InvalidCut,
+                           "R1CResource: multipliers must be k/d over one denominator d in [2, 8]",
+                           c);
+        }
+        out.numerators.reserve(cut.base_set.size());
+        for (std::size_t i = 0; i < cut.base_set.size(); ++i) {
+            const int v = cut.base_set[i];
+            if (v < 0 || v >= n_vertices) {
+                throw R1CError(R1CErrc::InvalidCut,
+                               "R1CResource: a base-set vertex is out of range", c, v);
+            }
+            out.numerators.emplace_back(
+                v, static_cast<int>(std::lround(cut.multipliers[i] * out.denominator)));
+        }
+        merge_numerators(out.numerators);
+        out.memory_arcs.reserve(cut.memory_arcs.size());
+        for (const auto& arc : cut.memory_arcs) {
+            if (arc.first < 0 || arc.first >= n_arcs) {
+                throw R1CError(R1CErrc::InvalidCut, "R1CResource: a memory arc is out of range", c);
+            }
+            out.memory_arcs.push_back(arc.first);
+        }
+        return out;
+    }
+
+    static NormCut normalize(const R1VertexCut& cut, int c, int n_vertices) {
+        const int d = cut.denominator;
+        if (d < 2 || d > kR1CMaxDenominator) {
+            throw R1CError(R1CErrc::InvalidCut, "R1CResource: a denominator must lie in [2, 8]", c);
+        }
+        NormCut out;
+        out.beta = beta_of(cut.dual, c);
+        out.denominator = d;
+        out.in_memory.assign(static_cast<std::size_t>(n_vertices), 0);
+        auto in_range = [&](int v) {
+            if (v < 0 || v >= n_vertices) {
+                throw R1CError(R1CErrc::InvalidCut, "R1CResource: a cut's vertex is out of range",
+                               c, v);
+            }
+            return static_cast<std::size_t>(v);
+        };
+        out.numerators.reserve(cut.coefficients.size());
+        for (const auto& [v, k] : cut.coefficients) {
+            out.in_memory[in_range(v)] = 1;
+            if (k < 1 || k >= d) {
+                throw R1CError(R1CErrc::InvalidCut,
+                               "R1CResource: a numerator must lie in [1, denominator - 1]", c, v);
+            }
+            out.numerators.emplace_back(v, k);
+        }
+        merge_numerators(out.numerators);
+        for (int v : cut.memory) {
+            out.in_memory[in_range(v)] = 1;
+        }
+        return out;
+    }
+
+    // `arc_from`/`arc_to` are the endpoints vertex memories are read on; null
+    // when every cut has arc memory.
     template <Executor Exec>
-    void build(std::span<const R1Cut> cuts, Exec&& exec) {
+    void build(std::span<const NormCut> cuts, const int* arc_from, const int* arc_to, Exec&& exec) {
         n_active_ = static_cast<int>(cuts.size());
         fields_.resize(cuts.size());
         betas_.resize(cuts.size());
@@ -142,39 +311,20 @@ private:
         int word = 0;
         int shift = 0;
         for (std::size_t c = 0; c < cuts.size(); ++c) {
-            const R1Cut& cut = cuts[c];
-            if (cut.base_set.size() != cut.multipliers.size()) {
-                throw std::invalid_argument(
-                    "R1CResource: base_set and multipliers must have equal size");
-            }
-            for (double p : cut.multipliers) {
-                if (std::isnan(p) || p <= 1e-9 || p >= 1.0 - 1e-9) {
-                    throw std::invalid_argument("R1CResource: multipliers must lie in (0, 1)");
-                }
-            }
-            if (std::isnan(cut.dual_value)) {
-                throw std::invalid_argument("R1CResource: a cut's dual is NaN");
-            }
-            const int d = cut.multipliers.empty() ? 2 : common_denominator(cut.multipliers);
-            if (d == 0) {
-                throw std::invalid_argument(
-                    "R1CResource: multipliers must be k/d over one denominator d in [2, 8]");
-            }
+            const int d = cuts[c].denominator;
             const int width = field_width(d);
             if (shift + width > kBits) {
                 ++word;
                 shift = 0;
             }
             if (std::cmp_greater_equal(word, Words)) {
-                throw std::invalid_argument(
-                    "R1CResource: the cuts need more state bits than the resource's words hold");
+                throw R1CError(
+                    R1CErrc::TooManyCounters,
+                    "R1CResource: the cuts need more state bits than the resource's words hold",
+                    static_cast<int>(c));
             }
             fields_[c] = {.word = word, .shift = shift, .width = width, .denominator = d};
-            // β = -σ_ℓ ≥ 0 for a valid R1C dual (σ_ℓ ≤ 0). Clamp at 0 so a
-            // malformed / LP-noisy positive dual cannot make β negative — a
-            // negative β would turn the overflow penalty into a credit and break
-            // the min_domination_cost() == 0 lower bound (→ unsound over-pruning).
-            betas_[c] = std::max(0.0, -cut.dual_value);
+            betas_[c] = cuts[c].beta;
             const uint64_t low = 1ULL << shift;
             const auto w = static_cast<std::size_t>(word);
             if (width == 1) {
@@ -190,35 +340,18 @@ private:
         }
 
         build_vertex_tables(cuts);
-        build_arc_masks(cuts, std::forward<Exec>(exec));
+        build_arc_masks(cuts, arc_from, arc_to, std::forward<Exec>(exec));
     }
 
     // Per vertex: the toggle mask of the 1-bit fast path (d = 2, numerator 1)
     // and the increments of every other (cut, vertex) pair.
-    void build_vertex_tables(std::span<const R1Cut> cuts) {
+    void build_vertex_tables(std::span<const NormCut> cuts) {
         const auto n_v = static_cast<std::size_t>(n_vertices_);
         toggle_mask_.assign(n_v * Words, 0ULL);
         std::vector<std::vector<Increment>> incs(n_v);
-        std::vector<std::pair<int, int>> numerators;  // (vertex, k_v), merged per cut
         for (std::size_t c = 0; c < cuts.size(); ++c) {
-            const R1Cut& cut = cuts[c];
             const Field f = fields_[c];
-            numerators.clear();
-            for (std::size_t i = 0; i < cut.base_set.size(); ++i) {
-                const int v = cut.base_set[i];
-                if (v < 0 || v >= n_vertices_) {
-                    throw std::invalid_argument("R1CResource: a base-set vertex is out of range");
-                }
-                const auto k = static_cast<int>(std::lround(cut.multipliers[i] * f.denominator));
-                numerators.emplace_back(v, k);
-            }
-            std::ranges::sort(numerators);
-            for (std::size_t i = 0; i < numerators.size();) {
-                const int v = numerators[i].first;
-                int k = 0;  // a vertex listed twice sums its numerators, as pull-rcspp does
-                for (; i < numerators.size() && numerators[i].first == v; ++i) {
-                    k += numerators[i].second;
-                }
+            for (const auto& [v, k] : cuts[c].numerators) {
                 const auto vi = static_cast<std::size_t>(v);
                 if (f.width == 1 && k == 1) {
                     toggle_mask_[(vi * Words) + static_cast<std::size_t>(f.word)] |= 1ULL
@@ -241,27 +374,35 @@ private:
         }
     }
 
-    /// Build arc_keep_mask_ from the cuts' memory arcs. Parallelizes the cut
+    /// Build arc_keep_mask_ from the cuts' memories. Parallelizes the cut
     /// loop via the executor. Each cut owns its field's bits, so concurrent
     /// |= targets disjoint bits; std::atomic_ref keeps the read-modify-write
     /// race-free.
     template <Executor Exec>
-    void build_arc_masks(std::span<const R1Cut> cuts, Exec&& exec) {
-        for (const auto& cut : cuts) {
-            for (const auto& arc : cut.memory_arcs) {
-                if (arc.first < 0 || arc.first >= n_arcs_) {
-                    throw std::invalid_argument("R1CResource: a memory arc is out of range");
-                }
-            }
-        }
+    void build_arc_masks(std::span<const NormCut> cuts, const int* arc_from, const int* arc_to,
+                         Exec&& exec) {
         arc_keep_mask_.assign(static_cast<std::size_t>(n_arcs_) * Words, 0ULL);
         exec.parallel_for(0, n_active_, [&](int c) {
+            const NormCut& cut = cuts[static_cast<std::size_t>(c)];
             const Field f = fields_[static_cast<std::size_t>(c)];
             const uint64_t bits = ((1ULL << f.width) - 1) << f.shift;
-            for (const auto& arc : cuts[static_cast<std::size_t>(c)].memory_arcs) {
-                auto& m = arc_keep_mask_[(static_cast<std::size_t>(arc.first) * Words) +
+            auto keep = [&](int a) {
+                auto& m = arc_keep_mask_[(static_cast<std::size_t>(a) * Words) +
                                          static_cast<std::size_t>(f.word)];
                 std::atomic_ref(m).fetch_or(bits, std::memory_order_relaxed);
+            };
+            if (cut.in_memory.empty()) {
+                for (int a : cut.memory_arcs) {
+                    keep(a);
+                }
+                return;
+            }
+            for (int a = 0; a < n_arcs_; ++a) {
+                const auto i = static_cast<std::size_t>(arc_from[a]);
+                const auto j = static_cast<std::size_t>(arc_to[a]);
+                if (cut.in_memory[i] != 0 && cut.in_memory[j] != 0) {
+                    keep(a);
+                }
             }
         });
     }

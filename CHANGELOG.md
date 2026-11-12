@@ -6,6 +6,8 @@
 
 - **Rank-1 cuts with denominators 2-8** (#142, part of #86): `R1Cut` multipliers may be any k/d in (0, 1) over one denominator d ≤ 8 (SR12, SR32, SR52, SR43, SR53, SR54, SR55, SR65, SR76, SR87, SR98), not only 1/2. Each cut keeps its running sum mod d in a field of 1-3 bits. A vertex listed twice in a base set adds both multipliers, as pull-rcspp's cuts do.
   - `BasicR1CData<Words>`, `BasicR1CView<Words>` and `BasicR1CResource<Words>` hold the fields in `Words` 64-bit words; `R1CData`, `R1CView` and `R1CResource` are the one-word forms, with `State = uint64_t` as before, and a 3/2 cut is still bit c.
+- **Rank-1 cuts with vertex memory** (#144, part of #86): `R1VertexCut` is pull-rcspp's cut form, `(vertex, numerator)` coefficients over one denominator with a vertex memory, set through `set_cuts(std::span<const R1VertexCut>, const ProblemView&)`. An arc keeps a cut's running sum iff both its ends are in the memory or the coefficient vertices. The denominator is taken as given, not reduced.
+- **`R1CError`** (#144): `set_cuts` throws it, for either cut form, with `code` (`R1CErrc::InvalidCut` or `TooManyCounters`), `cut` and `vertex`. It derives from `std::invalid_argument`, so existing handlers keep catching it.
 
 ### Breaking changes
 

@@ -2248,6 +2248,127 @@ TEST_CASE("R1C refuses malformed cuts") {
     CHECK(data.beta(0) == 0.0);  // a positive dual clamps to β = 0
 }
 
+namespace {
+
+// A path 0 → 1 → 2 → 3 → 4 (arcs 0-3) plus arcs 0 → 2 (4) and 1 → 3 (5).
+struct R1CLine {
+    std::vector<int> from = {0, 1, 2, 3, 0, 1};
+    std::vector<int> to = {1, 2, 3, 4, 2, 3};
+    ProblemView pv;
+    R1CLine() {
+        pv.n_vertices = 5;
+        pv.source = 0;
+        pv.sink = 4;
+        pv.n_arcs = static_cast<int>(from.size());
+        pv.arc_from = from.data();
+        pv.arc_to = to.data();
+    }
+};
+
+// Calls `set` and returns what it threw; fails the test if it did not throw.
+template <typename F>
+R1CError refusal(F&& set) {
+    try {
+        set();
+    } catch (const R1CError& e) {
+        return e;
+    }
+    FAIL("set_cuts did not throw");
+    return {R1CErrc::InvalidCut, "", -2, -2};
+}
+
+}  // namespace
+
+TEST_CASE("R1CError carries the code, cut and vertex of each refusal") {
+    const R1CLine line;
+    R1CData data;
+    auto arc_form = [&](const R1Cut& bad) {
+        const std::vector<R1Cut> cuts = {make_r1cut({1}, {1}, 2, -1.0, {}), bad};
+        return refusal([&] { data.set_cuts(cuts, 5, 6); });
+    };
+    auto check = [](const R1CError& e, R1CErrc code, int cut, int vertex) {
+        CHECK(e.code == code);
+        CHECK(e.cut == cut);
+        CHECK(e.vertex == vertex);
+    };
+    R1Cut sizes = make_r1cut({1, 2}, {1}, 2, -1.0, {});
+    check(arc_form(sizes), R1CErrc::InvalidCut, 1, -1);
+    check(arc_form(make_r1cut({1, 3}, {1, 2}, 2, -1.0, {})), R1CErrc::InvalidCut, 1, 3);  // p = 1
+    check(arc_form(make_r1cut({1, 2}, {3, 1}, 10, -1.0, {})), R1CErrc::InvalidCut, 1, -1);
+    check(arc_form(make_r1cut({1, 7}, {1, 1}, 2, -1.0, {})), R1CErrc::InvalidCut, 1, 7);
+    check(arc_form(make_r1cut({1}, {1}, 2, -1.0, {6})), R1CErrc::InvalidCut, 1, -1);
+    check(arc_form(make_r1cut({1}, {1}, 2, std::nan(""), {})), R1CErrc::InvalidCut, 1, -1);
+    {
+        const std::vector<R1Cut> full(65, make_r1cut({1}, {1}, 2, -1.0, {}));
+        check(refusal([&] { data.set_cuts(full, 5, 6); }), R1CErrc::TooManyCounters, 64, -1);
+    }
+
+    auto vertex_form = [&](const R1VertexCut& bad) {
+        const std::vector<R1VertexCut> cuts = {{.coefficients = {{1, 1}}, .dual = -1.0}, bad};
+        return refusal([&] { data.set_cuts(cuts, line.pv); });
+    };
+    check(vertex_form({.coefficients = {{1, 1}}, .denominator = 1}), R1CErrc::InvalidCut, 1, -1);
+    check(vertex_form({.coefficients = {{1, 1}}, .denominator = 9}), R1CErrc::InvalidCut, 1, -1);
+    check(vertex_form({.coefficients = {{1, 1}, {2, 3}}, .denominator = 3}), R1CErrc::InvalidCut, 1,
+          2);
+    check(vertex_form({.coefficients = {{2, 0}}, .denominator = 3}), R1CErrc::InvalidCut, 1, 2);
+    check(vertex_form({.coefficients = {{5, 1}}}), R1CErrc::InvalidCut, 1, 5);
+    check(vertex_form({.coefficients = {{-1, 1}}}), R1CErrc::InvalidCut, 1, -1);
+    check(vertex_form({.coefficients = {{1, 1}}, .memory = {2, 9}}), R1CErrc::InvalidCut, 1, 9);
+    check(vertex_form({.coefficients = {{1, 1}}, .dual = std::nan("")}), R1CErrc::InvalidCut, 1,
+          -1);
+    {
+        const std::vector<R1VertexCut> full(22, {.coefficients = {{1, 1}}, .denominator = 5});
+        check(refusal([&] { data.set_cuts(full, line.pv); }), R1CErrc::TooManyCounters, 21, -1);
+    }
+    CHECK(data.n_active() == 0);  // every refusal kept the previous (empty) cuts
+
+    // Still a std::invalid_argument, for callers that catch that.
+    const std::vector<R1VertexCut> bad = {{.coefficients = {{1, 2}}}};
+    CHECK_THROWS_AS(data.set_cuts(bad, line.pv), std::invalid_argument);
+}
+
+TEST_CASE("R1C vertex memory keeps the sum on arcs with both ends in memory or the cut") {
+    const R1CLine line;
+    // 2/4 + 2/4 + 2/4 over {1, 2, 3}, memory {2}: M' = {1, 2, 3}. The
+    // denominator stays 4 (two bits), not reduced to 2.
+    const std::vector<R1VertexCut> cuts = {
+        {.coefficients = {{1, 2}, {3, 2}, {2, 2}}, .denominator = 4, .memory = {2}, .dual = -3.0},
+        // A vertex listed twice sums: 1/3 + 1/3 at vertex 2; memory {0}: M' = {0, 2}.
+        {.coefficients = {{2, 1}, {2, 1}}, .denominator = 3, .memory = {0}, .dual = -1.0},
+    };
+    R1CResource r1c;
+    r1c.set_cuts(cuts, line.pv);
+    REQUIRE(r1c.n_active() == 2);
+    CHECK(r1c.field(0).denominator == 4);
+    CHECK(r1c.field(0).width == 2);
+    CHECK(r1c.field(1).denominator == 3);
+
+    const std::vector<uint64_t> full = {3, 2};
+    const auto s = with_fields(r1c, full);
+    const std::vector<std::vector<uint64_t>> kept = {
+        {0, 0},  // 0 → 1: 0 ∉ M'_0 = {1, 2, 3} and 1 ∉ M'_1 = {0, 2}
+        {3, 0},  // 1 → 2
+        {3, 0},  // 2 → 3
+        {0, 0},  // 3 → 4
+        {0, 2},  // 0 → 2: in M'_1 only
+        {3, 0},  // 1 → 3
+    };
+    for (int a = 0; a < line.pv.n_arcs; ++a) {
+        CAPTURE(a);
+        const auto [t, cost] = r1c.extend_along_arc(Direction::Forward, s, a);
+        CHECK(cost == 0.0);
+        CHECK(field_value(r1c, 0, t) == kept[static_cast<std::size_t>(a)][0]);
+        CHECK(field_value(r1c, 1, t) == kept[static_cast<std::size_t>(a)][1]);
+    }
+
+    // Vertex 2 adds 2/4 to cut 0 and 2/3 to cut 1.
+    auto [t, cost] = r1c.extend_to_vertex(Direction::Forward, with_fields(r1c, {2, 2}), 2);
+    CHECK(field_value(r1c, 0, t) == 0);
+    CHECK(field_value(r1c, 1, t) == 1);
+    CHECK(cost == doctest::Approx(4.0));
+}
+
 TEST_CASE("R1C extension adds numerators and pays beta per multiple of the denominator") {
     // Vertices 1..3 on a line, every arc remembered. One cut per denominator
     // 3, 5 and 7 with numerators (1, 2, 2), (3, 4, 2), (5, 6, 3), and a 3-SRC.
