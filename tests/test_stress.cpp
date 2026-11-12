@@ -3986,7 +3986,9 @@ TEST_CASE("R1C with denominators 2-8: labelling finds the brute-force best path"
 TEST_CASE("R1C vertex memory: both cut forms price as the brute-force best path") {
     int checked = 0;
     int with_cut_cost = 0;
-    int long_paths = 0;
+    int long_vertex = 0;  // per form, so neither can lean on the other
+    int long_arc = 0;
+    int long_vertex2 = 0;
     for (unsigned seed = 1; seed <= 25; ++seed) {
         CAPTURE(seed);
         const MixedR1CInstance inst(seed, true);
@@ -3996,9 +3998,9 @@ TEST_CASE("R1C vertex memory: both cut forms price as the brute-force best path"
             double by_vertex = INF;
             double by_arc = INF;
             double by_vertex2 = INF;
-            const bool any = check_mixed_r1c<1, true>(inst, bidir, long_paths, &by_vertex);
-            check_mixed_r1c<1, false>(inst, bidir, long_paths, &by_arc);
-            check_mixed_r1c<2, true>(inst, bidir, long_paths, &by_vertex2);
+            const bool any = check_mixed_r1c<1, true>(inst, bidir, long_vertex, &by_vertex);
+            check_mixed_r1c<1, false>(inst, bidir, long_arc, &by_arc);
+            check_mixed_r1c<2, true>(inst, bidir, long_vertex2, &by_vertex2);
             if (any) {
                 ++checked;
                 CHECK(by_vertex == doctest::Approx(by_arc));
@@ -4012,5 +4014,7 @@ TEST_CASE("R1C vertex memory: both cut forms price as the brute-force best path"
     }
     CHECK(checked >= 40);
     CHECK(with_cut_cost >= 5);
-    CHECK(long_paths >= 10);
+    CHECK(long_vertex >= 5);
+    CHECK(long_arc >= 5);
+    CHECK(long_vertex2 >= 5);
 }

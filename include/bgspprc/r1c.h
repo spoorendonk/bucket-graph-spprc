@@ -162,8 +162,9 @@ private:
         std::vector<std::pair<int, int>> numerators;  // (vertex, k_v), sorted, merged
         int denominator = 2;
         double beta = 0.0;
-        std::vector<int> memory_arcs;  // arc memory: the arcs that keep the sum
-        std::vector<char> in_memory;   // vertex memory: [vertex] ∈ M'; empty for arc memory
+        bool vertex_memory = false;
+        std::vector<int> memory_arcs;      // arc memory: the arcs that keep the sum
+        std::vector<int> memory_vertices;  // vertex memory: M' (memory ∪ coefficient vertices)
     };
 
     // A cut a vertex adds to off the 1-bit fast path: its field and the
@@ -271,17 +272,18 @@ private:
         NormCut out;
         out.beta = beta_of(cut.dual, c);
         out.denominator = d;
-        out.in_memory.assign(static_cast<std::size_t>(n_vertices), 0);
+        out.vertex_memory = true;
         auto in_range = [&](int v) {
             if (v < 0 || v >= n_vertices) {
                 throw R1CError(R1CErrc::InvalidCut, "R1CResource: a cut's vertex is out of range",
                                c, v);
             }
-            return static_cast<std::size_t>(v);
+            return v;
         };
         out.numerators.reserve(cut.coefficients.size());
+        out.memory_vertices.reserve(cut.coefficients.size() + cut.memory.size());
         for (const auto& [v, k] : cut.coefficients) {
-            out.in_memory[in_range(v)] = 1;
+            out.memory_vertices.push_back(in_range(v));
             if (k < 1 || k >= d) {
                 throw R1CError(R1CErrc::InvalidCut,
                                "R1CResource: a numerator must lie in [1, denominator - 1]", c, v);
@@ -290,7 +292,7 @@ private:
         }
         merge_numerators(out.numerators);
         for (int v : cut.memory) {
-            out.in_memory[in_range(v)] = 1;
+            out.memory_vertices.push_back(in_range(v));
         }
         return out;
     }
@@ -374,35 +376,55 @@ private:
         }
     }
 
-    /// Build arc_keep_mask_ from the cuts' memories. Parallelizes the cut
-    /// loop via the executor. Each cut owns its field's bits, so concurrent
-    /// |= targets disjoint bits; std::atomic_ref keeps the read-modify-write
-    /// race-free.
+    /// Build arc_keep_mask_ from the cuts' memories. Arc memories: the cut
+    /// loop runs on the executor; each cut owns its field's bits, so
+    /// concurrent |= targets disjoint bits, and std::atomic_ref keeps the
+    /// read-modify-write race-free. Vertex memories: one mask per vertex of
+    /// the fields of the cuts whose M' holds it, then one pass over the arcs,
+    /// keeping the fields both ends share.
     template <Executor Exec>
     void build_arc_masks(std::span<const NormCut> cuts, const int* arc_from, const int* arc_to,
                          Exec&& exec) {
         arc_keep_mask_.assign(static_cast<std::size_t>(n_arcs_) * Words, 0ULL);
         exec.parallel_for(0, n_active_, [&](int c) {
             const NormCut& cut = cuts[static_cast<std::size_t>(c)];
+            if (cut.vertex_memory) {
+                return;
+            }
             const Field f = fields_[static_cast<std::size_t>(c)];
             const uint64_t bits = ((1ULL << f.width) - 1) << f.shift;
-            auto keep = [&](int a) {
+            for (int a : cut.memory_arcs) {
                 auto& m = arc_keep_mask_[(static_cast<std::size_t>(a) * Words) +
                                          static_cast<std::size_t>(f.word)];
                 std::atomic_ref(m).fetch_or(bits, std::memory_order_relaxed);
-            };
-            if (cut.in_memory.empty()) {
-                for (int a : cut.memory_arcs) {
-                    keep(a);
-                }
-                return;
             }
-            for (int a = 0; a < n_arcs_; ++a) {
-                const auto i = static_cast<std::size_t>(arc_from[a]);
-                const auto j = static_cast<std::size_t>(arc_to[a]);
-                if (cut.in_memory[i] != 0 && cut.in_memory[j] != 0) {
-                    keep(a);
-                }
+        });
+        bool any_vertex_memory = false;
+        std::vector<uint64_t> vertex_mask;  // [vertex * Words + word]
+        for (std::size_t c = 0; c < cuts.size(); ++c) {
+            if (!cuts[c].vertex_memory) {
+                continue;
+            }
+            if (!any_vertex_memory) {
+                vertex_mask.assign(static_cast<std::size_t>(n_vertices_) * Words, 0ULL);
+                any_vertex_memory = true;
+            }
+            const Field f = fields_[c];
+            const uint64_t bits = ((1ULL << f.width) - 1) << f.shift;
+            for (int v : cuts[c].memory_vertices) {
+                vertex_mask[(static_cast<std::size_t>(v) * Words) +
+                            static_cast<std::size_t>(f.word)] |= bits;
+            }
+        }
+        if (!any_vertex_memory) {
+            return;
+        }
+        exec.parallel_for(0, n_arcs_, [&](int a) {
+            const uint64_t* mi = &vertex_mask[static_cast<std::size_t>(arc_from[a]) * Words];
+            const uint64_t* mj = &vertex_mask[static_cast<std::size_t>(arc_to[a]) * Words];
+            uint64_t* keep = &arc_keep_mask_[static_cast<std::size_t>(a) * Words];
+            for (std::size_t w = 0; w < Words; ++w) {
+                keep[w] |= mi[w] & mj[w];  // arc a's own words: no other thread writes them
             }
         });
     }
