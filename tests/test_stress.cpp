@@ -3909,9 +3909,11 @@ struct MixedR1CInstance : R1CBruteForce {
 /// midpoint 4, at its fifth arc, and joins across its next arc with the bw
 /// label there; from the seventh arc on, that bw label has visited an
 /// interior vertex, so the join prices a nonzero bw cut state. With
-/// `vertex_form`, prices `inst.vertex_cuts` instead of `inst.cuts`; `best`
-/// gets the best path's reduced cost.
-template <std::size_t Words, bool vertex_form = false>
+/// `vertex_form`, prices `inst.vertex_cuts` instead of `inst.cuts`; with
+/// `per_vertex`, sets `inst.cuts` through the `ProblemView` overload (the
+/// per-vertex layout) instead of the global one. `best` gets the best path's
+/// reduced cost.
+template <std::size_t Words, bool vertex_form = false, bool per_vertex = false>
 bool check_mixed_r1c(const MixedR1CInstance& inst, bool bidir, int& long_paths,
                      double* best_out = nullptr) {
     using Res = BasicR1CResource<Words>;
@@ -3937,9 +3939,13 @@ bool check_mixed_r1c(const MixedR1CInstance& inst, bool bidir, int& long_paths,
             }
         }
         cuts.insert(cuts.end(), inst.cuts.begin(), inst.cuts.end());
-        r1c.set_cuts(cuts, inst.pv.n_vertices, inst.pv.n_arcs);
+        if constexpr (per_vertex) {
+            r1c.set_cuts(cuts, inst.pv);
+        } else {
+            r1c.set_cuts(cuts, inst.pv.n_vertices, inst.pv.n_arcs);
+        }
     }
-    if constexpr (Words > 1 && vertex_form) {
+    if constexpr (Words > 1 && (vertex_form || per_vertex)) {
         // Per vertex: the 21 3-bit cuts fill bits 0-62 at vertex 1 alone.
         REQUIRE(r1c.field(20, 1).word == 0);
         REQUIRE(r1c.field(20, 1).shift == 60);
@@ -3993,13 +3999,17 @@ TEST_CASE("R1C with denominators 2-8: labelling finds the brute-force best path"
             int& long_paths = bidir ? long_bidir : long_mono;
             checked += check_mixed_r1c<1>(inst, bidir, long_paths) ? 1 : 0;
             checked += check_mixed_r1c<2>(inst, bidir, long_paths) ? 1 : 0;
+            // Per-vertex layout: random arc memories leave arcs between two
+            // vertices of a cut's M' that reset its sum.
+            checked += check_mixed_r1c<1, false, true>(inst, bidir, long_paths) ? 1 : 0;
+            checked += check_mixed_r1c<2, false, true>(inst, bidir, long_paths) ? 1 : 0;
         }
         // Count instances where the cuts change the best path's cost.
         if (inst.brute_force_min() > inst.plain_min() + 0.5) {
             ++with_cut_cost;
         }
     }
-    CHECK(checked >= 80);       // most instances have a negative path
+    CHECK(checked >= 160);      // most instances have a negative path
     CHECK(with_cut_cost >= 5);  // the cuts matter on a fair share of instances
     CHECK(long_bidir >= 5);     // bidir prices joins with a nonzero bw state
     CHECK(long_mono >= 5);

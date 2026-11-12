@@ -100,6 +100,7 @@ class BasicR1CView;
 template <std::size_t Words>
 class BasicR1CData {
     static_assert(Words >= 1, "at least one state word");
+    static_assert(Words <= 256, "a Move stores word indices in a byte");
 
 public:
     static constexpr std::size_t kWords = Words;
@@ -344,6 +345,7 @@ private:
             }
             out.memory_arcs.push_back(arc.first);
         }
+        sort_unique(out.memory_arcs);  // an arc listed twice would move its field twice
         return out;
     }
 
@@ -588,6 +590,10 @@ private:
             }
         }
 
+        // Each overload takes one form, so either every cut has vertex memory
+        // or none does.
+        const bool any_vertex_memory = std::ranges::any_of(cuts, &NormCut::vertex_memory);
+
         // Visit each kept cut of arc a with its slots at the two ends.
         auto for_each_kept = [&](int a, auto&& visit) {
             const auto ia = static_cast<std::size_t>(a);
@@ -603,15 +609,13 @@ private:
             // Vertex-form cuts: the cuts with a slot at both ends.
             std::size_t p = 0;
             std::size_t q = 0;
-            while (p < at_i.size() && q < at_j.size()) {
+            while (any_vertex_memory && p < at_i.size() && q < at_j.size()) {
                 if (at_i[p].cut < at_j[q].cut) {
                     ++p;
                 } else if (at_j[q].cut < at_i[p].cut) {
                     ++q;
                 } else {
-                    if (cuts[static_cast<std::size_t>(at_i[p].cut)].vertex_memory) {
-                        visit(at_i[p].cut, at_i[p], at_j[q]);
-                    }
+                    visit(at_i[p].cut, at_i[p], at_j[q]);
                     ++p;
                     ++q;
                 }
@@ -746,12 +750,15 @@ public:
         }
         const auto a = static_cast<std::size_t>(arc_id);
         const auto& keep = data_->keep_[a];
+        if (!data_->per_vertex_) {
+            for (std::size_t w = 0; w < Words; ++w) {
+                word_ref(state, w) &= keep[w];
+            }
+            return {state, 0.0};
+        }
         const State in = state;
         for (std::size_t w = 0; w < Words; ++w) {
             word_ref(state, w) &= keep[w];
-        }
-        if (!data_->per_vertex_) {
-            return {state, 0.0};
         }
         // Fields kept at another place at the target end (per-vertex layout).
         const bool fw = dir == Direction::Forward;
