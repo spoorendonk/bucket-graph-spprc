@@ -3707,3 +3707,229 @@ TEST_CASE("bounds_cover_gap: the theta a solve pruned against bounds the gap (#1
     CHECK(at_gap.bounds_cover_gap(5.0));
     CHECK(at_gap.bounds_cover_gap(5.0, true));
 }
+
+// ════════════════════════════════════════════════════════════════════
+// Generalized R1C: denominators 2-8 (#86, #142)
+// ════════════════════════════════════════════════════════════════════
+
+namespace {
+
+/// A random DAG on N vertices (source 0, sink N-1) with a mixed family of
+/// rank-1 cuts — 1-, 2- and 3-bit — over random arc memories.
+struct MixedR1CInstance {
+    static constexpr int N = 9;
+    std::vector<int> from, to;
+    std::vector<double> cost, time_d;
+    std::vector<double> tw_lb = std::vector<double>(N, 0.0);
+    // Every arc takes 1, so a path's time is its arc count: an ub of N - 1
+    // puts the bidir midpoint at 4, mid-path, and joins carry bw cut state.
+    std::vector<double> tw_ub = std::vector<double>(N, N - 1.0);
+    const double* arc_res[1] = {};
+    const double* v_lb[1] = {};
+    const double* v_ub[1] = {};
+    std::vector<R1Cut> cuts;
+    // Per cut: d and the numerator of each vertex (0 outside C).
+    std::vector<int> den;
+    std::vector<std::vector<int>> num;
+    std::vector<std::vector<bool>> remembers;  // [cut][arc]
+    ProblemView pv;
+
+    explicit MixedR1CInstance(unsigned seed) {
+        std::mt19937 rng(seed);
+        std::uniform_real_distribution<double> unit(0.0, 1.0);
+        for (int i = 0; i < N - 1; ++i) {
+            for (int j = i + 1; j < N; ++j) {
+                if (j == i + 1 || unit(rng) < 0.45) {
+                    from.push_back(i);
+                    to.push_back(j);
+                    cost.push_back(std::round(unit(rng) * 20.0) - 14.0);
+                    time_d.push_back(1.0);
+                }
+            }
+        }
+        const int n_arcs = static_cast<int>(from.size());
+        const int denominators[] = {2, 3, 4, 5, 7, 8, 2, 3};
+        for (int d : denominators) {
+            R1Cut cut;
+            std::vector<int> k(N, 0);
+            for (int v = 1; v < N - 1; ++v) {
+                if (unit(rng) < 0.5) {
+                    k[v] = 1 + static_cast<int>(rng() % static_cast<unsigned>(d - 1));
+                    cut.base_set.push_back(v);
+                    cut.multipliers.push_back(static_cast<double>(k[v]) / d);
+                }
+            }
+            std::vector<bool> mem(static_cast<std::size_t>(n_arcs), false);
+            for (int a = 0; a < n_arcs; ++a) {
+                if (unit(rng) < 0.75) {
+                    mem[static_cast<std::size_t>(a)] = true;
+                    cut.memory_arcs.emplace_back(a, 0);
+                }
+            }
+            cut.dual_value = -std::round(unit(rng) * 12.0);
+            cuts.push_back(cut);
+            // The cut's own d: multipliers sharing a smaller one reduce to it,
+            // which prices the same.
+            den.push_back(d);
+            num.push_back(k);
+            remembers.push_back(mem);
+        }
+        arc_res[0] = time_d.data();
+        v_lb[0] = tw_lb.data();
+        v_ub[0] = tw_ub.data();
+        pv.n_vertices = N;
+        pv.source = 0;
+        pv.sink = N - 1;
+        pv.n_arcs = n_arcs;
+        pv.arc_from = from.data();
+        pv.arc_to = to.data();
+        pv.arc_base_cost = cost.data();
+        pv.n_resources = 1;
+        pv.arc_resource = arc_res;
+        pv.vertex_lb = v_lb;
+        pv.vertex_ub = v_ub;
+        pv.n_main_resources = 1;
+    }
+
+    MixedR1CInstance(const MixedR1CInstance&) = delete;
+    MixedR1CInstance& operator=(const MixedR1CInstance&) = delete;
+
+    /// Reduced cost of a path from the cut definition: per memory segment,
+    /// ⌊Σ k_v / d⌋, priced at β = max(0, -σ).
+    [[nodiscard]] double reduced_cost(const std::vector<int>& arcs) const {
+        double rc = 0.0;
+        for (int a : arcs) {
+            rc += cost[static_cast<std::size_t>(a)];
+        }
+        for (std::size_t c = 0; c < cuts.size(); ++c) {
+            int acc = 0;
+            int coef = 0;
+            for (int a : arcs) {
+                if (!remembers[c][static_cast<std::size_t>(a)]) {
+                    coef += acc / den[c];
+                    acc = 0;
+                }
+                acc += num[c][static_cast<std::size_t>(to[static_cast<std::size_t>(a)])];
+            }
+            coef += acc / den[c];
+            rc += std::max(0.0, -cuts[c].dual_value) * coef;
+        }
+        return rc;
+    }
+
+    /// Min reduced cost over every source-sink path, by enumeration.
+    [[nodiscard]] double brute_force_min() const {
+        double best = INF;
+        std::vector<int> arcs;
+        auto dfs = [&](auto&& self, int v) -> void {
+            if (v == N - 1) {
+                best = std::min(best, reduced_cost(arcs));
+                return;
+            }
+            for (std::size_t a = 0; a < from.size(); ++a) {
+                if (from[a] == v) {
+                    arcs.push_back(static_cast<int>(a));
+                    self(self, to[a]);
+                    arcs.pop_back();
+                }
+            }
+        };
+        dfs(dfs, 0);
+        return best;
+    }
+};
+
+/// Labelling's best path prices as the enumeration's best, and every path it
+/// returns prices as the cut definition says. Returns false, checking
+/// nothing, when no path has a negative reduced cost. Counts in `long_paths`
+/// the returned paths of 7 or more arcs. In bidir, a fw label stops past the
+/// midpoint 4, at its fifth arc, and joins across its next arc with the bw
+/// label there; from the seventh arc on, that bw label has visited an
+/// interior vertex, so the join prices a nonzero bw cut state.
+template <std::size_t Words>
+bool check_mixed_r1c(const MixedR1CInstance& inst, bool bidir, int& long_paths) {
+    using Res = BasicR1CResource<Words>;
+    using Pack = ResourcePack<Res>;
+    Solver<Pack> solver(inst.pv, Pack{Res{}},
+                        {.bucket_steps = {2.0, 0.0}, .bidirectional = bidir, .theta = 1e9});
+    // With two words, 21 3-bit cuts at β = 0 fill bits 0-62 first, so the
+    // family's 1-bit cut takes bit 63 and the rest spill into word 1.
+    std::vector<R1Cut> cuts;
+    if constexpr (Words > 1) {
+        for (int i = 0; i < 21; ++i) {
+            cuts.push_back({.base_set = {1}, .multipliers = {1.0 / 8}, .memory_arcs = {}});
+        }
+    }
+    cuts.insert(cuts.end(), inst.cuts.begin(), inst.cuts.end());
+    auto& r1c = solver.template resource<Res>();
+    r1c.set_cuts(cuts, inst.pv.n_vertices, inst.pv.n_arcs);
+    if constexpr (Words > 1) {
+        REQUIRE(r1c.field(21).word == 0);
+        REQUIRE(r1c.field(21).shift == 63);
+        REQUIRE(r1c.field(r1c.n_active() - 1).word == 1);
+    }
+    solver.build();
+    solver.set_stage(Stage::Exact);
+    const auto paths = solver.solve();
+    const double want = inst.brute_force_min();
+    if (want >= 0.0) {
+        return false;
+    }
+    REQUIRE(!paths.empty());
+    double best = INF;
+    for (const auto& p : paths) {
+        CHECK(p.reduced_cost == doctest::Approx(inst.reduced_cost(p.arcs)));
+        best = std::min(best, p.reduced_cost);
+        long_paths += p.arcs.size() >= 7 ? 1 : 0;
+    }
+    CHECK(best == doctest::Approx(want));
+    return true;
+}
+
+}  // namespace
+
+TEST_CASE("R1C with denominators 2-8: labelling finds the brute-force best path") {
+    int with_cut_cost = 0;
+    int checked = 0;
+    int long_mono = 0;
+    int long_bidir = 0;
+    for (unsigned seed = 1; seed <= 25; ++seed) {
+        CAPTURE(seed);
+        const MixedR1CInstance inst(seed);
+        // Every width is in the family.
+        R1CData data;
+        data.set_cuts(inst.cuts, inst.pv.n_vertices, inst.pv.n_arcs);
+        bool widths[4] = {};
+        for (int c = 0; c < data.n_active(); ++c) {
+            widths[data.field(c).width] = true;
+        }
+        CHECK((widths[1] && widths[2] && widths[3]));
+        for (bool bidir : {false, true}) {
+            CAPTURE(bidir);
+            int& long_paths = bidir ? long_bidir : long_mono;
+            checked += check_mixed_r1c<1>(inst, bidir, long_paths) ? 1 : 0;
+            checked += check_mixed_r1c<2>(inst, bidir, long_paths) ? 1 : 0;
+        }
+        // Count instances where the cuts change the best path's cost.
+        double plain = INF;
+        auto dfs = [&](auto&& self, int v, double c) -> void {
+            if (v == MixedR1CInstance::N - 1) {
+                plain = std::min(plain, c);
+                return;
+            }
+            for (std::size_t a = 0; a < inst.from.size(); ++a) {
+                if (inst.from[a] == v) {
+                    self(self, inst.to[a], c + inst.cost[a]);
+                }
+            }
+        };
+        dfs(dfs, 0, 0.0);
+        if (inst.brute_force_min() > plain + 0.5) {
+            ++with_cut_cost;
+        }
+    }
+    CHECK(checked >= 80);       // most instances have a negative path
+    CHECK(with_cut_cost >= 5);  // the cuts matter on a fair share of instances
+    CHECK(long_bidir >= 5);     // bidir prices joins with a nonzero bw state
+    CHECK(long_mono >= 5);
+}

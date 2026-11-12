@@ -242,6 +242,12 @@ Solver<Pack, ThreadPoolExecutor> solver(
   forms, for a solver that needs no sharing. Update `R1CData` (`set_cuts`)
   between solves, never while a solver borrowing it is solving; a view with no
   cuts borrows an `R1CData` that has none.
+- **Rank-1 cut denominators.** An `R1Cut`'s multipliers are k/d in (0, 1)
+  over one denominator d ∈ [2, 8], so the subset-row family from SR12 to
+  SR98 fits, not only the 3/2 cut. Each cut takes ⌈log2 d⌉ state bits (1 for
+  d = 2, 2 for d ≤ 4, 3 above), so one word holds 64 3/2 cuts or 21 cuts with
+  d ≥ 5. `BasicR1CData<Words>` and its view and resource hold `Words` words;
+  `set_cuts` throws when the cuts need more.
 
 ## Custom Resources
 

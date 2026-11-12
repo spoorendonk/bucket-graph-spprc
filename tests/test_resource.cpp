@@ -1,4 +1,7 @@
+#include <algorithm>
+#include <array>
 #include <bgspprc/bucket_graph.h>
+#include <bgspprc/r1c.h>
 #include <bgspprc/resource.h>
 #include <bgspprc/resources/cumulative_cost.h>
 #include <bgspprc/resources/ng_path.h>
@@ -6,7 +9,10 @@
 #include <bgspprc/resources/side.h>
 #include <bgspprc/resources/standard.h>
 #include <bgspprc/solver.h>
+#include <cmath>
+#include <cstdint>
 #include <doctest/doctest.h>
+#include <random>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -2073,4 +2079,353 @@ TEST_CASE("SideResources refuses resources outside the view, and outlives it") {
     auto paths = best_paths(pv, std::move(pack), false);
     REQUIRE(!paths.empty());
     CHECK(paths[0].reduced_cost == doctest::Approx(4.0));
+}
+
+// ── Generalized R1C (#86, #142) ──
+
+namespace {
+
+// A cut over `vertices`, each with multiplier k/d, remembered on `arcs`.
+R1Cut make_r1cut(std::vector<int> vertices, const std::vector<int>& numerators, int d, double dual,
+                 const std::vector<int>& arcs) {
+    R1Cut cut;
+    cut.base_set = std::move(vertices);
+    for (int k : numerators) {
+        cut.multipliers.push_back(static_cast<double>(k) / d);
+    }
+    for (int a : arcs) {
+        cut.memory_arcs.emplace_back(a, 0);
+    }
+    cut.dual_value = dual;
+    return cut;
+}
+
+template <std::size_t Words>
+uint64_t field_value(const BasicR1CData<Words>& data, int cut, const R1CState<Words>& s) {
+    const auto f = data.field(cut);
+    const uint64_t word = BasicR1CView<Words>::word(s, static_cast<std::size_t>(f.word));
+    return (word >> f.shift) & ((1ULL << f.width) - 1);
+}
+
+template <std::size_t Words>
+R1CState<Words> with_fields(const BasicR1CData<Words>& data, const std::vector<uint64_t>& values) {
+    R1CState<Words> s{};
+    for (int c = 0; c < data.n_active(); ++c) {
+        const auto f = data.field(c);
+        const uint64_t bits = values[static_cast<std::size_t>(c)] << f.shift;
+        if constexpr (Words == 1) {
+            s |= bits;
+        } else {
+            s[static_cast<std::size_t>(f.word)] |= bits;
+        }
+    }
+    return s;
+}
+
+// Lowest bit of each `width`-bit field of a word packed full of them.
+uint64_t low_bits(int width) {
+    uint64_t low = 0;
+    for (int b = 0; b + width <= 64; b += width) {
+        low |= 1ULL << b;
+    }
+    return low;
+}
+
+}  // namespace
+
+TEST_CASE("R1C packed exceeds tests match a scalar reference") {
+    using View = BasicR1CView<1>;
+    for (int width : {2, 3}) {
+        CAPTURE(width);
+        const uint64_t low = low_bits(width);
+        const uint64_t field_mask = (1ULL << width) - 1;
+        auto exceeds = [&](uint64_t a, uint64_t b) {
+            return width == 2 ? View::exceeds2(a, b, low) : View::exceeds3(a, b, low);
+        };
+        // Every pair of field values, in every field position.
+        for (uint64_t x = 0; x <= field_mask; ++x) {
+            for (uint64_t y = 0; y <= field_mask; ++y) {
+                for (int b = 0; b + width <= 64; b += width) {
+                    const uint64_t got = exceeds(x << b, y << b);
+                    CHECK(got == (x > y ? 1ULL << b : 0ULL));
+                }
+            }
+        }
+        // Random full words against a field-by-field comparison.
+        std::mt19937_64 rng(86U + static_cast<unsigned>(width));
+        const uint64_t used = width == 2 ? ~0ULL : (1ULL << 63) - 1;  // 21 3-bit fields
+        for (int t = 0; t < 2000; ++t) {
+            const uint64_t a = rng() & used;
+            const uint64_t b = rng() & used;
+            uint64_t want = 0;
+            for (int p = 0; p + width <= 64; p += width) {
+                if (((a >> p) & field_mask) > ((b >> p) & field_mask)) {
+                    want |= 1ULL << p;
+                }
+            }
+            CHECK(exceeds(a, b) == want);
+        }
+    }
+}
+
+TEST_CASE("R1C layout: denominators pick 1-, 2- and 3-bit fields, packed in cut order") {
+    std::vector<R1Cut> cuts;
+    for (int d = 2; d <= kR1CMaxDenominator; ++d) {
+        cuts.push_back(make_r1cut({1}, {1}, d, -1.0, {}));
+    }
+    R1CData data;
+    data.set_cuts(cuts, 3, 2);
+    REQUIRE(data.n_active() == 7);
+    const int widths[] = {1, 2, 2, 3, 3, 3, 3};
+    int shift = 0;
+    for (int c = 0; c < 7; ++c) {
+        CAPTURE(c);
+        CHECK(data.field(c).denominator == c + 2);
+        CHECK(data.field(c).width == widths[c]);
+        CHECK(data.field(c).word == 0);
+        CHECK(data.field(c).shift == shift);
+        shift += widths[c];
+    }
+
+    // 2/4 is 1/2: the smallest common denominator, one bit.
+    R1CData halves;
+    halves.set_cuts(std::vector{make_r1cut({1, 2}, {2, 2}, 4, -1.0, {})}, 3, 2);
+    CHECK(halves.field(0).denominator == 2);
+    CHECK(halves.field(0).width == 1);
+}
+
+TEST_CASE("R1C layout: 64 one-bit cuts are bits 0..63; fields never straddle words") {
+    std::vector<R1Cut> sr32(64, make_r1cut({1, 2, 3}, {1, 1, 1}, 2, -1.0, {0}));
+    R1CData data;
+    data.set_cuts(sr32, 5, 2);
+    for (int c = 0; c < 64; ++c) {
+        CHECK(data.field(c).shift == c);
+    }
+    sr32.push_back(sr32.back());
+    CHECK_THROWS_AS(data.set_cuts(sr32, 5, 2), std::invalid_argument);
+    CHECK(data.n_active() == 64);  // a refused set_cuts keeps the previous cuts
+
+    // 21 three-bit cuts fill one word; a 22nd throws, or takes word 1 of two.
+    std::vector<R1Cut> sr55(22, make_r1cut({1, 2, 3, 4, 5}, {1, 1, 1, 1, 1}, 5, -1.0, {}));
+    CHECK_THROWS_AS(data.set_cuts(sr55, 7, 2), std::invalid_argument);
+    BasicR1CData<2> wide;
+    wide.set_cuts(sr55, 7, 2);
+    CHECK(wide.field(20).word == 0);
+    CHECK(wide.field(20).shift == 60);
+    CHECK(wide.field(21).word == 1);
+    CHECK(wide.field(21).shift == 0);
+
+    // A 2-bit field after 63 one-bit ones starts the next word.
+    std::vector<R1Cut> mixed(63, make_r1cut({1}, {1}, 2, -1.0, {}));
+    mixed.push_back(make_r1cut({1}, {1}, 3, -1.0, {}));
+    wide.set_cuts(mixed, 3, 2);
+    CHECK(wide.field(63).word == 1);
+    CHECK(wide.field(63).shift == 0);
+}
+
+TEST_CASE("R1C refuses malformed cuts") {
+    R1CData data;
+    auto refuses = [&](const R1Cut& cut, int n_vertices = 4, int n_arcs = 3) {
+        CHECK_THROWS_AS(data.set_cuts(std::vector{cut}, n_vertices, n_arcs), std::invalid_argument);
+    };
+    R1Cut sizes = make_r1cut({1, 2}, {1}, 2, -1.0, {});
+    sizes.multipliers.push_back(0.5);
+    sizes.multipliers.push_back(0.5);
+    refuses(sizes);
+    refuses(make_r1cut({1}, {0}, 2, -1.0, {}));        // p = 0
+    refuses(make_r1cut({1}, {2}, 2, -1.0, {}));        // p = 1
+    refuses(make_r1cut({1}, {3}, 10, -1.0, {}));       // 3/10: no d <= 8
+    refuses(make_r1cut({1, 2}, {1, 1}, 9, -1.0, {}));  // 1/9
+    refuses(make_r1cut({4}, {1}, 2, -1.0, {}));        // vertex out of range
+    refuses(make_r1cut({-1}, {1}, 2, -1.0, {}));
+    refuses(make_r1cut({1}, {1}, 2, -1.0, {3}));  // arc out of range
+    refuses(make_r1cut({1}, {1}, 2, std::nan(""), {}));
+    R1Cut nan_p = make_r1cut({1}, {1}, 2, -1.0, {});
+    nan_p.multipliers[0] = std::nan("");
+    refuses(nan_p);
+    CHECK(data.n_active() == 0);
+    CHECK_NOTHROW(data.set_cuts(std::vector{make_r1cut({1}, {1}, 3, 5.0, {2})}, 4, 3));
+    CHECK(data.beta(0) == 0.0);  // a positive dual clamps to β = 0
+}
+
+TEST_CASE("R1C extension adds numerators and pays beta per multiple of the denominator") {
+    // Vertices 1..3 on a line, every arc remembered. One cut per denominator
+    // 3, 5 and 7 with numerators (1, 2, 2), (3, 4, 2), (5, 6, 3), and a 3-SRC.
+    const std::vector<int> all_arcs = {0, 1, 2};
+    const std::vector<R1Cut> cuts = {
+        make_r1cut({1, 2, 3}, {1, 2, 2}, 3, -1.0, all_arcs),
+        make_r1cut({1, 2, 3}, {3, 4, 2}, 5, -10.0, all_arcs),
+        make_r1cut({1, 2, 3}, {5, 6, 3}, 7, -100.0, all_arcs),
+        make_r1cut({1, 2, 3}, {1, 1, 1}, 2, -1000.0, all_arcs),
+    };
+    R1CData data;
+    data.set_cuts(cuts, 4, 3);
+    const R1CView view(data);
+    const int num[4][3] = {{1, 2, 2}, {3, 4, 2}, {5, 6, 3}, {1, 1, 1}};
+    const int den[4] = {3, 5, 7, 2};
+    const double beta[4] = {1.0, 10.0, 100.0, 1000.0};
+
+    // Walk 1, 2, 3, 1, 2, 3 and check every field and cost against the sums.
+    uint64_t s = view.init_state(Direction::Forward);
+    int sum[4] = {};
+    const int walk[] = {1, 2, 3, 1, 2, 3};
+    for (int v : walk) {
+        CAPTURE(v);
+        auto [s_arc, c_arc] = view.extend_along_arc(Direction::Forward, s, v - 1);
+        CHECK(s_arc == s);
+        CHECK(c_arc == 0.0);
+        auto [next, cost] = view.extend_to_vertex(Direction::Forward, s_arc, v);
+        double want = 0.0;
+        for (int c = 0; c < 4; ++c) {
+            const int before = sum[c] / den[c];
+            sum[c] += num[c][v - 1];
+            const int crossed = (sum[c] / den[c]) - before;  // multiples of d passed
+            want += beta[c] * crossed;
+            CHECK(field_value(data, c, next) == static_cast<uint64_t>(sum[c] % den[c]));
+        }
+        CHECK(cost == doctest::Approx(want));
+        s = next;
+    }
+
+    // A vertex listed twice adds both, as pull-rcspp does: 1/2 + 1/2 pays β on
+    // every visit; 2/5 + 2/5 + 2/5 = 6/5 pays β once and leaves 1/5.
+    R1CData twice;
+    twice.set_cuts(std::vector{make_r1cut({1, 1}, {1, 1}, 2, -3.0, {})}, 2, 1);
+    const R1CView tv(twice);
+    auto [t1, tc1] = tv.extend_to_vertex(Direction::Forward, 0, 1);
+    CHECK(t1 == 0);
+    CHECK(tc1 == 3.0);
+    R1CData thrice;
+    thrice.set_cuts(std::vector{make_r1cut({1, 1, 1}, {2, 2, 2}, 5, -4.0, {})}, 2, 1);
+    const R1CView hv(thrice);
+    auto [h1, hc1] = hv.extend_to_vertex(Direction::Forward, 0, 1);
+    CHECK(field_value(thrice, 0, h1) == 1);
+    CHECK(hc1 == 4.0);
+}
+
+TEST_CASE("R1C leaving the memory clears only the cuts that do not remember the arc") {
+    // Cut 0 (d = 3) remembers arc 0, cut 1 (d = 5) arc 1, cut 2 (d = 2) both.
+    const std::vector<R1Cut> cuts = {
+        make_r1cut({1}, {2}, 3, -1.0, {0}),
+        make_r1cut({1}, {4}, 5, -1.0, {1}),
+        make_r1cut({1}, {1}, 2, -1.0, {0, 1}),
+    };
+    R1CData data;
+    data.set_cuts(cuts, 3, 2);
+    const R1CView view(data);
+    auto [s, cost] = view.extend_to_vertex(Direction::Forward, 0, 1);
+    CHECK(cost == 0.0);
+    REQUIRE(s == with_fields(data, {2, 4, 1}));
+    CHECK(view.extend_along_arc(Direction::Forward, s, 0).first == with_fields(data, {2, 0, 1}));
+    CHECK(view.extend_along_arc(Direction::Backward, s, 1).first == with_fields(data, {0, 4, 1}));
+}
+
+TEST_CASE("R1C domination cost is the beta of each cut the dominator is ahead on") {
+    // One cut per denominator, distinct β; every pair of states of the 2-, 3-
+    // and 5-denominator cuts, against the scalar sum and a brute-force bound.
+    const std::vector<R1Cut> cuts = {
+        make_r1cut({1}, {1}, 2, -1.0, {}),
+        make_r1cut({1}, {1}, 3, -2.0, {}),
+        make_r1cut({1}, {1}, 5, -4.0, {}),
+        make_r1cut({1}, {1}, 8, -8.0, {}),
+    };
+    R1CData data;
+    data.set_cuts(cuts, 2, 1);
+    const R1CView view(data);
+    const int den[4] = {2, 3, 5, 8};
+    for (uint64_t a0 = 0; a0 < 2; ++a0) {
+        for (uint64_t a1 = 0; a1 < 3; ++a1) {
+            for (uint64_t a2 = 0; a2 < 5; ++a2) {
+                for (uint64_t b0 = 0; b0 < 2; ++b0) {
+                    for (uint64_t b1 = 0; b1 < 3; ++b1) {
+                        for (uint64_t b2 = 0; b2 < 5; ++b2) {
+                            for (uint64_t a3 : {0ULL, 3ULL, 7ULL}) {
+                                const uint64_t b3 = 3;
+                                const std::vector<uint64_t> a = {a0, a1, a2, a3};
+                                const std::vector<uint64_t> b = {b0, b1, b2, b3};
+                                double want = 0.0;
+                                for (int c = 0; c < 4; ++c) {
+                                    // Brute force: the most more coefficient a
+                                    // completion adding x can cost a than b.
+                                    int worst = 0;
+                                    for (int x = 0; x < 2 * den[c]; ++x) {
+                                        const auto ai = static_cast<int>(a[c]);
+                                        const auto bi = static_cast<int>(b[c]);
+                                        worst = std::max(worst,
+                                                         ((ai + x) / den[c]) - ((bi + x) / den[c]));
+                                    }
+                                    want += data.beta(c) * worst;
+                                }
+                                CHECK(view.domination_cost(Direction::Forward, 1,
+                                                           with_fields(data, a),
+                                                           with_fields(data, b)) == want);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    CHECK(view.min_domination_cost() == 0.0);
+}
+
+TEST_CASE("R1C splice cost is beta times floor((fw + bw) / d) per cut") {
+    const std::vector<R1Cut> cuts = {
+        make_r1cut({1}, {1}, 2, -1.0, {}),
+        make_r1cut({1}, {1}, 4, -2.0, {}),
+        make_r1cut({1}, {1}, 7, -4.0, {}),
+    };
+    R1CData data;
+    data.set_cuts(cuts, 2, 1);
+    const R1CView view(data);
+    const int den[3] = {2, 4, 7};
+    for (uint64_t f0 = 0; f0 < 2; ++f0) {
+        for (uint64_t f1 = 0; f1 < 4; ++f1) {
+            for (uint64_t f2 = 0; f2 < 7; ++f2) {
+                for (uint64_t b0 = 0; b0 < 2; ++b0) {
+                    for (uint64_t b1 = 0; b1 < 4; ++b1) {
+                        for (uint64_t b2 = 0; b2 < 7; ++b2) {
+                            const std::vector<uint64_t> f = {f0, f1, f2};
+                            const std::vector<uint64_t> b = {b0, b1, b2};
+                            double want = 0.0;
+                            for (int c = 0; c < 3; ++c) {
+                                const uint64_t crossed =
+                                    (f[c] + b[c]) / static_cast<uint64_t>(den[c]);
+                                want += data.beta(c) * static_cast<double>(crossed);
+                            }
+                            CHECK(view.concatenation_cost(Symmetry::Asymmetric, 1,
+                                                          with_fields(data, f),
+                                                          with_fields(data, b)) == want);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("R1C on two words: a field in the second word extends, dominates and splices") {
+    // 21 three-bit cuts fill word 0; cut 21 (d = 3) lands in word 1.
+    std::vector<R1Cut> cuts(21, make_r1cut({2}, {1}, 5, -1.0, {0}));
+    cuts.push_back(make_r1cut({1}, {2}, 3, -6.0, {0}));
+    BasicR1CResource<2> r1c;
+    r1c.set_cuts(cuts, 3, 1);
+    REQUIRE(r1c.field(21).word == 1);
+    using State = BasicR1CResource<2>::State;
+    static_assert(std::is_same_v<State, std::array<uint64_t, 2>>);
+
+    auto [s1, c1] = r1c.extend_to_vertex(Direction::Forward, r1c.init_state(Direction::Forward), 1);
+    CHECK(c1 == 0.0);
+    CHECK(s1 == State{0, 2});
+    auto [s2, c2] = r1c.extend_to_vertex(Direction::Forward, s1, 1);
+    CHECK(c2 == 6.0);  // 2 + 2 = 4 reaches 3 once
+    CHECK(s2 == State{0, 1});
+    CHECK(r1c.extend_along_arc(Direction::Forward, s2, 0).first == s2);
+
+    CHECK(r1c.domination_cost(Direction::Forward, 1, s1, s2) == 6.0);
+    CHECK(r1c.domination_cost(Direction::Forward, 1, s2, s1) == 0.0);
+    CHECK(r1c.concatenation_cost(Symmetry::Asymmetric, 1, s1, s2) == 6.0);
+    CHECK(r1c.concatenation_cost(Symmetry::Asymmetric, 1, s2, s2) == 0.0);
+    static_assert(Resource<BasicR1CResource<2>>);
+    static_assert(Resource<BasicR1CView<2>>);
 }

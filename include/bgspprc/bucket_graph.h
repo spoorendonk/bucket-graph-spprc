@@ -304,12 +304,6 @@ private:
         derive_bucket_steps();
         if constexpr (Pack::size > 0) {
             min_dom_cost_ = pack_.min_domination_cost();
-            if constexpr (has_r1c_) {
-                min_dom_cost_excl_r1c_ =
-                    min_dom_cost_ - std::get<r1c_idx_>(pack_.resources).min_domination_cost();
-            } else {
-                min_dom_cost_excl_r1c_ = min_dom_cost_;
-            }
         }
         for (int r = 0; r < n_main_; ++r) {
             main_nondisposable_[r] = pv_.resource_nondisposable && pv_.resource_nondisposable[r];
@@ -921,16 +915,13 @@ private:
 
     static constexpr bool has_ng_ = detail::NgResourceIndex<Pack>::has_ng;
     static constexpr std::size_t ng_idx_ = detail::NgResourceIndex<Pack>::value;
-    static constexpr bool has_r1c_ = detail::R1CResourceIndex<Pack>::has_r1c;
-    static constexpr std::size_t r1c_idx_ = detail::R1CResourceIndex<Pack>::value;
 
     struct BucketLabels {
         std::vector<std::vector<Label<Pack>*>> labels;
         std::vector<std::vector<double>> costs;
         std::vector<std::vector<double>> q0;
         std::vector<std::vector<double>> q1;
-        std::vector<std::vector<uint32_t>> ng_bits;   // self-bit-stripped ng states
-        std::vector<std::vector<uint64_t>> r1c_bits;  // R1C cut states
+        std::vector<std::vector<uint32_t>> ng_bits;  // self-bit-stripped ng states
 
         void resize(std::size_t n) {
             labels.resize(n);
@@ -939,9 +930,6 @@ private:
             q1.resize(n);
             if constexpr (has_ng_) {
                 ng_bits.resize(n);
-            }
-            if constexpr (has_r1c_) {
-                r1c_bits.resize(n);
             }
         }
 
@@ -1704,15 +1692,6 @@ private:
         }
     }
 
-    /// Extract R1C bit state from a label.
-    uint64_t label_r1c_bits(const Label<Pack>* L) const {
-        if constexpr (has_r1c_) {
-            return std::get<r1c_idx_>(L->resource_states);
-        } else {
-            return 0;
-        }
-    }
-
     void insert_sorted(BucketLabels& bl, int bi, Label<Pack>* L) const {
         auto& bucket_costs = bl.costs[bi];
         auto pos = std::lower_bound(bucket_costs.begin(), bucket_costs.end(), L->cost);
@@ -1723,9 +1702,6 @@ private:
         bl.q1[bi].insert(bl.q1[bi].begin() + idx, L->q[1]);
         if constexpr (has_ng_) {
             bl.ng_bits[bi].insert(bl.ng_bits[bi].begin() + idx, label_ng_bits(L));
-        }
-        if constexpr (has_r1c_) {
-            bl.r1c_bits[bi].insert(bl.r1c_bits[bi].begin() + idx, label_r1c_bits(L));
         }
     }
 
@@ -1751,19 +1727,9 @@ private:
             ng_data = bl.ng_bits[bi].data();
         }
 
-        // Precompute new label's R1C bits for dominance pre-filter
-        [[maybe_unused]] uint64_t new_r1c = 0;
-        [[maybe_unused]] const uint64_t* r1c_data = nullptr;
-        if constexpr (has_r1c_) {
-            new_r1c = label_r1c_bits(L);
-            r1c_data = bl.r1c_bits[bi].data();
-        }
-
-        // In heuristic stages, ng/r1c checks are skipped (cost-only dominance)
+        // In heuristic stages, ng checks are skipped (cost-only dominance)
         [[maybe_unused]] const bool check_ng =
             has_ng_ && opts_.stage != Stage::Heuristic1 && opts_.stage != Stage::Heuristic2;
-        [[maybe_unused]] const bool check_r1c =
-            has_r1c_ && opts_.stage != Stage::Heuristic1 && opts_.stage != Stage::Heuristic2;
 
         std::size_t i = 0;
         for (; i + W <= n; i += W) {
@@ -1815,15 +1781,6 @@ private:
                 if (check_ng && (ng_data[i + j] & ~new_ng)) {
                     continue;
                 }
-                // R1C SoA pre-filter: if existing has no disadvantage, tighten cost bound
-                if (check_r1c) {
-                    uint64_t disadvantage = new_r1c & ~r1c_data[i + j];
-                    if (disadvantage == 0) {
-                        if (bucket_costs[i + j] + min_dom_cost_excl_r1c_ > threshold) {
-                            continue;
-                        }
-                    }
-                }
                 auto* existing = bucket[i + j];
                 if (existing->dominated) {
                     continue;
@@ -1845,14 +1802,6 @@ private:
             }
             if (check_ng && (ng_data[i] & ~new_ng)) {
                 continue;
-            }
-            if (check_r1c) {
-                uint64_t disadvantage = new_r1c & ~r1c_data[i];
-                if (disadvantage == 0) {
-                    if (bucket_costs[i] + min_dom_cost_excl_r1c_ > threshold) {
-                        continue;
-                    }
-                }
             }
             auto* existing = bucket[i];
             if (existing->dominated) {
@@ -1882,16 +1831,8 @@ private:
             new_ng = label_ng_bits(L);
             ng_data = bl.ng_bits[bi].data();
         }
-        [[maybe_unused]] uint64_t new_r1c = 0;
-        [[maybe_unused]] const uint64_t* r1c_data = nullptr;
-        if constexpr (has_r1c_) {
-            new_r1c = label_r1c_bits(L);
-            r1c_data = bl.r1c_bits[bi].data();
-        }
         [[maybe_unused]] const bool check_ng =
             has_ng_ && opts_.stage != Stage::Heuristic1 && opts_.stage != Stage::Heuristic2;
-        [[maybe_unused]] const bool check_r1c =
-            has_r1c_ && opts_.stage != Stage::Heuristic1 && opts_.stage != Stage::Heuristic2;
 
         for (std::size_t i = 0; i < bucket.size(); ++i) {
             if (bucket_costs[i] + min_dom_cost_ > threshold) {
@@ -1903,14 +1844,6 @@ private:
             }
             if (check_ng && (ng_data[i] & ~new_ng)) {
                 continue;
-            }
-            if (check_r1c) {
-                uint64_t disadvantage = new_r1c & ~r1c_data[i];
-                if (disadvantage == 0) {
-                    if (bucket_costs[i] + min_dom_cost_excl_r1c_ > threshold) {
-                        continue;
-                    }
-                }
             }
             auto* existing = bucket[i];
             if (existing->dominated) {
@@ -1939,14 +1872,8 @@ private:
         if constexpr (has_ng_) {
             new_ng = label_ng_bits(L);
         }
-        [[maybe_unused]] uint64_t new_r1c = 0;
-        if constexpr (has_r1c_) {
-            new_r1c = label_r1c_bits(L);
-        }
         [[maybe_unused]] const bool check_ng =
             has_ng_ && opts_.stage != Stage::Heuristic1 && opts_.stage != Stage::Heuristic2;
-        [[maybe_unused]] const bool check_r1c =
-            has_r1c_ && opts_.stage != Stage::Heuristic1 && opts_.stage != Stage::Heuristic2;
 
         if (dir == Direction::Forward) {
             for (int i0 = 0; i0 <= k0; ++i0) {
@@ -1970,13 +1897,6 @@ private:
                         }
                         if (check_ng && (bl.ng_bits[other][idx] & ~new_ng)) {
                             continue;
-                        }
-                        if (check_r1c) {
-                            uint64_t disadvantage = new_r1c & ~bl.r1c_bits[other][idx];
-                            if (disadvantage == 0 &&
-                                ocosts[idx] + min_dom_cost_excl_r1c_ > threshold) {
-                                continue;
-                            }
                         }
                         auto* existing = obucket[idx];
                         if (existing->dominated) {
@@ -2012,13 +1932,6 @@ private:
                         if (check_ng && (bl.ng_bits[other][idx] & ~new_ng)) {
                             continue;
                         }
-                        if (check_r1c) {
-                            uint64_t disadvantage = new_r1c & ~bl.r1c_bits[other][idx];
-                            if (disadvantage == 0 &&
-                                ocosts[idx] + min_dom_cost_excl_r1c_ > threshold) {
-                                continue;
-                            }
-                        }
                         auto* existing = obucket[idx];
                         if (existing->dominated) {
                             continue;
@@ -2049,14 +1962,8 @@ private:
         if constexpr (has_ng_) {
             new_ng = label_ng_bits(new_label);
         }
-        [[maybe_unused]] uint64_t new_r1c = 0;
-        if constexpr (has_r1c_) {
-            new_r1c = label_r1c_bits(new_label);
-        }
         [[maybe_unused]] const bool check_ng =
             has_ng_ && opts_.stage != Stage::Heuristic1 && opts_.stage != Stage::Heuristic2;
-        [[maybe_unused]] const bool check_r1c =
-            has_r1c_ && opts_.stage != Stage::Heuristic1 && opts_.stage != Stage::Heuristic2;
 
         for (std::size_t i = start; i < bl.labels[bi].size(); ++i) {
             auto* existing = bl.labels[bi][i];
@@ -2065,14 +1972,6 @@ private:
                 // new_label's ng is a subset of existing's ng
                 if (check_ng && (new_ng & ~bl.ng_bits[bi][i])) {
                     continue;
-                }
-                // Reversed R1C check: existing_r1c & ~new_r1c is the disadvantage
-                if (check_r1c) {
-                    uint64_t disadvantage = bl.r1c_bits[bi][i] & ~new_r1c;
-                    if (disadvantage == 0 &&
-                        new_label->cost + min_dom_cost_excl_r1c_ > bucket_costs[i] + EPS) {
-                        continue;
-                    }
                 }
                 ++counters_for(dir).dominance_checks;
                 if (dominates(new_label, existing, dir)) {
@@ -2104,9 +2003,6 @@ private:
             bl.q1[actual_bi].push_back(new_label->q[1]);
             if constexpr (has_ng_) {
                 bl.ng_bits[actual_bi].push_back(label_ng_bits(new_label));
-            }
-            if constexpr (has_r1c_) {
-                bl.r1c_bits[actual_bi].push_back(label_r1c_bits(new_label));
             }
             ++label_count;
             auto& dc = counters_for(dir);
@@ -2142,9 +2038,6 @@ private:
                 bl.q1[actual_bi][0] = new_label->q[1];
                 if constexpr (has_ng_) {
                     bl.ng_bits[actual_bi][0] = label_ng_bits(new_label);
-                }
-                if constexpr (has_r1c_) {
-                    bl.r1c_bits[actual_bi][0] = label_r1c_bits(new_label);
                 }
                 return true;
             }
@@ -2219,8 +2112,6 @@ private:
         // Precompute SoA filter data for survivors.
         [[maybe_unused]] const bool check_ng =
             has_ng_ && opts_.stage != Stage::Heuristic1 && opts_.stage != Stage::Heuristic2;
-        [[maybe_unused]] const bool check_r1c =
-            has_r1c_ && opts_.stage != Stage::Heuristic1 && opts_.stage != Stage::Heuristic2;
 
         // Precompute q0/q1 for batch survivors.
         double batch_q0[128];
@@ -2230,17 +2121,11 @@ private:
             batch_q1[i] = batch[i]->q[1];
         }
 
-        // Precompute ng/r1c bits for batch survivors.
+        // Precompute ng bits for batch survivors.
         [[maybe_unused]] uint32_t batch_ng[128];
-        [[maybe_unused]] uint64_t batch_r1c[128];
         if constexpr (has_ng_) {
             for (int i = 0; i < batch_size; ++i) {
                 batch_ng[i] = batch[i]->dominated ? 0 : label_ng_bits(batch[i]);
-            }
-        }
-        if constexpr (has_r1c_) {
-            for (int i = 0; i < batch_size; ++i) {
-                batch_r1c[i] = batch[i]->dominated ? 0 : label_r1c_bits(batch[i]);
             }
         }
 
@@ -2253,14 +2138,10 @@ private:
             auto* existing = bucket[ei];
             double ec = bucket_costs[ei];
 
-            // Precompute existing label's ng/r1c bits once per iteration.
+            // Precompute existing label's ng bits once per iteration.
             [[maybe_unused]] uint32_t existing_ng = 0;
-            [[maybe_unused]] uint64_t existing_r1c = 0;
             if constexpr (has_ng_) {
                 existing_ng = bl.ng_bits[target_bi][ei];
-            }
-            if constexpr (has_r1c_) {
-                existing_r1c = bl.r1c_bits[target_bi][ei];
             }
 
             // Skip the SoA pre-filter entirely when both dispatch loops below
@@ -2278,7 +2159,7 @@ private:
             // Precompute SoA pre-filter pass masks for both directions:
             //   pass_a[j] = 1 if SoA fields allow existing to dominate batch[j]
             //   pass_b[j] = 1 if SoA fields allow batch[j] to dominate existing
-            // Per-entry checks (cost, batch[j]->dominated, R1C bits) stay in
+            // Per-entry checks (cost, batch[j]->dominated) stay in
             // the scalar dispatch below. Both writers cover [0, batch_size)
             // exhaustively, so no zero-init is needed.
             uint8_t pass_a[128];
@@ -2428,15 +2309,6 @@ private:
                     if (ec + min_dom_cost_ > batch[j]->cost + EPS) {
                         continue;
                     }
-                    if constexpr (has_r1c_) {
-                        if (check_r1c) {
-                            uint64_t disadvantage = batch_r1c[j] & ~existing_r1c;
-                            if (disadvantage == 0 &&
-                                ec + min_dom_cost_excl_r1c_ > batch[j]->cost + EPS) {
-                                continue;
-                            }
-                        }
-                    }
                     ++counters_for(dir).dominance_checks;
                     if (dominates(existing, batch[j], dir)) {
                         batch[j]->dominated = true;
@@ -2461,15 +2333,6 @@ private:
                 }
                 if (batch[j]->cost + min_dom_cost_ > ec + EPS) {
                     continue;
-                }
-                if constexpr (has_r1c_) {
-                    if (check_r1c) {
-                        uint64_t disadvantage = existing_r1c & ~batch_r1c[j];
-                        if (disadvantage == 0 &&
-                            batch[j]->cost + min_dom_cost_excl_r1c_ > ec + EPS) {
-                            continue;
-                        }
-                    }
                 }
                 ++counters_for(dir).dominance_checks;
                 if (dominates(batch[j], existing, dir)) {
@@ -3757,9 +3620,6 @@ private:
             if constexpr (has_ng_) {
                 bl.ng_bits[i].clear();
             }
-            if constexpr (has_r1c_) {
-                bl.r1c_bits[i].clear();
-            }
         };
         if (n >= 1024) {
             executor_.parallel_for(0, n, clear);
@@ -3790,13 +3650,6 @@ private:
             ng.resize(surviving.size());
             for (std::size_t i = 0; i < surviving.size(); ++i) {
                 ng[i] = label_ng_bits(surviving[i]);
-            }
-        }
-        if constexpr (has_r1c_) {
-            auto& r1c = bl.r1c_bits[bi];
-            r1c.resize(surviving.size());
-            for (std::size_t i = 0; i < surviving.size(); ++i) {
-                r1c[i] = label_r1c_bits(surviving[i]);
             }
         }
     }
@@ -3910,12 +3763,6 @@ private:
         reset_c_best();
         if constexpr (Pack::size > 0) {
             min_dom_cost_ = pack_.min_domination_cost();
-            if constexpr (has_r1c_) {
-                min_dom_cost_excl_r1c_ =
-                    min_dom_cost_ - std::get<r1c_idx_>(pack_.resources).min_domination_cost();
-            } else {
-                min_dom_cost_excl_r1c_ = min_dom_cost_;
-            }
         }
 
         total_enum_labels_ = 0;
@@ -3947,9 +3794,6 @@ private:
         fw_labels_.q1[src_bi].push_back(src->q[1]);
         if constexpr (has_ng_) {
             fw_labels_.ng_bits[src_bi].push_back(label_ng_bits(src));
-        }
-        if constexpr (has_r1c_) {
-            fw_labels_.r1c_bits[src_bi].push_back(label_r1c_bits(src));
         }
         if (opts_.stage == Stage::Enumerate) {
             ++fw_counters_.total_enum_labels;
@@ -4049,12 +3893,6 @@ private:
         reset_c_best();
         if constexpr (Pack::size > 0) {
             min_dom_cost_ = pack_.min_domination_cost();
-            if constexpr (has_r1c_) {
-                min_dom_cost_excl_r1c_ =
-                    min_dom_cost_ - std::get<r1c_idx_>(pack_.resources).min_domination_cost();
-            } else {
-                min_dom_cost_excl_r1c_ = min_dom_cost_;
-            }
         }
 
         // label_count reset handled by fw_counters_.reset() / bw_counters_.reset()
@@ -4115,9 +3953,6 @@ private:
             if constexpr (has_ng_) {
                 fw_labels_.ng_bits[src_bi].push_back(label_ng_bits(src));
             }
-            if constexpr (has_r1c_) {
-                fw_labels_.r1c_bits[src_bi].push_back(label_r1c_bits(src));
-            }
 
             // Set parallel_ before creating bw seed so it uses bw_pool_
             parallel_ = true;
@@ -4134,9 +3969,6 @@ private:
             bw_labels_.q1[snk_bi].push_back(snk->q[1]);
             if constexpr (has_ng_) {
                 bw_labels_.ng_bits[snk_bi].push_back(label_ng_bits(snk));
-            }
-            if constexpr (has_r1c_) {
-                bw_labels_.r1c_bits[snk_bi].push_back(label_r1c_bits(snk));
             }
 
             if (!warm_labels_.empty()) {
@@ -4187,9 +4019,6 @@ private:
             if constexpr (has_ng_) {
                 bw_labels_.ng_bits[snk_bi].push_back(label_ng_bits(snk));
             }
-            if constexpr (has_r1c_) {
-                bw_labels_.r1c_bits[snk_bi].push_back(label_r1c_bits(snk));
-            }
             if (opts_.stage == Stage::Enumerate) {
                 ++bw_counters_.total_enum_labels;
                 ++bw_counters_.enum_sink_labels;
@@ -4216,9 +4045,6 @@ private:
             fw_labels_.q1[src_bi].push_back(src->q[1]);
             if constexpr (has_ng_) {
                 fw_labels_.ng_bits[src_bi].push_back(label_ng_bits(src));
-            }
-            if constexpr (has_r1c_) {
-                fw_labels_.r1c_bits[src_bi].push_back(label_r1c_bits(src));
             }
             if (opts_.stage == Stage::Enumerate) {
                 ++fw_counters_.total_enum_labels;
@@ -4990,8 +4816,7 @@ private:
     double resource_min_lb_ = 0.0;
     double resource_max_ub_ = 0.0;
 
-    double min_dom_cost_ = 0.0;           // cached pack_.min_domination_cost()
-    double min_dom_cost_excl_r1c_ = 0.0;  // min_dom_cost_ excluding R1C contribution
+    double min_dom_cost_ = 0.0;  // cached pack_.min_domination_cost()
 
     // BG2021 §6.3 A+: dominance check counters (reset per solve)
     mutable int64_t dominance_checks_ = 0;  // same-bucket dominates() calls

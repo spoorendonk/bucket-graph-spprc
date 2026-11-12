@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Rank-1 cuts with denominators 2-8** (#142, part of #86): `R1Cut` multipliers may be any k/d in (0, 1) over one denominator d ≤ 8 (SR12, SR32, SR52, SR43, SR53, SR54, SR55, SR65, SR76, SR87, SR98), not only 1/2. Each cut keeps its running sum mod d in a field of 1-3 bits. A vertex listed twice in a base set adds both multipliers, as pull-rcspp's cuts do.
+  - `BasicR1CData<Words>`, `BasicR1CView<Words>` and `BasicR1CResource<Words>` hold the fields in `Words` 64-bit words; `R1CData`, `R1CView` and `R1CResource` are the one-word forms, with `State = uint64_t` as before, and a 3/2 cut is still bit c.
+
+### Breaking changes
+
+- **`R1CData::set_cuts` refuses malformed cuts** (#142): it throws `std::invalid_argument` on a multiplier that is not k/d with d ≤ 8, a base-set vertex or memory arc out of range, or a NaN multiplier or dual, and when the fields need more bits than the words hold; it keeps the previous cuts. Before, an out-of-range vertex or memory arc was skipped and a NaN dual priced as β = 0, without error.
+- **A vertex listed twice in an `R1Cut` counts twice** (#142): its multipliers add up. Before, a 3/2 cut counted it once.
+
 ## 0.2.0 (2026-11-11)
 
 bucket-graph-spprc 0.2.0 carries the shared pricer contract (flowty/flowty#58) and a round of correctness fixes since 0.1.0.
