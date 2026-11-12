@@ -452,10 +452,11 @@ private:
 /// finds it in a pack.
 ///
 /// State: per cut, its running sum mod d in its field (see `BasicR1CData`).
-/// extend_along_arc: memory reset (keep the fields of cuts where arc ∈ AM)
+/// extend_along_arc: memory reset (keep the fields of cuts that remember the
+///   arc: arc ∈ AM, or both its ends in M' for vertex memory).
 /// extend_to_vertex: add the vertex's numerators; a sum reaching d pays +β
-/// per multiple of d and keeps the remainder. On 1-bit cuts with numerator 1
-/// (the 3-SRC) that is a toggle, and runs word-parallel.
+///   per multiple of d and keeps the remainder. On 1-bit cuts with numerator
+///   1 (the 3-SRC) that is a toggle, and runs word-parallel.
 template <std::size_t Words>
 class BasicR1CView {
 public:
@@ -511,7 +512,8 @@ public:
 
     [[nodiscard]] State init_state(Direction /*dir*/) const { return State{}; }
 
-    /// Memory reset along arc: keep the fields of cuts where arc ∈ AM.
+    /// Memory reset along arc: keep the fields of cuts that remember the arc
+    /// (arc ∈ AM, or both ends in M').
     [[nodiscard]] std::pair<State, double> extend_along_arc(Direction /*dir*/, State state,
                                                             int arc_id) const {
         if (data_->n_active_ == 0) {
