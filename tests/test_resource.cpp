@@ -2100,18 +2100,30 @@ R1Cut make_r1cut(std::vector<int> vertices, const std::vector<int>& numerators, 
     return cut;
 }
 
+// Cut `cut`'s field in a state at `vertex` (ignored on the global layout);
+// 0 where the cut has no slot there.
 template <std::size_t Words>
-uint64_t field_value(const BasicR1CData<Words>& data, int cut, const R1CState<Words>& s) {
-    const auto f = data.field(cut);
+uint64_t field_value(const BasicR1CData<Words>& data, int cut, const R1CState<Words>& s,
+                     int vertex = 0) {
+    const auto f = data.field(cut, vertex);
+    if (f.word < 0) {
+        return 0;
+    }
     const uint64_t word = BasicR1CView<Words>::word(s, static_cast<std::size_t>(f.word));
     return (word >> f.shift) & ((1ULL << f.width) - 1);
 }
 
+// A state at `vertex` (ignored on the global layout) with each cut's field
+// set to `values[c]`, skipping the cuts that have no slot there.
 template <std::size_t Words>
-R1CState<Words> with_fields(const BasicR1CData<Words>& data, const std::vector<uint64_t>& values) {
+R1CState<Words> with_fields(const BasicR1CData<Words>& data, const std::vector<uint64_t>& values,
+                            int vertex = 0) {
     R1CState<Words> s{};
     for (int c = 0; c < data.n_active(); ++c) {
-        const auto f = data.field(c);
+        const auto f = data.field(c, vertex);
+        if (f.word < 0) {
+            continue;
+        }
         const uint64_t bits = values[static_cast<std::size_t>(c)] << f.shift;
         if constexpr (Words == 1) {
             s |= bits;
@@ -2319,7 +2331,7 @@ TEST_CASE("R1CError carries the code, cut and vertex of each refusal") {
           -1);
     {
         const std::vector<R1VertexCut> full(22, {.coefficients = {{1, 1}}, .denominator = 5});
-        check(refusal([&] { data.set_cuts(full, line.pv); }), R1CErrc::TooManyCounters, 21, -1);
+        check(refusal([&] { data.set_cuts(full, line.pv); }), R1CErrc::TooManyCounters, 21, 1);
     }
     CHECK(data.n_active() == 0);  // every refusal kept the previous (empty) cuts
 
@@ -2345,7 +2357,6 @@ TEST_CASE("R1C vertex memory keeps the sum on arcs with both ends in memory or t
     CHECK(r1c.field(1).denominator == 3);
 
     const std::vector<uint64_t> full = {3, 2};
-    const auto s = with_fields(r1c, full);
     const std::vector<std::vector<uint64_t>> kept = {
         {0, 0},  // 0 → 1: 0 ∉ M'_0 = {1, 2, 3} and 1 ∉ M'_1 = {0, 2}
         {3, 0},  // 1 → 2
@@ -2356,17 +2367,127 @@ TEST_CASE("R1C vertex memory keeps the sum on arcs with both ends in memory or t
     };
     for (int a = 0; a < line.pv.n_arcs; ++a) {
         CAPTURE(a);
+        const int tail = line.from[static_cast<std::size_t>(a)];
+        const int head = line.to[static_cast<std::size_t>(a)];
+        // A cut with no slot at the tail has nothing to keep.
+        const auto s = with_fields(r1c, full, tail);
         const auto [t, cost] = r1c.extend_along_arc(Direction::Forward, s, a);
         CHECK(cost == 0.0);
-        CHECK(field_value(r1c, 0, t) == kept[static_cast<std::size_t>(a)][0]);
-        CHECK(field_value(r1c, 1, t) == kept[static_cast<std::size_t>(a)][1]);
+        CHECK(field_value(r1c, 0, t, head) == kept[static_cast<std::size_t>(a)][0]);
+        CHECK(field_value(r1c, 1, t, head) == kept[static_cast<std::size_t>(a)][1]);
     }
 
     // Vertex 2 adds 2/4 to cut 0 and 2/3 to cut 1.
-    auto [t, cost] = r1c.extend_to_vertex(Direction::Forward, with_fields(r1c, {2, 2}), 2);
-    CHECK(field_value(r1c, 0, t) == 0);
-    CHECK(field_value(r1c, 1, t) == 1);
+    auto [t, cost] = r1c.extend_to_vertex(Direction::Forward, with_fields(r1c, {2, 2}, 2), 2);
+    CHECK(field_value(r1c, 0, t, 2) == 0);
+    CHECK(field_value(r1c, 1, t, 2) == 1);
     CHECK(cost == doctest::Approx(4.0));
+}
+
+TEST_CASE("R1C per-vertex layout packs each vertex's cuts and moves kept fields") {
+    const R1CLine line;
+    // A = {1, 2} d 2, B = {2, 3} d 3, C = {1, 3} + memory {2} d 2.
+    const std::vector<R1VertexCut> cuts = {
+        {.coefficients = {{1, 1}, {2, 1}}, .dual = -1.0},
+        {.coefficients = {{2, 1}, {3, 1}}, .denominator = 3, .dual = -2.0},
+        {.coefficients = {{1, 1}, {3, 1}}, .memory = {2}, .dual = -4.0},
+    };
+    R1CResource r1c;
+    r1c.set_cuts(cuts, line.pv);
+    REQUIRE(r1c.per_vertex());
+    auto at = [&](int c, int v) {
+        const auto f = r1c.field(c, v);
+        return f.word < 0 ? -1 : f.shift;
+    };
+    // Each vertex packs its own cuts in cut order from bit 0.
+    CHECK(at(0, 1) == 0);
+    CHECK(at(1, 1) == -1);
+    CHECK(at(2, 1) == 1);
+    CHECK(at(0, 2) == 0);
+    CHECK(at(1, 2) == 1);
+    CHECK(at(2, 2) == 3);
+    CHECK(at(0, 3) == -1);
+    CHECK(at(1, 3) == 0);
+    CHECK(at(2, 3) == 2);
+    CHECK(at(0, 0) == -1);
+    CHECK(at(0, 4) == -1);
+
+    const uint64_t a2 = 1;          // A = 1 at vertex 2
+    const uint64_t b2 = 2ULL << 1;  // B = 2 at vertex 2
+    const uint64_t c2 = 1ULL << 3;  // C = 1 at vertex 2
+    const uint64_t b3 = 2;          // B = 2 at vertex 3
+    const uint64_t c3 = 1ULL << 2;  // C = 1 at vertex 3
+    const uint64_t a1 = 1;          // A = 1 at vertex 1
+    const uint64_t c1 = 1ULL << 1;  // C = 1 at vertex 1
+    auto along = [&](Direction dir, uint64_t s, int arc) {
+        const auto [t, cost] = r1c.extend_along_arc(dir, s, arc);
+        CHECK(cost == 0.0);
+        return t;
+    };
+    // Arc 1 → 2 keeps A in place and moves C from bit 1 to bit 3; B is reset.
+    CHECK(along(Direction::Forward, a1 | c1, 1) == (a2 | c2));
+    CHECK(along(Direction::Backward, a2 | b2 | c2, 1) == (a1 | c1));
+    // Arc 2 → 3 drops A, moves B (bit 1 → 0) and C (bit 3 → 2).
+    CHECK(along(Direction::Forward, a2 | b2 | c2, 2) == (b3 | c3));
+    CHECK(along(Direction::Backward, b3 | c3, 2) == (b2 | c2));
+    // Arc 1 → 3 keeps only C, at bit 1 → 2.
+    CHECK(along(Direction::Forward, a1 | c1, 5) == c3);
+    CHECK(along(Direction::Backward, b3 | c3, 5) == c1);
+    // Arcs out of the cuts' vertices keep nothing.
+    CHECK(along(Direction::Forward, a1 | c1, 0) == 0);
+    CHECK(along(Direction::Forward, b3 | c3, 3) == 0);
+
+    // Vertex 2 adds 1 to A (toggle) and to B; C has no coefficient there.
+    {
+        const auto [t, cost] = r1c.extend_to_vertex(Direction::Forward, uint64_t{0}, 2);
+        CHECK(t == (a2 | (1ULL << 1)));
+        CHECK(cost == 0.0);
+        const auto [u, cost2] = r1c.extend_to_vertex(Direction::Forward, a2 | b2, 2);
+        CHECK(u == 0);
+        CHECK(cost2 == doctest::Approx(3.0));  // A and B both reach d
+    }
+    // Dominance and the join read the vertex's own layout: the same bits
+    // stand for B and C at vertex 2, for C alone at vertex 3.
+    CHECK(r1c.domination_cost(Direction::Forward, 2, b2 | c2, 0) == doctest::Approx(6.0));
+    CHECK(r1c.domination_cost(Direction::Forward, 3, b2 | c2, 0) == doctest::Approx(4.0));
+    CHECK(r1c.concatenation_cost(Symmetry::Asymmetric, 3, 1, 2) == doctest::Approx(2.0));
+    CHECK(r1c.concatenation_cost(Symmetry::Asymmetric, 2, 1, 2) == 0.0);
+}
+
+TEST_CASE("R1C per-vertex layout bounds the bits per vertex, not in all") {
+    const R1CLine line;
+    const R1Cut at1 = make_r1cut({1}, {1}, 2, -1.0, {});
+    const R1Cut at3 = make_r1cut({3}, {1}, 2, -1.0, {});
+    std::vector<R1Cut> cuts(64, at1);
+    cuts.insert(cuts.end(), 64, at3);
+    R1CData data;
+    // 128 one-bit cuts: too many for one word globally, 64 per vertex fit.
+    {
+        const auto e = refusal([&] { data.set_cuts(cuts, 5, 6); });
+        CHECK(e.code == R1CErrc::TooManyCounters);
+        CHECK(e.cut == 64);
+        CHECK(e.vertex == -1);
+    }
+    CHECK_NOTHROW(data.set_cuts(cuts, line.pv));
+    CHECK(data.n_active() == 128);
+    CHECK(data.field(127, 3).shift == 63);
+
+    // A memory arc's ends get a slot too: arc 0 → 1 puts this cut at vertex
+    // 1 as well, which is full.
+    cuts.push_back(make_r1cut({3}, {1}, 2, -1.0, {0}));
+    const auto e = refusal([&] { data.set_cuts(cuts, line.pv); });
+    CHECK(e.code == R1CErrc::TooManyCounters);
+    CHECK(e.cut == 128);
+    CHECK(e.vertex == 1);
+    CHECK(data.n_active() == 128);  // the refusal kept the previous cuts
+
+    // The vertex form names the vertex likewise: here 2, where the 64 sit.
+    std::vector<R1VertexCut> vcuts(64, {.coefficients = {{2, 1}}});
+    vcuts.push_back({.coefficients = {{3, 1}}, .memory = {2}});
+    const auto ve = refusal([&] { data.set_cuts(vcuts, line.pv); });
+    CHECK(ve.code == R1CErrc::TooManyCounters);
+    CHECK(ve.cut == 64);
+    CHECK(ve.vertex == 2);
 }
 
 TEST_CASE("R1C extension adds numerators and pays beta per multiple of the denominator") {

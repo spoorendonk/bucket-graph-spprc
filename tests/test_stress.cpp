@@ -3714,30 +3714,124 @@ TEST_CASE("bounds_cover_gap: the theta a solve pruned against bounds the gap (#1
 
 namespace {
 
-/// A random DAG on N vertices (source 0, sink N-1) with a mixed family of
-/// rank-1 cuts — 1-, 2- and 3-bit — over random arc memories, or with
-/// `vertex_memory` over random vertex memories, posed both as `R1VertexCut`s
-/// and as `R1Cut`s on the arcs those memories induce (#144).
-struct MixedR1CInstance {
-    static constexpr int N = 9;
+/// A DAG on `n` vertices (source 0, sink n-1), every arc taking one unit of
+/// time, with rank-1 cuts given both as `R1Cut`s and as their definition
+/// (d, numerators, the arcs that keep the sum), from which it prices paths
+/// by enumeration. A subclass fills the arcs and cuts, then `finish_view`.
+struct R1CBruteForce {
+    int n = 0;
     std::vector<int> from, to;
     std::vector<double> cost, time_d;
-    std::vector<double> tw_lb = std::vector<double>(N, 0.0);
-    // Every arc takes 1, so a path's time is its arc count: an ub of N - 1
-    // puts the bidir midpoint at 4, mid-path, and joins carry bw cut state.
-    std::vector<double> tw_ub = std::vector<double>(N, N - 1.0);
+    std::vector<double> tw_lb, tw_ub;
     const double* arc_res[1] = {};
     const double* v_lb[1] = {};
     const double* v_ub[1] = {};
     std::vector<R1Cut> cuts;
-    std::vector<R1VertexCut> vertex_cuts;  // with vertex_memory only
+    std::vector<R1VertexCut> vertex_cuts;
     // Per cut: d and the numerator of each vertex (0 outside C).
     std::vector<int> den;
     std::vector<std::vector<int>> num;
     std::vector<std::vector<bool>> remembers;  // [cut][arc]
     ProblemView pv;
 
+    R1CBruteForce() = default;
+    R1CBruteForce(const R1CBruteForce&) = delete;
+    R1CBruteForce& operator=(const R1CBruteForce&) = delete;
+
+    /// Every arc takes 1, so a path's time is its arc count: an ub of n - 1
+    /// puts the bidir midpoint mid-path, and joins carry bw cut state.
+    void finish_view() {
+        tw_lb.assign(static_cast<std::size_t>(n), 0.0);
+        tw_ub.assign(static_cast<std::size_t>(n), n - 1.0);
+        arc_res[0] = time_d.data();
+        v_lb[0] = tw_lb.data();
+        v_ub[0] = tw_ub.data();
+        pv.n_vertices = n;
+        pv.source = 0;
+        pv.sink = n - 1;
+        pv.n_arcs = static_cast<int>(from.size());
+        pv.arc_from = from.data();
+        pv.arc_to = to.data();
+        pv.arc_base_cost = cost.data();
+        pv.n_resources = 1;
+        pv.arc_resource = arc_res;
+        pv.vertex_lb = v_lb;
+        pv.vertex_ub = v_ub;
+        pv.n_main_resources = 1;
+    }
+
+    /// Reduced cost of a path from the cut definition: per memory segment,
+    /// ⌊Σ k_v / d⌋, priced at β = max(0, -σ).
+    [[nodiscard]] double reduced_cost(const std::vector<int>& arcs) const {
+        double rc = 0.0;
+        for (int a : arcs) {
+            rc += cost[static_cast<std::size_t>(a)];
+        }
+        for (std::size_t c = 0; c < cuts.size(); ++c) {
+            int acc = 0;
+            int coef = 0;
+            for (int a : arcs) {
+                if (!remembers[c][static_cast<std::size_t>(a)]) {
+                    coef += acc / den[c];
+                    acc = 0;
+                }
+                acc += num[c][static_cast<std::size_t>(to[static_cast<std::size_t>(a)])];
+            }
+            coef += acc / den[c];
+            rc += std::max(0.0, -cuts[c].dual_value) * coef;
+        }
+        return rc;
+    }
+
+    /// Min reduced cost over every source-sink path, by enumeration.
+    [[nodiscard]] double brute_force_min() const {
+        double best = INF;
+        std::vector<int> arcs;
+        auto dfs = [&](auto&& self, int v) -> void {
+            if (v == n - 1) {
+                best = std::min(best, reduced_cost(arcs));
+                return;
+            }
+            for (std::size_t a = 0; a < from.size(); ++a) {
+                if (from[a] == v) {
+                    arcs.push_back(static_cast<int>(a));
+                    self(self, to[a]);
+                    arcs.pop_back();
+                }
+            }
+        };
+        dfs(dfs, 0);
+        return best;
+    }
+
+    /// Min cost over every source-sink path without the cuts.
+    [[nodiscard]] double plain_min() const {
+        double best = INF;
+        auto dfs = [&](auto&& self, int v, double c) -> void {
+            if (v == n - 1) {
+                best = std::min(best, c);
+                return;
+            }
+            for (std::size_t a = 0; a < from.size(); ++a) {
+                if (from[a] == v) {
+                    self(self, to[a], c + cost[a]);
+                }
+            }
+        };
+        dfs(dfs, 0, 0.0);
+        return best;
+    }
+};
+
+/// A random DAG on N vertices (source 0, sink N-1) with a mixed family of
+/// rank-1 cuts — 1-, 2- and 3-bit — over random arc memories, or with
+/// `vertex_memory` over random vertex memories, posed both as `R1VertexCut`s
+/// and as `R1Cut`s on the arcs those memories induce (#144).
+struct MixedR1CInstance : R1CBruteForce {
+    static constexpr int N = 9;  // bidir midpoint 4
+
     explicit MixedR1CInstance(unsigned seed, bool vertex_memory = false) {
+        n = N;
         std::mt19937 rng(seed);
         std::uniform_real_distribution<double> unit(0.0, 1.0);
         for (int i = 0; i < N - 1; ++i) {
@@ -3803,86 +3897,7 @@ struct MixedR1CInstance {
             num.push_back(k);
             remembers.push_back(mem);
         }
-        arc_res[0] = time_d.data();
-        v_lb[0] = tw_lb.data();
-        v_ub[0] = tw_ub.data();
-        pv.n_vertices = N;
-        pv.source = 0;
-        pv.sink = N - 1;
-        pv.n_arcs = n_arcs;
-        pv.arc_from = from.data();
-        pv.arc_to = to.data();
-        pv.arc_base_cost = cost.data();
-        pv.n_resources = 1;
-        pv.arc_resource = arc_res;
-        pv.vertex_lb = v_lb;
-        pv.vertex_ub = v_ub;
-        pv.n_main_resources = 1;
-    }
-
-    MixedR1CInstance(const MixedR1CInstance&) = delete;
-    MixedR1CInstance& operator=(const MixedR1CInstance&) = delete;
-
-    /// Reduced cost of a path from the cut definition: per memory segment,
-    /// ⌊Σ k_v / d⌋, priced at β = max(0, -σ).
-    [[nodiscard]] double reduced_cost(const std::vector<int>& arcs) const {
-        double rc = 0.0;
-        for (int a : arcs) {
-            rc += cost[static_cast<std::size_t>(a)];
-        }
-        for (std::size_t c = 0; c < cuts.size(); ++c) {
-            int acc = 0;
-            int coef = 0;
-            for (int a : arcs) {
-                if (!remembers[c][static_cast<std::size_t>(a)]) {
-                    coef += acc / den[c];
-                    acc = 0;
-                }
-                acc += num[c][static_cast<std::size_t>(to[static_cast<std::size_t>(a)])];
-            }
-            coef += acc / den[c];
-            rc += std::max(0.0, -cuts[c].dual_value) * coef;
-        }
-        return rc;
-    }
-
-    /// Min reduced cost over every source-sink path, by enumeration.
-    [[nodiscard]] double brute_force_min() const {
-        double best = INF;
-        std::vector<int> arcs;
-        auto dfs = [&](auto&& self, int v) -> void {
-            if (v == N - 1) {
-                best = std::min(best, reduced_cost(arcs));
-                return;
-            }
-            for (std::size_t a = 0; a < from.size(); ++a) {
-                if (from[a] == v) {
-                    arcs.push_back(static_cast<int>(a));
-                    self(self, to[a]);
-                    arcs.pop_back();
-                }
-            }
-        };
-        dfs(dfs, 0);
-        return best;
-    }
-
-    /// Min cost over every source-sink path without the cuts.
-    [[nodiscard]] double plain_min() const {
-        double best = INF;
-        auto dfs = [&](auto&& self, int v, double c) -> void {
-            if (v == N - 1) {
-                best = std::min(best, c);
-                return;
-            }
-            for (std::size_t a = 0; a < from.size(); ++a) {
-                if (from[a] == v) {
-                    self(self, to[a], c + cost[a]);
-                }
-            }
-        };
-        dfs(dfs, 0, 0.0);
-        return best;
+        finish_view();
     }
 };
 
@@ -3902,8 +3917,9 @@ bool check_mixed_r1c(const MixedR1CInstance& inst, bool bidir, int& long_paths,
     using Pack = ResourcePack<Res>;
     Solver<Pack> solver(inst.pv, Pack{Res{}},
                         {.bucket_steps = {2.0, 0.0}, .bidirectional = bidir, .theta = 1e9});
-    // With two words, 21 3-bit cuts at β = 0 fill bits 0-62 first, so the
-    // family's 1-bit cut takes bit 63 and the rest spill into word 1.
+    // With two words, 21 3-bit cuts at β = 0 fill bits 0-62 first, so on the
+    // global layout the family's 1-bit cut takes bit 63 and the rest spill
+    // into word 1.
     auto& r1c = solver.template resource<Res>();
     if constexpr (vertex_form) {
         std::vector<R1VertexCut> cuts;
@@ -3922,7 +3938,12 @@ bool check_mixed_r1c(const MixedR1CInstance& inst, bool bidir, int& long_paths,
         cuts.insert(cuts.end(), inst.cuts.begin(), inst.cuts.end());
         r1c.set_cuts(cuts, inst.pv.n_vertices, inst.pv.n_arcs);
     }
-    if constexpr (Words > 1) {
+    if constexpr (Words > 1 && vertex_form) {
+        // Per vertex: the 21 3-bit cuts fill bits 0-62 at vertex 1 alone.
+        REQUIRE(r1c.field(20, 1).word == 0);
+        REQUIRE(r1c.field(20, 1).shift == 60);
+        REQUIRE(r1c.field(20, 2).word == -1);
+    } else if constexpr (Words > 1) {
         REQUIRE(r1c.field(21).word == 0);
         REQUIRE(r1c.field(21).shift == 63);
         REQUIRE(r1c.field(r1c.n_active() - 1).word == 1);
@@ -4017,4 +4038,178 @@ TEST_CASE("R1C vertex memory: both cut forms price as the brute-force best path"
     CHECK(long_vertex >= 5);
     CHECK(long_arc >= 5);
     CHECK(long_vertex2 >= 5);
+}
+
+namespace {
+
+/// A DAG on 14 vertices, arcs i → j for 1 ≤ j - i ≤ 3, with many local cuts
+/// (#146): each over 2 or 3 consecutive interior vertices, its memory the
+/// vertex on either side or not. Posed in both forms, the `R1Cut` one
+/// remembering the arcs with both ends in M'. The cuts are drawn until 400
+/// tries; one that would overflow a vertex's `64·Words` bits is skipped,
+/// replaying the per-vertex layout's slot cursor (cut order, no field
+/// straddling a word), so the kept ones fit per vertex but need more than
+/// `64·Words` bits in all. The arc form's slots are a subset of M', so they
+/// fit too.
+struct LocalR1CInstance : R1CBruteForce {
+    static constexpr int N = 14;
+    int total_bits = 0;  // over the kept cuts
+
+    LocalR1CInstance(unsigned seed, std::size_t words) {
+        n = N;
+        std::mt19937 rng(seed);
+        std::uniform_real_distribution<double> unit(0.0, 1.0);
+        for (int i = 0; i < N - 1; ++i) {
+            for (int j = i + 1; j <= std::min(i + 3, N - 1); ++j) {
+                if (j == i + 1 || unit(rng) < 0.7) {
+                    from.push_back(i);
+                    to.push_back(j);
+                    cost.push_back(std::round(unit(rng) * 20.0) - 14.0);
+                    time_d.push_back(1.0);
+                }
+            }
+        }
+        const int n_arcs = static_cast<int>(from.size());
+        const auto bits = static_cast<int>(64 * words);
+        std::vector<int> word(N, 0);
+        std::vector<int> shift(N, 0);
+        // Place a `width`-bit field at every vertex of `m`, or nothing.
+        auto place = [&](const std::vector<int>& m, int width) {
+            auto w = word;
+            auto sh = shift;
+            for (int v : m) {
+                auto& vw = w[static_cast<std::size_t>(v)];
+                auto& vs = sh[static_cast<std::size_t>(v)];
+                if (vs + width > 64) {
+                    ++vw;
+                    vs = 0;
+                }
+                if (vw * 64 + vs + width > bits) {
+                    return false;
+                }
+                vs += width;
+            }
+            word = std::move(w);
+            shift = std::move(sh);
+            return true;
+        };
+        const int denominators[] = {2, 3, 4, 5, 6, 7, 8};
+        for (int t = 0; t < 400; ++t) {
+            const int d = denominators[rng() % 7];
+            const int width = d == 2 ? 1 : d <= 4 ? 2 : 3;
+            const int len = 2 + static_cast<int>(rng() % 2);
+            const int first = 1 + static_cast<int>(rng() % static_cast<unsigned>(N - 1 - len));
+            std::vector<int> k(N, 0);
+            std::vector<bool> in_m(N, false);
+            R1Cut cut;
+            R1VertexCut vcut{.denominator = d};
+            for (int v = first; v < first + len; ++v) {
+                k[static_cast<std::size_t>(v)] =
+                    1 + static_cast<int>(rng() % static_cast<unsigned>(d - 1));
+                vcut.coefficients.emplace_back(v, k[static_cast<std::size_t>(v)]);
+                cut.base_set.push_back(v);
+                cut.multipliers.push_back(static_cast<double>(k[static_cast<std::size_t>(v)]) / d);
+                in_m[static_cast<std::size_t>(v)] = true;
+            }
+            for (int v : {first - 1, first + len}) {
+                if (unit(rng) < 0.5) {
+                    vcut.memory.push_back(v);
+                    in_m[static_cast<std::size_t>(v)] = true;
+                }
+            }
+            std::vector<int> m;
+            for (int v = 0; v < N; ++v) {
+                if (in_m[static_cast<std::size_t>(v)]) {
+                    m.push_back(v);
+                }
+            }
+            const double dual = -std::floor(unit(rng) * 3.0) / 2.0;  // β ∈ {0, 0.5, 1}
+            if (!place(m, width)) {
+                continue;
+            }
+            std::vector<bool> mem(static_cast<std::size_t>(n_arcs), false);
+            for (int a = 0; a < n_arcs; ++a) {
+                const auto ua = static_cast<std::size_t>(a);
+                if (in_m[static_cast<std::size_t>(from[ua])] &&
+                    in_m[static_cast<std::size_t>(to[ua])]) {
+                    mem[ua] = true;
+                    cut.memory_arcs.emplace_back(a, 0);
+                }
+            }
+            cut.dual_value = dual;
+            vcut.dual = dual;
+            cuts.push_back(cut);
+            vertex_cuts.push_back(vcut);
+            den.push_back(d);
+            num.push_back(k);
+            remembers.push_back(mem);
+            total_bits += width;
+        }
+        finish_view();
+    }
+};
+
+/// Labelling's best path on the per-vertex layout prices as the
+/// enumeration's best, and every path it returns prices as the cut
+/// definition says. Returns the best reduced cost (INF without paths).
+template <std::size_t Words, bool vertex_form>
+double check_local_r1c(const LocalR1CInstance& inst, bool bidir) {
+    using Res = BasicR1CResource<Words>;
+    using Pack = ResourcePack<Res>;
+    Solver<Pack> solver(inst.pv, Pack{Res{}},
+                        {.bucket_steps = {2.0, 0.0}, .bidirectional = bidir, .theta = 1e9});
+    auto& r1c = solver.template resource<Res>();
+    if constexpr (vertex_form) {
+        r1c.set_cuts(inst.vertex_cuts, inst.pv);
+    } else {
+        r1c.set_cuts(inst.cuts, inst.pv);
+    }
+    REQUIRE(r1c.n_active() == static_cast<int>(inst.cuts.size()));
+    solver.build();
+    solver.set_stage(Stage::Exact);
+    const auto paths = solver.solve();
+    double best = INF;
+    for (const auto& p : paths) {
+        CHECK(p.reduced_cost == doctest::Approx(inst.reduced_cost(p.arcs)));
+        best = std::min(best, p.reduced_cost);
+    }
+    const double want = inst.brute_force_min();
+    if (want < 0.0) {
+        CHECK(best == doctest::Approx(want));
+    }
+    return best;
+}
+
+}  // namespace
+
+TEST_CASE("R1C per-vertex layout: more cuts than the words hold price as the brute force") {
+    int checked = 0;
+    int with_cut_cost = 0;
+    for (unsigned seed = 1; seed <= 8; ++seed) {
+        CAPTURE(seed);
+        for (std::size_t words : {1U, 2U}) {
+            CAPTURE(words);
+            const LocalR1CInstance inst(seed, words);
+            REQUIRE(inst.total_bits > static_cast<int>(64 * words));
+            const double want = inst.brute_force_min();
+            if (want < 0.0) {
+                ++checked;
+            }
+            if (want > inst.plain_min() + 0.25) {
+                ++with_cut_cost;
+            }
+            for (bool bidir : {false, true}) {
+                CAPTURE(bidir);
+                if (words == 1) {
+                    check_local_r1c<1, true>(inst, bidir);
+                    check_local_r1c<1, false>(inst, bidir);
+                } else {
+                    check_local_r1c<2, true>(inst, bidir);
+                    check_local_r1c<2, false>(inst, bidir);
+                }
+            }
+        }
+    }
+    CHECK(checked >= 10);
+    CHECK(with_cut_cost >= 4);
 }

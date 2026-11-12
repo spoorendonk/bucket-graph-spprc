@@ -256,6 +256,15 @@ Solver<Pack, ThreadPoolExecutor> solver(
   as given, not reduced. Both forms throw `R1CError` (a
   `std::invalid_argument`) with a code, `InvalidCut` or `TooManyCounters`,
   and the offending cut and vertex.
+- **Per-vertex layout.** `set_cuts(cuts, n_vertices, n_arcs)` lays the cuts
+  out globally: every cut has its bits at every vertex, so all of them share
+  `64·Words` bits. The `ProblemView` overloads, for `R1Cut` and
+  `R1VertexCut` alike, lay them out per vertex: a cut has its bits only at
+  the vertices of M' (for an `R1Cut`, its base set and the ends of its memory
+  arcs), each vertex packs its own cuts, and `64·Words` bounds the cuts
+  sharing a vertex, not all of them. Local cuts, as separation produces
+  them, then fit many times over. `TooManyCounters` names the vertex that
+  overflowed; `field(cut, vertex)` gives a cut's place at a vertex.
 
 ## Custom Resources
 
