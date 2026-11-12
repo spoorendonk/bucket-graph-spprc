@@ -9,6 +9,7 @@
 #include <bgspprc/resources/ng_path.h>
 #include <bgspprc/resources/pickup_delivery.h>
 #include <bgspprc/solver.h>
+#include <bit>
 #include <cmath>
 #include <doctest/doctest.h>
 #include <random>
@@ -4096,7 +4097,7 @@ struct LocalR1CInstance : R1CBruteForce {
         const int denominators[] = {2, 3, 4, 5, 6, 7, 8};
         for (int t = 0; t < 400; ++t) {
             const int d = denominators[rng() % 7];
-            const int width = d == 2 ? 1 : d <= 4 ? 2 : 3;
+            const int width = std::bit_width(static_cast<unsigned>(d - 1));  // ⌈log2 d⌉
             const int len = 2 + static_cast<int>(rng() % 2);
             const int first = 1 + static_cast<int>(rng() % static_cast<unsigned>(N - 1 - len));
             std::vector<int> k(N, 0);

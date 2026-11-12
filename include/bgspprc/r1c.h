@@ -885,8 +885,7 @@ private:
     /// Sum of +β over the fields whose lowest bits are set in `mask` (word w
     /// of table row t) — the reduced-cost penalty for the coefficients they
     /// stand for.
-    [[nodiscard]] static double beta_sum(const typename Data::Row& t, std::size_t w,
-                                         uint64_t mask) {
+    [[nodiscard]] static double beta_sum(const Data::Row& t, std::size_t w, uint64_t mask) {
         const double* beta_at = &t.beta[w * Data::kBits];
         double cost = 0.0;
         while (mask != 0) {
