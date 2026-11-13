@@ -74,6 +74,15 @@ struct R1CError : std::invalid_argument {
     int vertex = -1;
 };
 
+/// Which cuts of a set fit the per-vertex layout, from `BasicR1CData::fit`.
+/// `unplaced` lists, ascending, the indices of the cuts that found no room at
+/// some vertex of their M'; `bit_fails[v]` counts the unplaced cuts that found
+/// no room at vertex v (one entry per vertex of the view).
+struct R1CFit {
+    std::vector<int> unplaced;
+    std::vector<int> bit_fails;
+};
+
 /// The packed state of `Words` 64-bit words: a plain `uint64_t` for one word,
 /// so that with only 1-bit cuts, cut c is bit c.
 template <std::size_t Words>
@@ -171,6 +180,32 @@ public:
         }
         next.build_per_vertex(norm, pv, /*vertex_memory=*/true, std::forward<Exec>(exec));
         *this = std::move(next);
+    }
+
+    /// Which of `cuts` the per-vertex layout of `set_cuts(cuts, pv)` has room
+    /// for, without throwing for a cut that has none. Packs as `set_cuts`
+    /// does, greedily in cut order: a cut is placed iff its field fits at
+    /// every vertex of its M', and takes room only then. So `set_cuts` accepts
+    /// `cuts` iff `unplaced` is empty, and accepts the placed cuts alone with
+    /// the same slots. A malformed cut still throws `R1CError` (InvalidCut),
+    /// as `set_cuts` would.
+    [[nodiscard]] static R1CFit fit(std::span<const R1Cut> cuts, const ProblemView& pv) {
+        std::vector<NormCut> norm(cuts.size());
+        for (std::size_t c = 0; c < cuts.size(); ++c) {
+            norm[c] = normalize(cuts[c], static_cast<int>(c), pv.n_vertices, pv.n_arcs);
+            add_arc_ends(norm[c], pv);
+        }
+        return fit_norm(norm, pv.n_vertices);
+    }
+
+    /// `fit` for vertex-memory cuts: the room `set_cuts(cuts, pv)` has for
+    /// them on its per-vertex layout.
+    [[nodiscard]] static R1CFit fit(std::span<const R1VertexCut> cuts, const ProblemView& pv) {
+        std::vector<NormCut> norm(cuts.size());
+        for (std::size_t c = 0; c < cuts.size(); ++c) {
+            norm[c] = normalize(cuts[c], static_cast<int>(c), pv.n_vertices);
+        }
+        return fit_norm(norm, pv.n_vertices);
     }
 
     [[nodiscard]] int n_active() const { return n_active_; }
@@ -445,6 +480,42 @@ private:
         at_shift = shift;
         shift += width;
         return true;
+    }
+
+    // fit's packing: the cursors of build_per_vertex, advanced for a cut only
+    // when it has room at every vertex of its M'.
+    static R1CFit fit_norm(std::span<const NormCut> cuts, int n_vertices) {
+        const auto n_v = static_cast<std::size_t>(n_vertices);
+        R1CFit out;
+        out.bit_fails.assign(n_v, 0);
+        std::vector<int> word(n_v, 0);
+        std::vector<int> shift(n_v, 0);
+        for (std::size_t c = 0; c < cuts.size(); ++c) {
+            const int width = field_width(cuts[c].denominator);
+            bool fits = true;
+            for (int v : cuts[c].slot_vertices) {
+                const auto vi = static_cast<std::size_t>(v);
+                int w = word[vi];
+                int s = shift[vi];
+                int at_word = 0;
+                int at_shift = 0;
+                if (!next_slot(w, s, width, at_word, at_shift)) {
+                    fits = false;
+                    ++out.bit_fails[vi];
+                }
+            }
+            if (!fits) {
+                out.unplaced.push_back(static_cast<int>(c));
+                continue;
+            }
+            for (int v : cuts[c].slot_vertices) {
+                const auto vi = static_cast<std::size_t>(v);
+                int at_word = 0;
+                int at_shift = 0;
+                next_slot(word[vi], shift[vi], width, at_word, at_shift);
+            }
+        }
+        return out;
     }
 
     template <Executor Exec>

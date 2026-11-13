@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <doctest/doctest.h>
+#include <functional>
 #include <random>
 #include <stdexcept>
 #include <type_traits>
@@ -2488,6 +2489,138 @@ TEST_CASE("R1C per-vertex layout bounds the bits per vertex, not in all") {
     CHECK(ve.code == R1CErrc::TooManyCounters);
     CHECK(ve.cut == 64);
     CHECK(ve.vertex == 2);
+}
+
+namespace {
+
+// fit agrees with set_cuts: the set is accepted iff nothing is unplaced, and
+// otherwise refused at the first unplaced cut, at the lowest vertex where it
+// found no room; the placed cuts alone are accepted.
+template <typename Cut>
+bool check_fit_agrees(const std::vector<Cut>& cuts, const ProblemView& pv) {
+    const R1CFit fit = R1CData::fit(cuts, pv);
+    REQUIRE(std::cmp_equal(fit.bit_fails.size(), pv.n_vertices));
+    CHECK(std::ranges::is_sorted(fit.unplaced));
+    CHECK(std::ranges::fold_left(fit.bit_fails, 0, std::plus{}) >= std::ssize(fit.unplaced));
+    R1CData data;
+    if (fit.unplaced.empty()) {
+        CHECK_NOTHROW(data.set_cuts(cuts, pv));
+        return false;
+    }
+    const auto e = refusal([&] { data.set_cuts(cuts, pv); });
+    CHECK(e.code == R1CErrc::TooManyCounters);
+    CHECK(e.cut == fit.unplaced.front());
+    std::vector<Cut> placed;
+    for (std::size_t c = 0, u = 0; c < cuts.size(); ++c) {
+        if (u < fit.unplaced.size() && std::cmp_equal(fit.unplaced[u], c)) {
+            ++u;
+        } else {
+            placed.push_back(cuts[c]);
+        }
+    }
+    CHECK_NOTHROW(data.set_cuts(placed, pv));
+    CHECK(std::cmp_equal(data.n_active(), placed.size()));
+    CHECK(R1CData::fit(placed, pv).unplaced.empty());
+    return true;
+}
+
+}  // namespace
+
+TEST_CASE("R1C fit reports the cuts with no room and where, as set_cuts packs") {
+    const R1CLine line;
+
+    SUBCASE("arc form") {
+        // Vertex 1 takes 60 one-bit cuts, then a 3-bit field at 60..62.
+        std::vector<R1Cut> cuts(60, make_r1cut({1}, {1}, 2, -1.0, {}));
+        cuts.push_back(make_r1cut({1, 2}, {1, 2}, 5, -1.0, {}));  // 60: d 5, fits
+        cuts.push_back(make_r1cut({1, 3}, {1, 1}, 3, -1.0, {}));  // 61: 2 bits, not at 1
+        cuts.push_back(make_r1cut({1}, {1}, 2, -1.0, {}));        // 62: bit 63, fits
+        cuts.push_back(make_r1cut({3}, {1}, 2, -1.0, {0}));       // 63: arc 0 → 1, full
+        cuts.push_back(make_r1cut({1}, {1}, 2, -1.0, {}));        // 64: full
+        cuts.push_back(make_r1cut({3}, {1}, 3, -1.0, {}));  // 65: slot 0 at 3, as 61 took none
+        const R1CFit fit = R1CData::fit(cuts, line.pv);
+        CHECK(fit.unplaced == std::vector<int>{61, 63, 64});
+        CHECK(fit.bit_fails == std::vector<int>{0, 3, 0, 0, 0});
+        CHECK(check_fit_agrees(cuts, line.pv));
+
+        // The placed cuts keep their slots: 60 → 60, 62 → 61, 65 → 62.
+        std::vector<R1Cut> placed(cuts.begin(), cuts.begin() + 61);
+        placed.push_back(cuts[62]);
+        placed.push_back(cuts[65]);
+        R1CData data;
+        data.set_cuts(placed, line.pv);
+        CHECK(data.field(60, 1).shift == 60);
+        CHECK(data.field(60, 2).shift == 0);
+        CHECK(data.field(61, 1).shift == 63);
+        CHECK(data.field(62, 3).word == 0);
+        CHECK(data.field(62, 3).shift == 0);
+    }
+
+    SUBCASE("vertex form") {
+        // 64 one-bit cuts fill vertex 2, 64 more fill vertex 3.
+        std::vector<R1VertexCut> cuts(64, {.coefficients = {{2, 1}}});
+        cuts.insert(cuts.end(), 64, {.coefficients = {{3, 1}}});
+        cuts.push_back({.coefficients = {{2, 1}, {3, 1}}});            // 128: full at 2 and 3
+        cuts.push_back({.coefficients = {{1, 1}}, .memory = {2}});     // 129: full at 2
+        cuts.push_back({.coefficients = {{1, 2}}, .denominator = 3});  // 130: fits at 1
+        const R1CFit fit = R1CData::fit(cuts, line.pv);
+        CHECK(fit.unplaced == std::vector<int>{128, 129});
+        CHECK(fit.bit_fails == std::vector<int>{0, 0, 2, 1, 0});
+        CHECK(check_fit_agrees(cuts, line.pv));
+        const auto e = refusal([&] {
+            R1CData data;
+            data.set_cuts(cuts, line.pv);
+        });
+        CHECK(e.vertex == 2);
+    }
+
+    SUBCASE("random sets agree with set_cuts, both forms") {
+        std::mt19937 rng(147);
+        auto pick = [&](int lo, int hi) { return std::uniform_int_distribution(lo, hi)(rng); };
+        int refused = 0;  // sets with a cut unplaced: both outcomes must occur
+        constexpr int kTrials = 200;
+        for (int trial = 0; trial < kTrials; ++trial) {
+            std::vector<R1Cut> arc_cuts;
+            std::vector<R1VertexCut> vertex_cuts;
+            const int n = pick(10, 60);
+            for (int c = 0; c < n; ++c) {
+                const int d = pick(2, 8);
+                std::vector<int> vs;
+                std::vector<int> ks;
+                std::vector<std::pair<int, int>> coefs;
+                for (int v = 1; v <= 3; ++v) {
+                    if (pick(0, 1) == 1) {
+                        vs.push_back(v);
+                        ks.push_back(pick(1, d - 1));
+                        coefs.emplace_back(v, ks.back());
+                    }
+                }
+                std::vector<int> arcs;
+                std::vector<int> memory;
+                for (int a = 0; a < line.pv.n_arcs; ++a) {
+                    if (pick(0, 3) == 0) {
+                        arcs.push_back(a);
+                    }
+                }
+                for (int v = 0; v < line.pv.n_vertices; ++v) {
+                    if (pick(0, 3) == 0) {
+                        memory.push_back(v);
+                    }
+                }
+                arc_cuts.push_back(make_r1cut(vs, ks, d, -1.0, arcs));
+                vertex_cuts.push_back({.coefficients = coefs, .denominator = d, .memory = memory});
+            }
+            refused += static_cast<int>(check_fit_agrees(arc_cuts, line.pv));
+            refused += static_cast<int>(check_fit_agrees(vertex_cuts, line.pv));
+        }
+        CHECK(refused > kTrials / 10);
+        CHECK(refused < 2 * kTrials - (kTrials / 10));
+    }
+
+    SUBCASE("a malformed cut throws InvalidCut") {
+        const std::vector<R1VertexCut> bad = {{.coefficients = {{1, 2}}}};
+        CHECK(refusal([&] { (void)R1CData::fit(bad, line.pv); }).code == R1CErrc::InvalidCut);
+    }
 }
 
 TEST_CASE("R1C extension adds numerators and pays beta per multiple of the denominator") {

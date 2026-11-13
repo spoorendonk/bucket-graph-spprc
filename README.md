@@ -265,6 +265,13 @@ Solver<Pack, ThreadPoolExecutor> solver(
   sharing a vertex, not all of them. Local cuts, as separation produces
   them, then fit many times over. `TooManyCounters` names the vertex that
   overflowed; `field(cut, vertex)` gives a cut's place at a vertex.
+- **Checking the room first.** `BasicR1CData<Words>::fit(cuts, view)`, for
+  either cut form, tells a separator which cuts the per-vertex layout has
+  room for without catching a throw. It packs as `set_cuts` does, greedily
+  in cut order, and places a cut only if it fits at every vertex of its M'.
+  `R1CFit::unplaced` lists the cuts that did not fit and `bit_fails[v]`
+  counts them at each vertex v that was full. `set_cuts` accepts the set iff
+  `unplaced` is empty, and accepts the placed cuts alone in the same slots.
 
 ## Custom Resources
 
