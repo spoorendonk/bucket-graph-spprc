@@ -2510,6 +2510,12 @@ bool check_fit_agrees(const std::vector<Cut>& cuts, const ProblemView& pv) {
     const auto e = refusal([&] { data.set_cuts(cuts, pv); });
     CHECK(e.code == R1CErrc::TooManyCounters);
     CHECK(e.cut == fit.unplaced.front());
+    REQUIRE(e.vertex >= 0);
+    REQUIRE(e.vertex < pv.n_vertices);
+    CHECK(fit.bit_fails[static_cast<std::size_t>(e.vertex)] > 0);
+    for (int fails : fit.bit_fails) {
+        CHECK(fails <= std::ssize(fit.unplaced));
+    }
     std::vector<Cut> placed;
     for (std::size_t c = 0, u = 0; c < cuts.size(); ++c) {
         if (u < fit.unplaced.size() && std::cmp_equal(fit.unplaced[u], c)) {
