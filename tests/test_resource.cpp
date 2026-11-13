@@ -2385,7 +2385,7 @@ TEST_CASE("R1C vertex memory keeps the sum on arcs with both ends in memory or t
     CHECK(cost == doctest::Approx(4.0));
 }
 
-TEST_CASE("R1C per-vertex layout packs each vertex's cuts and moves kept fields") {
+TEST_CASE("R1C per-vertex layout gives a cut one place across its M' where it can") {
     const R1CLine line;
     // A = {1, 2} d 2, B = {2, 3} d 3, C = {1, 3} + memory {2} d 2.
     const std::vector<R1VertexCut> cuts = {
@@ -2400,59 +2400,114 @@ TEST_CASE("R1C per-vertex layout packs each vertex's cuts and moves kept fields"
         const auto f = r1c.field(c, v);
         return f.word < 0 ? -1 : f.shift;
     };
-    // Each vertex packs its own cuts in cut order from bit 0.
+    // Each cut takes the lowest place free at all of its M': A bit 0, B
+    // bits 1-2 (bit 0 is A's at vertex 2), C bit 3.
     CHECK(at(0, 1) == 0);
-    CHECK(at(1, 1) == -1);
-    CHECK(at(2, 1) == 1);
     CHECK(at(0, 2) == 0);
     CHECK(at(1, 2) == 1);
+    CHECK(at(1, 3) == 1);
+    CHECK(at(2, 1) == 3);
     CHECK(at(2, 2) == 3);
+    CHECK(at(2, 3) == 3);
+    CHECK(at(1, 1) == -1);
     CHECK(at(0, 3) == -1);
-    CHECK(at(1, 3) == 0);
-    CHECK(at(2, 3) == 2);
     CHECK(at(0, 0) == -1);
     CHECK(at(0, 4) == -1);
 
-    const uint64_t a2 = 1;          // A = 1 at vertex 2
-    const uint64_t b2 = 2ULL << 1;  // B = 2 at vertex 2
-    const uint64_t c2 = 1ULL << 3;  // C = 1 at vertex 2
-    const uint64_t b3 = 2;          // B = 2 at vertex 3
-    const uint64_t c3 = 1ULL << 2;  // C = 1 at vertex 3
-    const uint64_t a1 = 1;          // A = 1 at vertex 1
-    const uint64_t c1 = 1ULL << 1;  // C = 1 at vertex 1
+    const uint64_t a = 1;          // A = 1
+    const uint64_t b = 2ULL << 1;  // B = 2
+    const uint64_t c = 1ULL << 3;  // C = 1
     auto along = [&](Direction dir, uint64_t s, int arc) {
         const auto [t, cost] = r1c.extend_along_arc(dir, s, arc);
         CHECK(cost == 0.0);
         return t;
     };
-    // Arc 1 → 2 keeps A in place and moves C from bit 1 to bit 3; B is reset.
-    CHECK(along(Direction::Forward, a1 | c1, 1) == (a2 | c2));
-    CHECK(along(Direction::Backward, a2 | b2 | c2, 1) == (a1 | c1));
-    // Arc 2 → 3 drops A, moves B (bit 1 → 0) and C (bit 3 → 2).
-    CHECK(along(Direction::Forward, a2 | b2 | c2, 2) == (b3 | c3));
-    CHECK(along(Direction::Backward, b3 | c3, 2) == (b2 | c2));
-    // Arc 1 → 3 keeps only C, at bit 1 → 2.
-    CHECK(along(Direction::Forward, a1 | c1, 5) == c3);
-    CHECK(along(Direction::Backward, b3 | c3, 5) == c1);
+    // Arc 1 → 2 keeps A and C in place; B is reset.
+    CHECK(along(Direction::Forward, a | c, 1) == (a | c));
+    CHECK(along(Direction::Backward, a | b | c, 1) == (a | c));
+    // Arc 2 → 3 drops A and keeps B and C.
+    CHECK(along(Direction::Forward, a | b | c, 2) == (b | c));
+    CHECK(along(Direction::Backward, b | c, 2) == (b | c));
+    // Arc 1 → 3 keeps only C.
+    CHECK(along(Direction::Forward, a | c, 5) == c);
+    CHECK(along(Direction::Backward, b | c, 5) == c);
     // Arcs out of the cuts' vertices keep nothing.
-    CHECK(along(Direction::Forward, a1 | c1, 0) == 0);
-    CHECK(along(Direction::Forward, b3 | c3, 3) == 0);
+    CHECK(along(Direction::Forward, a | c, 0) == 0);
+    CHECK(along(Direction::Forward, b | c, 3) == 0);
 
     // Vertex 2 adds 1 to A (toggle) and to B; C has no coefficient there.
     {
         const auto [t, cost] = r1c.extend_to_vertex(Direction::Forward, uint64_t{0}, 2);
-        CHECK(t == (a2 | (1ULL << 1)));
+        CHECK(t == (a | (1ULL << 1)));
         CHECK(cost == 0.0);
-        const auto [u, cost2] = r1c.extend_to_vertex(Direction::Forward, a2 | b2, 2);
+        const auto [u, cost2] = r1c.extend_to_vertex(Direction::Forward, a | b, 2);
         CHECK(u == 0);
         CHECK(cost2 == doctest::Approx(3.0));  // A and B both reach d
     }
-    // Dominance and the join read the vertex's own layout: the same bits
-    // stand for B and C at vertex 2, for C alone at vertex 3.
-    CHECK(r1c.domination_cost(Direction::Forward, 2, b2 | c2, 0) == doctest::Approx(6.0));
-    CHECK(r1c.domination_cost(Direction::Forward, 3, b2 | c2, 0) == doctest::Approx(4.0));
-    CHECK(r1c.concatenation_cost(Symmetry::Asymmetric, 3, 1, 2) == doctest::Approx(2.0));
-    CHECK(r1c.concatenation_cost(Symmetry::Asymmetric, 2, 1, 2) == 0.0);
+    // Dominance and the join read the vertex's own layout: bits 1-2 are B's
+    // at vertices 2 and 3 and nobody's at vertex 1.
+    CHECK(r1c.domination_cost(Direction::Forward, 2, b | c, 0) == doctest::Approx(6.0));
+    CHECK(r1c.domination_cost(Direction::Forward, 1, b | c, 0) == doctest::Approx(4.0));
+    CHECK(r1c.concatenation_cost(Symmetry::Asymmetric, 3, 1ULL << 1, 2ULL << 1) ==
+          doctest::Approx(2.0));
+    CHECK(r1c.concatenation_cost(Symmetry::Asymmetric, 1, 1ULL << 1, 2ULL << 1) == 0.0);
+}
+
+TEST_CASE("R1C per-vertex layout falls back to cursor packing where a shared place fragments") {
+    const R1CLine line;
+    // 62 cuts on {2} take bits 0-61 there; C = {1, 2} then shares bit 62,
+    // which leaves vertex 1 holes 21 three-bit fields (d 5) cannot all use,
+    // though 1 + 63 bits fit. Packing each vertex with its own cursor, as
+    // before #150, takes every cut: C at bit 0 of vertex 1 and 62 of 2.
+    std::vector<R1VertexCut> cuts(62, {.coefficients = {{2, 1}}});
+    cuts.push_back({.coefficients = {{1, 1}, {2, 1}}});
+    cuts.insert(cuts.end(), 21, {.coefficients = {{1, 1}}, .denominator = 5});
+    CHECK(R1CData::fit(cuts, line.pv).unplaced.empty());
+    R1CResource r1c;
+    CHECK_NOTHROW(r1c.set_cuts(cuts, line.pv));
+    REQUIRE(r1c.n_active() == 84);
+    CHECK(r1c.field(62, 1).shift == 0);
+    CHECK(r1c.field(62, 2).shift == 62);
+    CHECK(r1c.field(83, 1).shift == 61);
+}
+
+TEST_CASE("R1C per-vertex layout moves a field kept at different places") {
+    const R1CLine line;
+    // At β = 0: 32 cuts on {1, 3} take bits 0-31 there, then 32 on {2, 3}
+    // bits 32-63, as 0-31 are taken at 3. D = {1, 2} d 3 finds no place
+    // free at both 1 and 2, so it takes bits 32-33 at 1 and 0-1 at 2.
+    std::vector<R1VertexCut> cuts(32, {.coefficients = {{1, 1}, {3, 1}}});
+    cuts.insert(cuts.end(), 32, {.coefficients = {{2, 1}, {3, 1}}});
+    cuts.push_back({.coefficients = {{1, 1}, {2, 1}}, .denominator = 3, .dual = -5.0});
+    R1CResource r1c;
+    r1c.set_cuts(cuts, line.pv);
+    CHECK(r1c.field(31, 1).shift == 31);
+    CHECK(r1c.field(32, 2).shift == 32);
+    CHECK(r1c.field(32, 3).shift == 32);
+    CHECK(r1c.field(64, 1).shift == 32);
+    CHECK(r1c.field(64, 2).shift == 0);
+
+    const uint64_t at1 = 0xFFFF'FFFFULL;        // the {1, 3} cuts, all 1
+    const uint64_t at2 = 0xFFFF'FFFFULL << 32;  // the {2, 3} cuts, all 1
+    const uint64_t d1 = 2ULL << 32;             // D = 2 at vertex 1
+    const uint64_t d2 = 2;                      // D = 2 at vertex 2
+    // Arc 1 → 2 keeps D alone, moving it; the cuts at one end only reset.
+    CHECK(r1c.extend_along_arc(Direction::Forward, at1 | d1, 1).first == d2);
+    CHECK(r1c.extend_along_arc(Direction::Backward, at2 | d2, 1).first == d1);
+    // Arc 1 → 3 keeps the {1, 3} cuts in place and drops D.
+    CHECK(r1c.extend_along_arc(Direction::Forward, at1 | d1, 5).first == at1);
+
+    // Its β is read at its place at each vertex, past 32 fields at 1.
+    CHECK(r1c.domination_cost(Direction::Forward, 1, at1 | d1, at1) == doctest::Approx(5.0));
+    CHECK(r1c.domination_cost(Direction::Forward, 2, at2 | d2, at2) == doctest::Approx(5.0));
+    CHECK(r1c.domination_cost(Direction::Forward, 1, at1 | d1, d1) == 0.0);
+    CHECK(r1c.concatenation_cost(Symmetry::Asymmetric, 1, 1ULL << 32, d1) == doctest::Approx(5.0));
+    CHECK(r1c.concatenation_cost(Symmetry::Asymmetric, 2, 1, d2) == doctest::Approx(5.0));
+    CHECK(r1c.concatenation_cost(Symmetry::Asymmetric, 2, 1, 1) == 0.0);
+    // Vertex 2 toggles the {2, 3} cuts and lifts D to d.
+    const auto [t, cost] = r1c.extend_to_vertex(Direction::Forward, d2, 2);
+    CHECK(t == at2);
+    CHECK(cost == doctest::Approx(5.0));
 }
 
 TEST_CASE("R1C per-vertex layout bounds the bits per vertex, not in all") {
@@ -2557,7 +2612,7 @@ TEST_CASE("R1C fit reports the cuts with no room and where, as set_cuts packs") 
         R1CData data;
         data.set_cuts(placed, line.pv);
         CHECK(data.field(60, 1).shift == 60);
-        CHECK(data.field(60, 2).shift == 0);
+        CHECK(data.field(60, 2).shift == 60);  // one place at 1 and 2
         CHECK(data.field(61, 1).shift == 63);
         CHECK(data.field(62, 3).word == 0);
         CHECK(data.field(62, 3).shift == 0);

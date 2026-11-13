@@ -101,11 +101,16 @@ class BasicR1CView;
 /// straddles two words. On the global layout (`set_cuts(cuts, n_vertices,
 /// n_arcs)`) every cut has its field at every vertex. On the per-vertex
 /// layout (the `ProblemView` overloads) a cut has a field only at the
-/// vertices where its sum can be nonzero, and each vertex packs its own cuts
-/// from bit 0, so a state is read in the layout of the vertex it is at; an
-/// arc moves each kept field from its place at one end to its place at the
-/// other. A cut that does not fit makes `set_cuts` throw, as does a malformed
-/// one; on a throw the previous cuts stay.
+/// vertices of M', where its sum can be nonzero. In cut order, each cut takes
+/// the lowest place free at every vertex of M', so that most arcs keep a
+/// field in place; where no place is free at all of them, each vertex gives
+/// it its own lowest free place. Shared places can split a vertex's free bits
+/// into holes too narrow for a later field, so where that pass leaves cuts
+/// out and packing each vertex in cut order with no gaps (as before #150)
+/// fits more, that packing is used instead. A state is read in the layout of the vertex
+/// it is at, and an arc moves a kept field whose places at its two ends
+/// differ. A cut that does not fit makes `set_cuts` throw, as does a
+/// malformed one; on a throw the previous cuts stay.
 template <std::size_t Words>
 class BasicR1CData {
     static_assert(Words >= 1, "at least one state word");
@@ -145,7 +150,7 @@ public:
 
     /// Set the active cuts (arc memory) on the per-vertex layout: a cut has a
     /// field only at its base-set vertices and the ends of its memory arcs,
-    /// packed per vertex in cut order, so `64·Words` bits bound the cuts
+    /// placed as the class comment says, so `64·Words` bits bound the cuts
     /// sharing a vertex, not all of them. The view gives the arc endpoints and
     /// must be the one the resource prices. Throws as the global overload,
     /// TooManyCounters naming the cut and the vertex where it found no room.
@@ -184,11 +189,16 @@ public:
 
     /// Which of `cuts` the per-vertex layout of `set_cuts(cuts, pv)` has room
     /// for, without throwing for a cut that has none. Packs as `set_cuts`
-    /// does, greedily in cut order: a cut is placed iff its field fits at
-    /// every vertex of its M', and takes room only then. So `set_cuts` accepts
-    /// `cuts` iff `unplaced` is empty, and accepts the placed cuts alone with
-    /// the same slots. A malformed cut still throws `R1CError` (InvalidCut),
-    /// as `set_cuts` would.
+    /// does (the same code), greedily in cut order: a cut is placed iff each
+    /// vertex of its M' has a free place for its field, and takes room only
+    /// then. So `set_cuts` accepts `cuts` iff `unplaced` is empty, and
+    /// accepts the placed cuts alone, though not always in the same slots:
+    /// the subset may take the shared pass where `cuts` took the gap-free
+    /// one (class comment). The packing is not
+    /// monotone in field width: an `R1Cut` whose multipliers reduce to a
+    /// smaller d than its `R1VertexCut` twin may pack differently. A
+    /// malformed cut still throws `R1CError` (InvalidCut), as `set_cuts`
+    /// would.
     [[nodiscard]] static R1CFit fit(std::span<const R1Cut> cuts, const ProblemView& pv) {
         std::vector<NormCut> norm(cuts.size());
         for (std::size_t c = 0; c < cuts.size(); ++c) {
@@ -280,14 +290,70 @@ private:
         uint64_t mask = 0;  // (1 << width) - 1, unshifted
     };
 
-    // One table row: the global layout's only row, or a vertex's on the
-    // per-vertex layout, which lays out that vertex's fields.
-    struct Row {
-        std::array<uint64_t, Words> one{};         // bits of the 1-bit fields
-        std::array<uint64_t, Words> low2{};        // lowest bit of each 2-bit field
-        std::array<uint64_t, Words> low3{};        // lowest bit of each 3-bit field
+    // Where the fields of a layout lie, by width.
+    struct Masks {
+        std::array<uint64_t, Words> one{};   // bits of the 1-bit fields
+        std::array<uint64_t, Words> low2{};  // lowest bit of each 2-bit field
+        std::array<uint64_t, Words> low3{};  // lowest bit of each 3-bit field
+
+        [[nodiscard]] uint64_t lows(std::size_t w) const { return one[w] | low2[w] | low3[w]; }
+    };
+
+    // The global layout's table, inline: β and d by the field's lowest bit.
+    struct Row : Masks {
         std::array<double, Words * kBits> beta{};  // [word * 64 + bit] β of the field
         std::array<uint8_t, Words * kBits> den{};  // d of the field whose lowest bit this is
+    };
+
+    // A vertex's table on the per-vertex layout: its masks, and where its
+    // fields' β and d start in `vbeta_`/`vden_`, which list each vertex's
+    // fields by (word, bit). Field (w, bit) is entry begin[w] + the number
+    // of fields below bit in word w.
+    struct VertexRow : Masks {
+        std::array<uint32_t, Words> begin{};
+    };
+
+    // Read access to a table row, the same for both layouts.
+    struct GlobalRowRef {
+        const Row* row;
+        [[nodiscard]] const Masks& masks() const { return *row; }
+        [[nodiscard]] double beta(std::size_t w, int bit) const {
+            return row->beta[(w * kBits) + static_cast<std::size_t>(bit)];
+        }
+        [[nodiscard]] uint64_t den(std::size_t w, int bit) const {
+            return row->den[(w * kBits) + static_cast<std::size_t>(bit)];
+        }
+        // Σ β over the fields whose lowest bits are set in `mask` (word w).
+        [[nodiscard]] double beta_sum(std::size_t w, uint64_t mask) const {
+            const double* beta_at = &row->beta[w * kBits];
+            double cost = 0.0;
+            while (mask != 0) {
+                cost += beta_at[std::countr_zero(mask)];
+                mask &= mask - 1;
+            }
+            return cost;
+        }
+    };
+
+    struct VertexRowRef {
+        const VertexRow* row;
+        const double* betas;  // vbeta_
+        const uint8_t* dens;  // vden_
+        [[nodiscard]] const Masks& masks() const { return *row; }
+        [[nodiscard]] std::size_t index(std::size_t w, int bit) const {
+            const uint64_t below = (1ULL << bit) - 1;
+            return row->begin[w] + static_cast<std::size_t>(std::popcount(row->lows(w) & below));
+        }
+        [[nodiscard]] double beta(std::size_t w, int bit) const { return betas[index(w, bit)]; }
+        [[nodiscard]] uint64_t den(std::size_t w, int bit) const { return dens[index(w, bit)]; }
+        [[nodiscard]] double beta_sum(std::size_t w, uint64_t mask) const {
+            double cost = 0.0;
+            while (mask != 0) {
+                cost += beta(w, std::countr_zero(mask));
+                mask &= mask - 1;
+            }
+            return cost;
+        }
     };
 
     // The smallest d ∈ [2, 8] with every p·d integral, or 0 if there is none.
@@ -430,7 +496,7 @@ private:
     }
 
     // Cut-level tables shared by both layouts.
-    void init_cuts(std::span<const NormCut> cuts, std::size_t vertex_rows) {
+    void init_cuts(std::span<const NormCut> cuts) {
         n_active_ = static_cast<int>(cuts.size());
         fields_.resize(cuts.size());
         betas_.resize(cuts.size());
@@ -440,30 +506,50 @@ private:
             betas_[c] = cuts[c].beta;
         }
         global_row_ = Row{};
-        vertex_rows_.assign(vertex_rows, Row{});
+        vertex_rows_.clear();
+        vbeta_.clear();
+        vden_.clear();
     }
 
-    // Record cut c's field at (word, shift) in table row `row`.
-    void place(Row& row, std::size_t c, int word, int shift) {
+    // Record a field of `width` bits at (w, shift) in `m`.
+    static void mark(Masks& m, std::size_t w, int shift, int width) {
+        const uint64_t low = 1ULL << shift;
+        if (width == 1) {
+            m.one[w] |= low;
+        } else if (width == 2) {
+            m.low2[w] |= low;
+        } else {
+            m.low3[w] |= low;
+        }
+    }
+
+    // Record cut c's field at (word, shift) in the global row.
+    void place_global(std::size_t c, int word, int shift) {
         const Field f = fields_[c];
         const auto w = static_cast<std::size_t>(word);
-        const uint64_t low = 1ULL << shift;
-        if (f.width == 1) {
-            row.one[w] |= low;
-        } else if (f.width == 2) {
-            row.low2[w] |= low;
-        } else {
-            row.low3[w] |= low;
-        }
+        mark(global_row_, w, shift, f.width);
         const std::size_t at = (w * kBits) + static_cast<std::size_t>(shift);
-        row.beta[at] = betas_[c];
-        row.den[at] = static_cast<uint8_t>(f.denominator);
+        global_row_.beta[at] = betas_[c];
+        global_row_.den[at] = static_cast<uint8_t>(f.denominator);
     }
 
-    // The table row of vertex v: the inline global row, read at a fixed
-    // offset as before #146, or v's own on the per-vertex layout.
-    [[nodiscard]] const Row& row(int v) const {
-        return !per_vertex_ ? global_row_ : vertex_rows_[static_cast<std::size_t>(v)];
+    // Call f with the table row of vertex v: the inline global row, read at
+    // a fixed offset as before #146, or v's own on the per-vertex layout.
+    // The per-vertex call stays out of line: inlined, its second copy of f's
+    // body cost the global layout's bidirectional join ~1% more instructions
+    // and ~2% time (#150).
+    template <typename F>
+    decltype(auto) with_row(int v, F&& f) const {
+        if (!per_vertex_) [[likely]] {
+            return f(GlobalRowRef{&global_row_});
+        }
+        return with_vertex_row(v, f);
+    }
+
+    template <typename F>
+    [[gnu::noinline]] decltype(auto) with_vertex_row(int v, F& f) const {
+        return f(
+            VertexRowRef{&vertex_rows_[static_cast<std::size_t>(v)], vbeta_.data(), vden_.data()});
     }
 
     // Advance a (word, shift) cursor past a field of `width` bits; false when
@@ -482,46 +568,133 @@ private:
         return true;
     }
 
-    // fit's packing: the cursors of build_per_vertex, advanced for a cut only
-    // when it has room at every vertex of its M'.
-    static R1CFit fit_norm(std::span<const NormCut> cuts, int n_vertices) {
+    using Bits = std::array<uint64_t, Words>;
+
+    // The lowest place for a field of `width` bits clear in `used`, not
+    // straddling two words; false when there is none.
+    static bool lowest_free(const Bits& used, int width, int& word, int& shift) {
+        for (std::size_t w = 0; w < Words; ++w) {
+            const uint64_t free = ~used[w];
+            uint64_t run = free;  // bits starting `width` free ones within the word
+            for (int k = 1; k < width; ++k) {
+                run &= free >> k;
+            }
+            if (run != 0) {
+                word = static_cast<int>(w);
+                shift = std::countr_zero(run);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // One pass of the per-vertex packing, in cut order. Shared: a cut takes
+    // the lowest place free at every vertex of its M' (one place, so the
+    // arcs between them keep it in place), failing that the lowest free at
+    // each vertex. Not shared: each vertex packs its cuts with its own
+    // cursor, as before #150. `place(c, v, word, shift)` is called at each
+    // vertex of a placed cut; `no_room(c, v)` at each vertex of M' with no
+    // room for an unplaced one, in M' order. An unplaced cut takes no room.
+    template <typename Place, typename NoRoom>
+    static void pack_pass(std::span<const NormCut> cuts, int n_vertices, bool shared, Place&& place,
+                          NoRoom&& no_room) {
         const auto n_v = static_cast<std::size_t>(n_vertices);
-        R1CFit out;
-        out.bit_fails.assign(n_v, 0);
-        std::vector<int> word(n_v, 0);
-        std::vector<int> shift(n_v, 0);
+        std::vector<Bits> used(shared ? n_v : 0, Bits{});
+        std::vector<std::pair<int, int>> cursor(shared ? 0 : n_v, {0, 0});
+        std::vector<std::pair<int, int>> at;  // the place at each vertex of M'
         for (std::size_t c = 0; c < cuts.size(); ++c) {
             const int width = field_width(cuts[c].denominator);
+            const std::vector<int>& m = cuts[c].slot_vertices;
+            at.assign(m.size(), {0, 0});
             bool fits = true;
-            for (int v : cuts[c].slot_vertices) {
-                const auto vi = static_cast<std::size_t>(v);
-                int w = word[vi];
-                int s = shift[vi];
-                int at_word = 0;
-                int at_shift = 0;
-                if (!next_slot(w, s, width, at_word, at_shift)) {
-                    fits = false;
-                    ++out.bit_fails[vi];
+            Bits any{};
+            for (int v : m) {
+                for (std::size_t w = 0; shared && w < Words; ++w) {
+                    any[w] |= used[static_cast<std::size_t>(v)][w];
+                }
+            }
+            int word = 0;
+            int shift = 0;
+            if (shared && lowest_free(any, width, word, shift)) {
+                at.assign(m.size(), {word, shift});
+            } else {
+                for (std::size_t i = 0; i < m.size(); ++i) {
+                    const auto v = static_cast<std::size_t>(m[i]);
+                    bool room = false;
+                    if (shared) {
+                        room = lowest_free(used[v], width, at[i].first, at[i].second);
+                    } else {
+                        auto [cw, cs] = cursor[v];
+                        room = next_slot(cw, cs, width, at[i].first, at[i].second);
+                    }
+                    if (!room) {
+                        fits = false;
+                        no_room(c, m[i]);
+                    }
                 }
             }
             if (!fits) {
-                out.unplaced.push_back(static_cast<int>(c));
                 continue;
             }
-            for (int v : cuts[c].slot_vertices) {
-                const auto vi = static_cast<std::size_t>(v);
-                int at_word = 0;
-                int at_shift = 0;
-                next_slot(word[vi], shift[vi], width, at_word, at_shift);
+            for (std::size_t i = 0; i < m.size(); ++i) {
+                const auto v = static_cast<std::size_t>(m[i]);
+                const auto [w, s] = at[i];
+                if (shared) {
+                    used[v][static_cast<std::size_t>(w)] |= ((1ULL << width) - 1) << s;
+                } else {
+                    cursor[v] = {w, s + width};
+                }
+                place(c, m[i], w, s);
             }
         }
+    }
+
+    // The unplaced cuts of a pass.
+    static int count_unplaced(std::span<const NormCut> cuts, int n_vertices, bool shared) {
+        int n = 0;
+        std::size_t last = cuts.size();
+        pack_pass(
+            cuts, n_vertices, shared, [](std::size_t, int, int, int) {},
+            [&](std::size_t c, int) {
+                n += c != last ? 1 : 0;
+                last = c;
+            });
+        return n;
+    }
+
+    // The per-vertex layout's packing, shared by set_cuts and fit: the
+    // shared pass, or, where it leaves cuts unplaced (a shared place can
+    // split a vertex's free bits into holes too narrow for later fields),
+    // the cursor pass if it places more. So every cut set the cursor
+    // packing took is still taken.
+    template <typename Place, typename NoRoom>
+    static void pack_per_vertex(std::span<const NormCut> cuts, int n_vertices, Place&& place,
+                                NoRoom&& no_room) {
+        const int shared_fails = count_unplaced(cuts, n_vertices, true);
+        const bool shared =
+            shared_fails == 0 || shared_fails <= count_unplaced(cuts, n_vertices, false);
+        pack_pass(cuts, n_vertices, shared, std::forward<Place>(place),
+                  std::forward<NoRoom>(no_room));
+    }
+
+    static R1CFit fit_norm(std::span<const NormCut> cuts, int n_vertices) {
+        R1CFit out;
+        out.bit_fails.assign(static_cast<std::size_t>(n_vertices), 0);
+        pack_per_vertex(
+            cuts, n_vertices, [](std::size_t, int, int, int) {},
+            [&](std::size_t c, int v) {
+                if (out.unplaced.empty() || std::cmp_not_equal(out.unplaced.back(), c)) {
+                    out.unplaced.push_back(static_cast<int>(c));
+                }
+                ++out.bit_fails[static_cast<std::size_t>(v)];
+            });
         return out;
     }
 
     template <Executor Exec>
     void build_global(std::span<const NormCut> cuts, Exec&& exec) {
         per_vertex_ = false;
-        init_cuts(cuts, 0);
+        init_cuts(cuts);
         int word = 0;
         int shift = 0;
         for (std::size_t c = 0; c < cuts.size(); ++c) {
@@ -532,7 +705,7 @@ private:
                     "R1CResource: the cuts need more state bits than the resource's words hold",
                     static_cast<int>(c));
             }
-            place(global_row_, c, f.word, f.shift);
+            place_global(c, f.word, f.shift);
         }
         build_vertex_tables(cuts, [&](std::size_t c, int /*v*/) {
             const Field f = fields_[c];
@@ -559,38 +732,62 @@ private:
                           Exec&& exec) {
         per_vertex_ = true;
         const auto n_v = static_cast<std::size_t>(n_vertices_);
-        init_cuts(cuts, n_v);
+        init_cuts(cuts);
 
-        // Slots: each vertex packs the cuts of whose M' it is in, in cut order.
-        std::vector<int> word(n_v, 0);
-        std::vector<int> shift(n_v, 0);
+        // Slots, each vertex's in cut order.
         std::vector<std::vector<Slot>> slots(n_v);
-        for (std::size_t c = 0; c < cuts.size(); ++c) {
-            const int width = fields_[c].width;
-            for (int v : cuts[c].slot_vertices) {
-                const auto vi = static_cast<std::size_t>(v);
-                Slot s{.cut = static_cast<int>(c)};
-                if (!next_slot(word[vi], shift[vi], width, s.word, s.shift)) {
-                    throw R1CError(R1CErrc::TooManyCounters,
-                                   "R1CResource: the cuts at a vertex need more state bits than "
-                                   "the resource's words hold",
-                                   static_cast<int>(c), v);
-                }
-                slots[vi].push_back(s);
-                place(vertex_rows_[vi], c, s.word, s.shift);
-            }
-        }
+        pack_per_vertex(
+            cuts, n_vertices_,
+            [&](std::size_t c, int v, int word, int shift) {
+                slots[static_cast<std::size_t>(v)].push_back(
+                    {.cut = static_cast<int>(c), .word = word, .shift = shift});
+            },
+            [](std::size_t c, int v) {
+                throw R1CError(R1CErrc::TooManyCounters,
+                               "R1CResource: the cuts at a vertex need more state bits than "
+                               "the resource's words hold",
+                               static_cast<int>(c), v);
+            });
         vslot_begin_.assign(1, 0);
         vslots_.clear();
         for (const auto& row : slots) {
             vslots_.insert(vslots_.end(), row.begin(), row.end());
             vslot_begin_.push_back(static_cast<uint32_t>(vslots_.size()));
         }
+        build_vertex_rows(slots);
         build_vertex_tables(cuts, [&](std::size_t c, int v) {
             const Field f = field(static_cast<int>(c), v);
             return std::pair{f.word, f.shift};
         });
         build_arc_tables(cuts, pv, vertex_memory, std::forward<Exec>(exec));
+    }
+
+    // Per vertex: its masks, and its fields' β and d listed by (word, bit).
+    void build_vertex_rows(const std::vector<std::vector<Slot>>& slots) {
+        vertex_rows_.assign(slots.size(), VertexRow{});
+        std::size_t total = 0;
+        for (const auto& s : slots) {
+            total += s.size();
+        }
+        vbeta_.reserve(total);
+        vden_.reserve(total);
+        std::vector<Slot> by_place;
+        for (std::size_t v = 0; v < slots.size(); ++v) {
+            by_place.assign(slots[v].begin(), slots[v].end());
+            std::ranges::sort(by_place, {},
+                              [](const Slot& s) { return std::pair{s.word, s.shift}; });
+            VertexRow& row = vertex_rows_[v];
+            std::size_t next = 0;
+            for (std::size_t w = 0; w < Words; ++w) {
+                row.begin[w] = static_cast<uint32_t>(vbeta_.size());
+                for (; next < by_place.size() && std::cmp_equal(by_place[next].word, w); ++next) {
+                    const auto c = static_cast<std::size_t>(by_place[next].cut);
+                    mark(row, w, by_place[next].shift, fields_[c].width);
+                    vbeta_.push_back(betas_[c]);
+                    vden_.push_back(static_cast<uint8_t>(fields_[c].denominator));
+                }
+            }
+        }
     }
 
     // Per vertex: the toggle mask of the 1-bit fast path (d = 2, numerator 1)
@@ -731,7 +928,9 @@ private:
     std::vector<Field> fields_;                      // [cut]; word -1 on the per-vertex layout
     std::vector<double> betas_;                      // [cut]
     Row global_row_{};                               // the global layout's tables, inline
-    std::vector<Row> vertex_rows_;                   // [vertex], per-vertex layout only
+    std::vector<VertexRow> vertex_rows_;             // [vertex], per-vertex layout only
+    std::vector<double> vbeta_;                      // β of each vertex's fields, by (word, bit)
+    std::vector<uint8_t> vden_;                      // d of each vertex's fields, likewise
     std::vector<std::array<uint64_t, Words>> keep_;  // [arc] the fields kept in place
     std::vector<uint32_t> move_begin_;   // [arc], n_arcs + 1 entries, per-vertex layout only
     std::vector<Move> moves_;            // an arc's fields kept at another place
@@ -859,7 +1058,8 @@ public:
                 const uint64_t overflow = s & toggle[w];
                 s ^= toggle[w];
                 if (overflow != 0) {
-                    cost += beta_sum(data_->row(vertex), w, overflow);
+                    cost += data_->with_row(vertex,
+                                            [&](const auto& t) { return t.beta_sum(w, overflow); });
                 }
             }
         }
@@ -885,23 +1085,25 @@ public:
         if (data_->n_active_ == 0) {
             return 0.0;
         }
-        const auto& t = data_->row(vertex);
-        double cost = 0.0;
-        for (std::size_t w = 0; w < Words; ++w) {
-            const uint64_t a = word(s1, w);
-            const uint64_t b = word(s2, w);
-            uint64_t worse = a & ~b & t.one[w];
-            if (t.low2[w] != 0) {
-                worse |= exceeds2(a, b, t.low2[w]);
+        return data_->with_row(vertex, [&](const auto& t) {
+            const auto& m = t.masks();
+            double cost = 0.0;
+            for (std::size_t w = 0; w < Words; ++w) {
+                const uint64_t a = word(s1, w);
+                const uint64_t b = word(s2, w);
+                uint64_t worse = a & ~b & m.one[w];
+                if (m.low2[w] != 0) {
+                    worse |= exceeds2(a, b, m.low2[w]);
+                }
+                if (m.low3[w] != 0) {
+                    worse |= exceeds3(a, b, m.low3[w]);
+                }
+                if (worse != 0) {
+                    cost += t.beta_sum(w, worse);
+                }
             }
-            if (t.low3[w] != 0) {
-                worse |= exceeds3(a, b, t.low3[w]);
-            }
-            if (worse != 0) {
-                cost += beta_sum(t, w, worse);
-            }
-        }
-        return cost;
+            return cost;
+        });
     }
 
     /// Lower bound on domination_cost: 0. The dominance penalty is a sum of +β
@@ -916,36 +1118,37 @@ public:
         if (data_->n_active_ == 0) {
             return 0.0;
         }
-        const auto& t = data_->row(vertex);
-        double cost = 0.0;
-        for (std::size_t w = 0; w < Words; ++w) {
-            const uint64_t f = word(s_fw, w);
-            const uint64_t b = word(s_bw, w);
-            const uint64_t both = f & b & t.one[w];
-            if (both != 0) {
-                cost += beta_sum(t, w, both);
-            }
-            const uint64_t low2 = t.low2[w];
-            const uint64_t low3 = t.low3[w];
-            if ((low2 | low3) == 0) {
-                continue;
-            }
-            // Fields nonzero on both sides; only they can reach d together.
-            uint64_t cand =
-                (((f | (f >> 1)) & low2) & ((b | (b >> 1)) & low2)) |
-                (((f | (f >> 1) | (f >> 2)) & low3) & ((b | (b >> 1) | (b >> 2)) & low3));
-            while (cand != 0) {
-                const int bit = std::countr_zero(cand);
-                const uint64_t mask = ((low2 >> bit) & 1ULL) != 0 ? 0x3ULL : 0x7ULL;
-                const uint64_t sum = ((f >> bit) & mask) + ((b >> bit) & mask);
-                const std::size_t at = (w * Data::kBits) + static_cast<std::size_t>(bit);
-                if (sum >= t.den[at]) {
-                    cost += t.beta[at];
+        return data_->with_row(vertex, [&](const auto& t) {
+            const auto& m = t.masks();
+            double cost = 0.0;
+            for (std::size_t w = 0; w < Words; ++w) {
+                const uint64_t f = word(s_fw, w);
+                const uint64_t b = word(s_bw, w);
+                const uint64_t both = f & b & m.one[w];
+                if (both != 0) {
+                    cost += t.beta_sum(w, both);
                 }
-                cand &= cand - 1;
+                const uint64_t low2 = m.low2[w];
+                const uint64_t low3 = m.low3[w];
+                if ((low2 | low3) == 0) {
+                    continue;
+                }
+                // Fields nonzero on both sides; only they can reach d together.
+                uint64_t cand =
+                    (((f | (f >> 1)) & low2) & ((b | (b >> 1)) & low2)) |
+                    (((f | (f >> 1) | (f >> 2)) & low3) & ((b | (b >> 1) | (b >> 2)) & low3));
+                while (cand != 0) {
+                    const int bit = std::countr_zero(cand);
+                    const uint64_t mask = ((low2 >> bit) & 1ULL) != 0 ? 0x3ULL : 0x7ULL;
+                    const uint64_t sum = ((f >> bit) & mask) + ((b >> bit) & mask);
+                    if (sum >= t.den(w, bit)) {
+                        cost += t.beta(w, bit);
+                    }
+                    cand &= cand - 1;
+                }
             }
-        }
-        return cost;
+            return cost;
+        });
     }
 
 private:
@@ -956,20 +1159,6 @@ private:
         } else {
             return s[i];
         }
-    }
-
-    /// Sum of +β over the fields whose lowest bits are set in `mask` (word w
-    /// of table row t) — the reduced-cost penalty for the coefficients they
-    /// stand for.
-    [[nodiscard]] static double beta_sum(const Data::Row& t, std::size_t w, uint64_t mask) {
-        const double* beta_at = &t.beta[w * Data::kBits];
-        double cost = 0.0;
-        while (mask != 0) {
-            const int bit = std::countr_zero(mask);
-            cost += beta_at[bit];
-            mask &= mask - 1;
-        }
-        return cost;
     }
 
     const Data* data_ = nullptr;  // not owned

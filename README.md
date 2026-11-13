@@ -261,8 +261,11 @@ Solver<Pack, ThreadPoolExecutor> solver(
   `64·Words` bits. The `ProblemView` overloads, for `R1Cut` and
   `R1VertexCut` alike, lay them out per vertex: a cut has its bits only at
   the vertices of M' (for an `R1Cut`, its base set and the ends of its memory
-  arcs), each vertex packs its own cuts, and `64·Words` bounds the cuts
-  sharing a vertex, not all of them. Local cuts, as separation produces
+  arcs), and `64·Words` bounds the cuts sharing a vertex, not all of them.
+  A cut keeps one place across its M' where one is free at all of it, so
+  most arcs keep its sum without moving it. Where shared places leave cuts
+  out that packing each vertex without gaps would fit, that packing is used
+  instead, so no set that fits gap-free is refused. Local cuts, as separation produces
   them, then fit many times over. `TooManyCounters` names the vertex that
   overflowed; `field(cut, vertex)` gives a cut's place at a vertex.
 - **Checking the room first.** `BasicR1CData<Words>::fit(cuts, view)`, for
@@ -272,7 +275,8 @@ Solver<Pack, ThreadPoolExecutor> solver(
   `R1CFit::unplaced` lists the cuts that did not fit and `bit_fails[v]`
   counts those that found no room at vertex v (a vertex may refuse a wide
   field and still take a narrower one). `set_cuts` accepts the set iff
-  `unplaced` is empty, and accepts the placed cuts alone in the same slots.
+  `unplaced` is empty, and accepts the placed cuts alone, though possibly in
+  other slots.
 
 ## Custom Resources
 

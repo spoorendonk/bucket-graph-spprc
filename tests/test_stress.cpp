@@ -12,8 +12,10 @@
 #include <cmath>
 #include <doctest/doctest.h>
 #include <random>
+#include <set>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 using namespace bgspprc;
@@ -4060,12 +4062,11 @@ namespace {
 /// A DAG on 14 vertices, arcs i → j for 1 ≤ j - i ≤ 3, with many local cuts
 /// (#146): each over 2 or 3 consecutive interior vertices, its memory the
 /// vertex on either side or not. Posed in both forms, the `R1Cut` one
-/// remembering the arcs with both ends in M'. The cuts are drawn until 400
-/// tries; one that would overflow a vertex's `64·Words` bits is skipped,
-/// replaying the per-vertex layout's slot cursor (cut order, no field
-/// straddling a word), so the kept ones fit per vertex but need more than
-/// `64·Words` bits in all. The arc form's slots are a subset of M', so they
-/// fit too.
+/// remembering the arcs with both ends in M'. 400 cuts are drawn, and the
+/// ones `fit` finds no room for are dropped, so the kept ones fit per vertex
+/// but need more than `64·Words` bits in all. A memory vertex is next to a
+/// base-set one, and arc i → i + 1 is always there, so the arc form has the
+/// same M'; its first numerator is 1, so it has the same d, and fits too.
 struct LocalR1CInstance : R1CBruteForce {
     static constexpr int N = 14;
     int total_bits = 0;  // over the kept cuts
@@ -4085,34 +4086,10 @@ struct LocalR1CInstance : R1CBruteForce {
             }
         }
         const int n_arcs = static_cast<int>(from.size());
-        const auto bits = static_cast<int>(64 * words);
-        std::vector<int> word(N, 0);
-        std::vector<int> shift(N, 0);
-        // Place a `width`-bit field at every vertex of `m`, or nothing.
-        auto place = [&](const std::vector<int>& m, int width) {
-            auto w = word;
-            auto sh = shift;
-            for (int v : m) {
-                auto& vw = w[static_cast<std::size_t>(v)];
-                auto& vs = sh[static_cast<std::size_t>(v)];
-                if (vs + width > 64) {
-                    ++vw;
-                    vs = 0;
-                }
-                if (vw * 64 + vs + width > bits) {
-                    return false;
-                }
-                vs += width;
-            }
-            word = std::move(w);
-            shift = std::move(sh);
-            return true;
-        };
+        finish_view();
         const int denominators[] = {2, 3, 4, 5, 6, 7, 8};
         for (int t = 0; t < 400; ++t) {
             const int d = denominators[rng() % 7];
-            constexpr int kWidth[] = {0, 0, 1, 2, 2, 3, 3, 3, 3};  // ⌈log2 d⌉, by hand
-            const int width = kWidth[d];
             const int len = 2 + static_cast<int>(rng() % 2);
             const int first = 1 + static_cast<int>(rng() % static_cast<unsigned>(N - 1 - len));
             std::vector<int> k(N, 0);
@@ -4120,8 +4097,9 @@ struct LocalR1CInstance : R1CBruteForce {
             R1Cut cut;
             R1VertexCut vcut{.denominator = d};
             for (int v = first; v < first + len; ++v) {
+                // Numerator 1 first, so the arc form keeps d unreduced.
                 k[static_cast<std::size_t>(v)] =
-                    1 + static_cast<int>(rng() % static_cast<unsigned>(d - 1));
+                    v == first ? 1 : 1 + static_cast<int>(rng() % static_cast<unsigned>(d - 1));
                 vcut.coefficients.emplace_back(v, k[static_cast<std::size_t>(v)]);
                 cut.base_set.push_back(v);
                 cut.multipliers.push_back(static_cast<double>(k[static_cast<std::size_t>(v)]) / d);
@@ -4133,16 +4111,7 @@ struct LocalR1CInstance : R1CBruteForce {
                     in_m[static_cast<std::size_t>(v)] = true;
                 }
             }
-            std::vector<int> m;
-            for (int v = 0; v < N; ++v) {
-                if (in_m[static_cast<std::size_t>(v)]) {
-                    m.push_back(v);
-                }
-            }
             const double dual = -std::floor(unit(rng) * 3.0) / 2.0;  // β ∈ {0, 0.5, 1}
-            if (!place(m, width)) {
-                continue;
-            }
             std::vector<bool> mem(static_cast<std::size_t>(n_arcs), false);
             for (int a = 0; a < n_arcs; ++a) {
                 const auto ua = static_cast<std::size_t>(a);
@@ -4159,9 +4128,30 @@ struct LocalR1CInstance : R1CBruteForce {
             den.push_back(d);
             num.push_back(k);
             remembers.push_back(mem);
-            total_bits += width;
         }
-        finish_view();
+        // Keep the cuts the per-vertex layout has room for (#147's fit).
+        const R1CFit fit = words == 1 ? BasicR1CData<1>::fit(vertex_cuts, pv)
+                                      : BasicR1CData<2>::fit(vertex_cuts, pv);
+        std::size_t out = 0;
+        for (std::size_t c = 0, u = 0; c < cuts.size(); ++c) {
+            if (u < fit.unplaced.size() && std::cmp_equal(fit.unplaced[u], c)) {
+                ++u;
+                continue;
+            }
+            cuts[out] = cuts[c];
+            vertex_cuts[out] = vertex_cuts[c];
+            den[out] = den[c];
+            num[out] = num[c];
+            remembers[out] = remembers[c];
+            constexpr int kWidth[] = {0, 0, 1, 2, 2, 3, 3, 3, 3};  // ⌈log2 d⌉, by hand
+            total_bits += kWidth[den[c]];
+            ++out;
+        }
+        cuts.resize(out);
+        vertex_cuts.resize(out);
+        den.resize(out);
+        num.resize(out);
+        remembers.resize(out);
     }
 };
 
@@ -4196,9 +4186,30 @@ double check_local_r1c(const LocalR1CInstance& inst, bool bidir) {
     return best;
 }
 
+/// The cuts that sit at different places at two vertices of their M', which
+/// an arc between those vertices moves.
+template <std::size_t Words>
+int moved_cuts(const LocalR1CInstance& inst) {
+    BasicR1CData<Words> data;
+    data.set_cuts(inst.vertex_cuts, inst.pv);
+    int moved = 0;
+    for (int c = 0; c < data.n_active(); ++c) {
+        std::set<std::pair<int, int>> places;
+        for (int v = 0; v < inst.pv.n_vertices; ++v) {
+            const auto f = data.field(c, v);
+            if (f.word >= 0) {
+                places.emplace(f.word, f.shift);
+            }
+        }
+        moved += places.size() > 1 ? 1 : 0;
+    }
+    return moved;
+}
+
 }  // namespace
 
 TEST_CASE("R1C per-vertex layout: more cuts than the words hold price as the brute force") {
+    int moved = 0;
     int checked = 0;
     int with_cut_cost = 0;
     for (unsigned seed = 1; seed <= 8; ++seed) {
@@ -4207,6 +4218,7 @@ TEST_CASE("R1C per-vertex layout: more cuts than the words hold price as the bru
             CAPTURE(words);
             const LocalR1CInstance inst(seed, words);
             REQUIRE(inst.total_bits > static_cast<int>(64 * words));
+            moved += words == 1 ? moved_cuts<1>(inst) : moved_cuts<2>(inst);
             const double want = inst.brute_force_min();
             if (want < 0.0) {
                 ++checked;
@@ -4228,4 +4240,5 @@ TEST_CASE("R1C per-vertex layout: more cuts than the words hold price as the bru
     }
     CHECK(checked >= 10);
     CHECK(with_cut_cost >= 4);
+    CHECK(moved >= 20);  // arcs move fields, not only keep them in place
 }
