@@ -12,7 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <doctest/doctest.h>
-#include <functional>
+#include <numeric>
 #include <random>
 #include <stdexcept>
 #include <type_traits>
@@ -2501,7 +2501,8 @@ bool check_fit_agrees(const std::vector<Cut>& cuts, const ProblemView& pv) {
     const R1CFit fit = R1CData::fit(cuts, pv);
     REQUIRE(std::cmp_equal(fit.bit_fails.size(), pv.n_vertices));
     CHECK(std::ranges::is_sorted(fit.unplaced));
-    CHECK(std::ranges::fold_left(fit.bit_fails, 0, std::plus{}) >= std::ssize(fit.unplaced));
+    CHECK(std::accumulate(fit.bit_fails.begin(), fit.bit_fails.end(), 0) >=
+          std::ssize(fit.unplaced));
     R1CData data;
     if (fit.unplaced.empty()) {
         CHECK_NOTHROW(data.set_cuts(cuts, pv));
