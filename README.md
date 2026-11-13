@@ -263,9 +263,9 @@ Solver<Pack, ThreadPoolExecutor> solver(
   the vertices of M' (for an `R1Cut`, its base set and the ends of its memory
   arcs), and `64·Words` bounds the cuts sharing a vertex, not all of them.
   A cut keeps one place across its M' where one is free at all of it, so
-  most arcs keep its sum without moving it. Where shared places leave cuts
-  out that packing each vertex without gaps would fit, that packing is used
-  instead, so no set that fits gap-free is refused. Local cuts, as separation produces
+  most arcs keep its sum without moving it. Which cuts fit is still decided
+  by packing each vertex in cut order without gaps, as before, and that
+  packing is the layout wherever the shared places would leave a cut out. Local cuts, as separation produces
   them, then fit many times over. `TooManyCounters` names the vertex that
   overflowed; `field(cut, vertex)` gives a cut's place at a vertex.
 - **Checking the room first.** `BasicR1CData<Words>::fit(cuts, view)`, for

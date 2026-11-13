@@ -104,10 +104,11 @@ class BasicR1CView;
 /// vertices of M', where its sum can be nonzero. In cut order, each cut takes
 /// the lowest place free at every vertex of M', so that most arcs keep a
 /// field in place; where no place is free at all of them, each vertex gives
-/// it its own lowest free place. Shared places can split a vertex's free bits
-/// into holes too narrow for a later field, so where that pass leaves cuts
-/// out and packing each vertex in cut order with no gaps (as before #150)
-/// fits more, that packing is used instead. A state is read in the layout of the vertex
+/// it its own lowest free place. Which cuts fit is decided by packing each
+/// vertex in cut order with no gaps (as before #150), and that packing is
+/// also the layout where the shared places would leave a cut out (they can
+/// split a vertex's free bits into holes too narrow for a later field). A
+/// state is read in the layout of the vertex
 /// it is at, and an arc moves a kept field whose places at its two ends
 /// differ. A cut that does not fit makes `set_cuts` throw, as does a
 /// malformed one; on a throw the previous cuts stay.
@@ -193,8 +194,8 @@ public:
     /// vertex of its M' has a free place for its field, and takes room only
     /// then. So `set_cuts` accepts `cuts` iff `unplaced` is empty, and
     /// accepts the placed cuts alone, though not always in the same slots:
-    /// the subset may take the shared pass where `cuts` took the gap-free
-    /// one (class comment). The packing is not
+    /// the subset may take the shared places where `cuts` took the gap-free
+    /// ones (class comment). The packing is not
     /// monotone in field width: an `R1Cut` whose multipliers reduce to a
     /// smaller d than its `R1VertexCut` twin may pack differently. A
     /// malformed cut still throws `R1CError` (InvalidCut), as `set_cuts`
@@ -663,16 +664,17 @@ private:
     }
 
     // The per-vertex layout's packing, shared by set_cuts and fit: the
-    // shared pass, or, where it leaves cuts unplaced (a shared place can
-    // split a vertex's free bits into holes too narrow for later fields),
-    // the cursor pass if it places more. So every cut set the cursor
-    // packing took is still taken.
+    // shared pass where both passes place every cut, else the cursor pass.
+    // So the cuts placed are exactly the cursor packing's, as before #150:
+    // shared first-fit is no more than a choice of places. Used for
+    // acceptance it would refuse cut sets the cursor takes (a shared place
+    // can split a vertex's free bits into holes), and could refuse a subset
+    // of a set it took, which a separator dropping a cut must not meet.
     template <typename Place, typename NoRoom>
     static void pack_per_vertex(std::span<const NormCut> cuts, int n_vertices, Place&& place,
                                 NoRoom&& no_room) {
-        const int shared_fails = count_unplaced(cuts, n_vertices, true);
-        const bool shared =
-            shared_fails == 0 || shared_fails <= count_unplaced(cuts, n_vertices, false);
+        const bool shared = count_unplaced(cuts, n_vertices, false) == 0 &&
+                            count_unplaced(cuts, n_vertices, true) == 0;
         pack_pass(cuts, n_vertices, shared, std::forward<Place>(place),
                   std::forward<NoRoom>(no_room));
     }

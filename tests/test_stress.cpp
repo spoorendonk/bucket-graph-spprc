@@ -4062,16 +4062,16 @@ namespace {
 /// A DAG on 14 vertices, arcs i → j for 1 ≤ j - i ≤ 3, with many local cuts
 /// (#146): each over 2 or 3 consecutive interior vertices, its memory the
 /// vertex on either side or not. Posed in both forms, the `R1Cut` one
-/// remembering the arcs with both ends in M'. 400 cuts are drawn, and the
-/// ones `fit` finds no room for are dropped, so the kept ones fit per vertex
-/// but need more than `64·Words` bits in all. A memory vertex is next to a
-/// base-set one, and arc i → i + 1 is always there, so the arc form has the
-/// same M'; its first numerator is 1, so it has the same d, and fits too.
+/// remembering the arcs with both ends in M'. `tries` cuts are drawn, and
+/// the ones `fit` finds no room for are dropped, so the kept ones fit per
+/// vertex but need more than `64·Words` bits in all. A memory vertex is next
+/// to a base-set one, and arc i → i + 1 is always there, so the arc form has
+/// the same M', and a d no larger, and fits too.
 struct LocalR1CInstance : R1CBruteForce {
     static constexpr int N = 14;
     int total_bits = 0;  // over the kept cuts
 
-    LocalR1CInstance(unsigned seed, std::size_t words) {
+    LocalR1CInstance(unsigned seed, std::size_t words, int tries) {
         n = N;
         std::mt19937 rng(seed);
         std::uniform_real_distribution<double> unit(0.0, 1.0);
@@ -4088,7 +4088,7 @@ struct LocalR1CInstance : R1CBruteForce {
         const int n_arcs = static_cast<int>(from.size());
         finish_view();
         const int denominators[] = {2, 3, 4, 5, 6, 7, 8};
-        for (int t = 0; t < 400; ++t) {
+        for (int t = 0; t < tries; ++t) {
             const int d = denominators[rng() % 7];
             const int len = 2 + static_cast<int>(rng() % 2);
             const int first = 1 + static_cast<int>(rng() % static_cast<unsigned>(N - 1 - len));
@@ -4097,9 +4097,8 @@ struct LocalR1CInstance : R1CBruteForce {
             R1Cut cut;
             R1VertexCut vcut{.denominator = d};
             for (int v = first; v < first + len; ++v) {
-                // Numerator 1 first, so the arc form keeps d unreduced.
                 k[static_cast<std::size_t>(v)] =
-                    v == first ? 1 : 1 + static_cast<int>(rng() % static_cast<unsigned>(d - 1));
+                    1 + static_cast<int>(rng() % static_cast<unsigned>(d - 1));
                 vcut.coefficients.emplace_back(v, k[static_cast<std::size_t>(v)]);
                 cut.base_set.push_back(v);
                 cut.multipliers.push_back(static_cast<double>(k[static_cast<std::size_t>(v)]) / d);
@@ -4187,12 +4186,13 @@ double check_local_r1c(const LocalR1CInstance& inst, bool bidir) {
 }
 
 /// The cuts that sit at different places at two vertices of their M', which
-/// an arc between those vertices moves.
+/// an arc between those vertices moves, and those at one place across it.
 template <std::size_t Words>
-int moved_cuts(const LocalR1CInstance& inst) {
+std::pair<int, int> moved_kept_cuts(const LocalR1CInstance& inst) {
     BasicR1CData<Words> data;
     data.set_cuts(inst.vertex_cuts, inst.pv);
     int moved = 0;
+    int kept = 0;
     for (int c = 0; c < data.n_active(); ++c) {
         std::set<std::pair<int, int>> places;
         for (int v = 0; v < inst.pv.n_vertices; ++v) {
@@ -4202,43 +4202,63 @@ int moved_cuts(const LocalR1CInstance& inst) {
             }
         }
         moved += places.size() > 1 ? 1 : 0;
+        kept += places.size() == 1 ? 1 : 0;
     }
-    return moved;
+    return {moved, kept};
 }
 
 }  // namespace
 
 TEST_CASE("R1C per-vertex layout: more cuts than the words hold price as the brute force") {
-    int moved = 0;
+    // 400 tries fill the vertices, so the gap-free packing lays most of them
+    // out; 120 leave room, so the shared places do.
+    int full_moved = 0;
+    int light_moved = 0;
+    int light_kept = 0;
+    int full_kept = 0;
     int checked = 0;
     int with_cut_cost = 0;
     for (unsigned seed = 1; seed <= 8; ++seed) {
         CAPTURE(seed);
         for (std::size_t words : {1U, 2U}) {
-            CAPTURE(words);
-            const LocalR1CInstance inst(seed, words);
-            REQUIRE(inst.total_bits > static_cast<int>(64 * words));
-            moved += words == 1 ? moved_cuts<1>(inst) : moved_cuts<2>(inst);
-            const double want = inst.brute_force_min();
-            if (want < 0.0) {
-                ++checked;
-            }
-            if (want > inst.plain_min() + 0.25) {
-                ++with_cut_cost;
-            }
-            for (bool bidir : {false, true}) {
-                CAPTURE(bidir);
-                if (words == 1) {
-                    check_local_r1c<1, true>(inst, bidir);
-                    check_local_r1c<1, false>(inst, bidir);
-                } else {
-                    check_local_r1c<2, true>(inst, bidir);
-                    check_local_r1c<2, false>(inst, bidir);
+            for (int tries : {400, 120}) {
+                CAPTURE(words);
+                CAPTURE(tries);
+                const LocalR1CInstance inst(seed, words, tries);
+                REQUIRE(inst.total_bits > static_cast<int>(64 * words));
+                const auto [mv, kp] =
+                    words == 1 ? moved_kept_cuts<1>(inst) : moved_kept_cuts<2>(inst);
+                (tries == 400 ? full_moved : light_moved) += mv;
+                (tries == 400 ? full_kept : light_kept) += kp;
+                const double want = inst.brute_force_min();
+                if (want < 0.0) {
+                    ++checked;
+                }
+                if (want > inst.plain_min() + 0.25) {
+                    ++with_cut_cost;
+                }
+                for (bool bidir : {false, true}) {
+                    CAPTURE(bidir);
+                    if (words == 1) {
+                        check_local_r1c<1, true>(inst, bidir);
+                        check_local_r1c<1, false>(inst, bidir);
+                    } else {
+                        check_local_r1c<2, true>(inst, bidir);
+                        check_local_r1c<2, false>(inst, bidir);
+                    }
                 }
             }
         }
     }
+    CAPTURE(full_moved);
+    CAPTURE(light_moved);
+    CAPTURE(light_kept);
+    CAPTURE(full_kept);
     CHECK(checked >= 10);
     CHECK(with_cut_cost >= 4);
-    CHECK(moved >= 20);  // arcs move fields, not only keep them in place
+    CHECK(full_moved >= 20);  // arcs move fields, not only keep them in place
+    // With room, the shared places keep cuts in one place across M' far more
+    // often than the gap-free packing does (about 1.2 kept per move against
+    // 0.04 on these seeds).
+    CHECK(light_kept * full_moved > 10 * full_kept * light_moved);
 }

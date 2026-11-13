@@ -10,6 +10,7 @@
 #include <bgspprc/resources/standard.h>
 #include <bgspprc/solver.h>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <doctest/doctest.h>
 #include <numeric>
@@ -2469,6 +2470,46 @@ TEST_CASE("R1C per-vertex layout falls back to cursor packing where a shared pla
     CHECK(r1c.field(62, 1).shift == 0);
     CHECK(r1c.field(62, 2).shift == 62);
     CHECK(r1c.field(83, 1).shift == 61);
+}
+
+TEST_CASE("R1C per-vertex layout still fits a set that fit with one cut dropped") {
+    // A separator drops inactive cuts from a set it was given room for, so
+    // that must not fail. Shared first-fit alone does not keep this (with
+    // two words, dropping one cut could leave holes the rest no longer
+    // fit); the gap-free packing that decides room does.
+    const R1CLine line;
+    for (unsigned seed = 1; seed <= 30; ++seed) {
+        CAPTURE(seed);
+        std::mt19937 rng(seed);
+        std::vector<R1VertexCut> drawn;
+        for (int t = 0; t < 120; ++t) {
+            R1VertexCut cut{.denominator = 2 + static_cast<int>(rng() % 7)};
+            const int a = 1 + static_cast<int>(rng() % 3);
+            const int b = 1 + static_cast<int>(rng() % 3);
+            cut.coefficients.emplace_back(std::min(a, b), 1);
+            if (a != b) {
+                cut.coefficients.emplace_back(std::max(a, b), 1);
+            }
+            drawn.push_back(cut);
+        }
+        const R1CFit all = BasicR1CData<2>::fit(drawn, line.pv);
+        std::vector<R1VertexCut> placed;
+        for (std::size_t c = 0, u = 0; c < drawn.size(); ++c) {
+            if (u < all.unplaced.size() && std::cmp_equal(all.unplaced[u], c)) {
+                ++u;
+            } else {
+                placed.push_back(drawn[c]);
+            }
+        }
+        REQUIRE(!all.unplaced.empty());  // drawn past the room
+        REQUIRE(BasicR1CData<2>::fit(placed, line.pv).unplaced.empty());
+        for (std::size_t drop = 0; drop < placed.size(); ++drop) {
+            CAPTURE(drop);
+            std::vector<R1VertexCut> rest = placed;
+            rest.erase(rest.begin() + static_cast<std::ptrdiff_t>(drop));
+            CHECK(BasicR1CData<2>::fit(rest, line.pv).unplaced.empty());
+        }
+    }
 }
 
 TEST_CASE("R1C per-vertex layout moves a field kept at different places") {
