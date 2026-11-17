@@ -7,7 +7,15 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
-from convert_to_pathwyse import _scale_int, parse_graph, parse_sppcc, parse_vrp, write_pathwyse
+from convert_to_pathwyse import (
+    WIDE_COST_SCALES,
+    _scale_int,
+    convert_file,
+    parse_graph,
+    parse_sppcc,
+    parse_vrp,
+    write_pathwyse,
+)
 
 
 @pytest.fixture
@@ -240,3 +248,46 @@ class TestWriteScaling:
         assert "cost_scale=100" in content
         assert "time_scale=10" in content
         assert "cap_scale=2" in content
+
+
+def _edge_costs(path: Path) -> list[int]:
+    costs, in_section = [], False
+    for line in path.read_text().splitlines():
+        if line.strip() == "EDGE_COST":
+            in_section = True
+        elif line.strip() == "END" and in_section:
+            break
+        elif in_section:
+            costs.append(int(line.split()[2]))
+    return costs
+
+
+class TestWideCosts:
+    def test_wide_scales_add_three_decimals_on_float_formats(self) -> None:
+        assert WIDE_COST_SCALES == {".sppcc": 1, ".vrp": 1_000_000, ".graph": 1_000_000}
+
+    def test_cost_past_int32_is_written_with_wide_costs(
+        self, graph_instance: Path, tmp_path: Path
+    ) -> None:
+        inst = parse_graph(str(graph_instance))
+        # 2000 * 1e6 = 2e9 > int32: refused narrow, written wide.
+        a = inst["arcs"][0]
+        inst["arcs"][0] = (a[0], a[1], 2000.0, a[3])
+        with pytest.raises(OverflowError):
+            write_pathwyse(inst, str(tmp_path / "narrow.txt"), cost_scale=1_000_000)
+        out = tmp_path / "wide.txt"
+        write_pathwyse(inst, str(out), cost_scale=1_000_000, wide_costs=True)
+        assert 2_000_000_000 in _edge_costs(out)
+
+    def test_cost_past_twelve_digits_is_refused(self, graph_instance: Path, tmp_path: Path) -> None:
+        inst = parse_graph(str(graph_instance))
+        a = inst["arcs"][0]
+        inst["arcs"][0] = (a[0], a[1], 1_000_000.0, a[3])
+        with pytest.raises(OverflowError):
+            write_pathwyse(inst, str(tmp_path / "out.txt"), cost_scale=1_000_000, wide_costs=True)
+
+    def test_convert_file_picks_wide_scale(self, vrp_instance: Path, tmp_path: Path) -> None:
+        convert_file(str(vrp_instance), str(tmp_path), None, 1000, 1, wide_costs=True)
+        scales = list(tmp_path.rglob("*.scales"))
+        assert len(scales) == 1
+        assert "cost_scale=1000000" in scales[0].read_text()

@@ -13,7 +13,7 @@
 ///   --ng K          ng-neighborhood size (default: 0/off for sppcc/vrp/sppg;
 ///                   from file or 8 for graph; 0 disables)
 ///   --ng-metric M   distance|cost — metric for ng neighborhoods
-///                   (default: distance for sppcc/vrp, cost for graph)
+///                   (default: cost everywhere — parity with Pathwyse buildNG)
 ///   --steps S1,S2   Bucket step sizes (default: per-type)
 ///   --xi X          Derive steps from ξ = X buckets per vertex (BG2021 §6.3)
 ///   --no-jump-arcs  Disable jump arcs (for ablation studies)
@@ -23,6 +23,9 @@
 ///   --csv           Machine-readable CSV output (all fields)
 ///   --timing        Print phase timing breakdown
 ///   --write-sppg DIR  Write each instance to DIR/<stem>.sppg instead of solving
+///   --write-ng DIR    With --ng K: write each .sppcc/.vrp's ng sets to
+///                     DIR/<stem>.ng<K>.csv (PathWyse's ng/set_path form)
+///                     instead of solving
 
 #include "instance_io.h"
 #include "sppg_io.h"
@@ -41,6 +44,7 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <print>
 #include <stdexcept>
@@ -74,6 +78,7 @@ struct Options {
     bool parallel = true;         // use parallel executor (StdThreadExecutor)
     bool parallel_bidir = true;   // concurrent fw/bw labeling (requires parallel)
     std::string write_sppg_dir;   // non-empty: convert to .sppg instead of solving
+    std::string write_ng_dir;     // non-empty: write the --ng K sets instead of solving
 };
 
 struct Result {
@@ -573,6 +578,57 @@ static std::string convert_to_sppg(const std::string& path, const std::string& d
     return {};
 }
 
+/// Write the ng sets a solve of `path` with --ng K (and --ng-metric) uses as
+/// `<dir>/<stem>.ng<K>.csv`: an n × n matrix of 0/1, row v marking N(v), v
+/// included. It is the form PathWyse reads from `algo/default/ng/set_path`,
+/// so both solvers relax the same sets. Only .sppcc and .vrp, the formats
+/// the PathWyse comparison runs, whose vertices convert_to_pathwyse.py
+/// numbers as the loaders do. Never overwrites a file. Returns an error
+/// message, or empty.
+static std::string write_ng_sets(const std::string& path, const Options& opts) {
+    const auto ext = fs::path(path).extension().string();
+    io::Instance inst;
+    if (ext == ".sppcc") {
+        inst = io::load_sppcc(path);
+    } else if (ext == ".vrp") {
+        inst = io::load_roberti_vrp(path);
+    } else {
+        return "--write-ng takes .sppcc and .vrp only";
+    }
+    io::compute_ng_neighbors(inst, opts.ng, opts.ng_metric == 1);
+
+    const auto out_path = fs::path(opts.write_ng_dir) /
+                          std::format("{}.ng{}.csv", fs::path(path).stem().string(), opts.ng);
+    if (fs::exists(out_path)) {
+        return out_path.string() + " exists, not overwriting it";
+    }
+    std::ofstream out(out_path);
+    if (!out) {
+        return "cannot write " + out_path.string();
+    }
+    const auto nv = static_cast<std::size_t>(inst.n_vertices);
+    std::string row;
+    for (const auto& ng : inst.ng_neighbors) {
+        row.assign(2 * nv, ',');
+        for (std::size_t j = 0; j < nv; ++j) {
+            row[2 * j] = '0';
+        }
+        for (const int j : ng) {
+            row[2 * static_cast<std::size_t>(j)] = '1';
+        }
+        row.back() = '\n';
+        out << row;
+    }
+    out.close();
+    if (!out) {
+        std::error_code ec;
+        fs::remove(out_path, ec);
+        return "cannot write " + out_path.string();
+    }
+    std::println("{}", out_path.string());
+    return {};
+}
+
 static void print_csv_header() {
     std::println(
         "name,type,n_verts,n_arcs,theta,cost,n_paths,ms,"
@@ -638,6 +694,14 @@ static bool run_file(const std::string& path, const Options& opts, Exec executor
     }
     if (!opts.write_sppg_dir.empty()) {
         auto error = convert_to_sppg(path, opts.write_sppg_dir);
+        if (!error.empty()) {
+            std::println(stderr, "{}: {}", path, error);
+            return false;
+        }
+        return true;
+    }
+    if (!opts.write_ng_dir.empty()) {
+        auto error = write_ng_sets(path, opts);
         if (!error.empty()) {
             std::println(stderr, "{}: {}", path, error);
             return false;
@@ -785,6 +849,8 @@ static int run_main(int argc, char** argv) {
             opts.parallel_bidir = false;
         } else if (std::strcmp(argv[i], "--write-sppg") == 0 && i + 1 < argc) {
             opts.write_sppg_dir = argv[++i];
+        } else if (std::strcmp(argv[i], "--write-ng") == 0 && i + 1 < argc) {
+            opts.write_ng_dir = argv[++i];
         } else if (argv[i][0] == '-') {
             std::println(stderr, "Unknown option: {}", argv[i]);
             return 1;
@@ -820,7 +886,10 @@ static int run_main(int argc, char** argv) {
                      "  --parallel      Use parallel executor (default: on)\n"
                      "  --no-parallel   Use sequential executor\n"
                      "  --no-parallel-bidir  Data-parallel only, sequential fw/bw labeling\n"
-                     "  --write-sppg DIR  Write each instance to DIR/<stem>.sppg, no solve");
+                     "  --write-sppg DIR  Write each instance to DIR/<stem>.sppg, no solve\n"
+                     "  --write-ng DIR    With --ng K: write each .sppcc/.vrp's ng sets to\n"
+                     "                    DIR/<stem>.ng<K>.csv (n x n 0/1, PathWyse's\n"
+                     "                    ng/set_path form), no solve");
         return 1;
     }
 
@@ -849,7 +918,22 @@ static int run_main(int argc, char** argv) {
         return 1;
     }
 
-    if (opts.csv && opts.write_sppg_dir.empty()) {
+    if (!opts.write_ng_dir.empty()) {
+        if (!opts.write_sppg_dir.empty()) {
+            std::println(stderr, "--write-ng and --write-sppg are one conversion each: pick one");
+            return 1;
+        }
+        if (opts.ng <= 0) {
+            std::println(stderr, "--write-ng needs --ng K with K > 0");
+            return 1;
+        }
+        if (!fs::is_directory(opts.write_ng_dir)) {
+            std::println(stderr, "--write-ng: {} is not a directory", opts.write_ng_dir);
+            return 1;
+        }
+    }
+
+    if (opts.csv && opts.write_sppg_dir.empty() && opts.write_ng_dir.empty()) {
         print_csv_header();
     }
     int failed = 0;

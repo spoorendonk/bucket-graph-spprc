@@ -30,6 +30,11 @@
 # Environment:
 #   SOLVE          Path to SIMD-on solver    (default: ./build/bgspprc-solve).
 #   SOLVE_NOSIMD   Path to SIMD-off solver   (default: ./build/bgspprc-solve-nosimd).
+#   BGSPPRC_CSV    Output CSV (default: benchmarks/bgspprc.csv); the PathWyse
+#                  1.1.0 rerun writes benchmarks/pathwyse-1.1.0/bgspprc.csv.
+#   RUN_PREFIX     Command each solve runs under, word-split (default: none),
+#                  e.g. RUN_PREFIX="xk lock --" to take a shared machine's
+#                  lock per instance rather than for the whole run.
 #
 # Output:
 #   benchmarks/bgspprc.csv — CSV with columns:
@@ -60,7 +65,8 @@ SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
 REPODIR="$(cd "$SCRIPTDIR/.." && pwd)"
 SOLVE="${SOLVE:-$REPODIR/build/bgspprc-solve}"
 SOLVE_NOSIMD="${SOLVE_NOSIMD:-$REPODIR/build/bgspprc-solve-nosimd}"
-CSV="${SCRIPTDIR}/bgspprc.csv"
+CSV="${BGSPPRC_CSV:-${SCRIPTDIR}/bgspprc.csv}"
+read -r -a RUN_PREFIX_ARR <<<"${RUN_PREFIX:-}"
 
 # ── Args ──
 NG_FLAG=()
@@ -193,7 +199,7 @@ for file in "${FILES[@]}"; do
   # Run solver with timeout
   output=""
   status="OK"
-  if output=$(timeout "${TIMEOUT}s" "$SOLVE_BIN" "${MODE_FLAGS[@]}" "${NG_FLAG[@]}" "${MAX_PATHS_FLAG[@]}" "$file" 2>&1); then
+  if output=$("${RUN_PREFIX_ARR[@]}" timeout "${TIMEOUT}s" "$SOLVE_BIN" "${MODE_FLAGS[@]}" "${NG_FLAG[@]}" "${MAX_PATHS_FLAG[@]}" "$file" 2>&1); then
     :
   else
     rc=$?

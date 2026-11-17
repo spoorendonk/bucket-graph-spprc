@@ -10,6 +10,11 @@ intermediate `comparison_*.csv` files. The joins reproduce the ones that
              a bgspprc-vs-Pathwyse cost-agreement summary to stderr.
   rcspp      bgspprc.csv (mode=para_bidir_vec, set∈{ng8,ng16,ng24})
              ⋈ pull_algo_runtimes.csv (`all_s`) on (instance, ng); shift = 1 s.
+  pathwyse11 pathwyse-1.1.0/bgspprc.csv ⋈ pathwyse-1.1.0/pathwyse.csv on
+             (instance, ng): bgspprc vs PathWyse 1.1.0 PWDefault and PWBucket
+             per thread line (bidir_vec vs parallel=0, para_bidir_vec vs
+             parallel=1), with each PathWyse algorithm's time ratio to
+             bgspprc and its spread. Not part of `all`.
   modes      bgspprc.csv per (set, ng, mode) — the 6-mode/SIMD ablation,
              bgspprc-only.
 
@@ -20,7 +25,7 @@ completed within the 120 s timeout). Timeouts substitute as 120 s in both means
 can be pasted directly into `benchmarks/README.md`.
 
 Usage:
-    python3 benchmarks/compute_means.py [pathwyse|rcspp|modes|all] [--rows]
+    python3 benchmarks/compute_means.py [pathwyse|pathwyse11|rcspp|modes|all] [--rows]
 
 Defaults to `all`. `--rows` dumps the per-row joined data as CSV (the
 spot-check replacement for the former comparison_*.csv files) instead of the
@@ -32,6 +37,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import statistics
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -209,6 +215,140 @@ def join_pathwyse(
     return rows
 
 
+# PathWyse 1.1.0 head-to-head (#153): each thread line pairs a bgspprc mode with
+# PathWyse's `algo/default/parallel` setting, and every line compares bgspprc
+# against both PathWyse algorithms on the same instances.
+PW11_LINES = (("seq", "bidir_vec", "0"), ("par", "para_bidir_vec", "1"))
+PW11_ALGOS = ("PWDefault", "PWBucket")
+PW11_DIR = ROOT / "pathwyse-1.1.0"
+
+
+def costs_agree(bg_cost: str, pw_cost: str, cost_scale: int) -> str:
+    """Return eq / ne / '' for a bgspprc and a PathWyse 1.1.0 cost.
+
+    Both solve the same pure ng relaxation over the same ng sets, so their
+    optima must match, not merely order: within max(1e-3, 100/cost_scale), the
+    3-decimal quantum of bgspprc.csv plus the per-arc integer rounding of the
+    converted instance. A cost_scale of 1 is the converter's choice only for
+    `.sppcc`, whose costs are integers and convert exactly, so it gets 1e-3.
+    '' when either side has no cost (a timeout)."""
+    if not bg_cost or not pw_cost:
+        return ""
+    tol = 1e-3 if cost_scale == 1 else max(1e-3, 100.0 / cost_scale)
+    return "eq" if abs(float(bg_cost) - float(pw_cost)) <= tol else "ne"
+
+
+def join_pathwyse11(bg_path: Path, pw_path: Path) -> list[Row]:
+    """bgspprc ⋈ PathWyse 1.1.0 (PWDefault and PWBucket) on (instance, ng),
+    per thread line of `PW11_LINES`, filtered to `INCLUDED_SETS`.
+
+    A (instance, ng, line) is joined only when bgspprc and both algorithms
+    have a row for it, so every solver in a table line covers the same
+    instances. Empty times stay '' (downstream substitutes the timeout).
+    Sorted by (line, ng, instance)."""
+    bg: dict[tuple[str, str, str], Row] = {}
+    with open(bg_path) as f:
+        for r in csv.DictReader(f):
+            bg[(r["instance"], r["ng"], r["mode"])] = r
+
+    pw: dict[tuple[str, str, str, str], Row] = {}
+    with open(pw_path) as f:
+        for r in csv.DictReader(f):
+            pw[(r["instance"], r["ng"], r["algo"], r["parallel"])] = r  # last wins
+
+    rows = []
+    for line, mode, parallel in PW11_LINES:
+        keys = sorted(
+            ((inst, ng) for inst, ng, m in bg if m == mode),
+            key=lambda k: (int(k[1]), k[0]),
+        )
+        for inst, ng in keys:
+            b = bg[(inst, ng, mode)]
+            if b["set"] not in INCLUDED_SETS:
+                continue
+            ps = [pw.get((inst, ng, a, parallel)) for a in PW11_ALGOS]
+            if any(p is None for p in ps):
+                continue
+            row = {
+                "instance": inst,
+                "ng": ng,
+                "set": b["set"],
+                "line": line,
+                "bgspprc_s": b["time_s"] if b["cost"] else "",
+                "bgspprc_cost": b["cost"],
+            }
+            for a, p in zip(PW11_ALGOS, ps, strict=True):
+                assert p is not None
+                cost_scale = int(p.get("cost_scale") or 1_000_000)
+                row[f"{a}_s"] = p["time_s"] if p["cost"] else ""
+                row[f"{a}_cost"] = p["cost"]
+                row[f"{a}_agree"] = costs_agree(b["cost"], p["cost"], cost_scale)
+            rows.append(row)
+    return rows
+
+
+def quartiles(values: list[float]) -> tuple[float, float, float]:
+    """(q1, median, q3), inclusive method; one value gives it three times."""
+    if len(values) == 1:
+        return values[0], values[0], values[0]
+    q1, q2, q3 = statistics.quantiles(values, n=4, method="inclusive")
+    return q1, q2, q3
+
+
+def pathwyse11_table(bg_path: Path, pw_path: Path, shift: float = 1.0, tl: float = TIMEOUT) -> str:
+    """bgspprc vs PathWyse 1.1.0 PWDefault and PWBucket, one row per (set, ng,
+    line, solver). Timeouts substitute as `tl` seconds. `ratio` is the
+    solver's time over bgspprc's as a shifted geometric mean of the
+    per-instance ratios (t + shift) / (t_bg + shift), so > 1 means bgspprc is
+    faster; `q1–q3` is the interquartile range of those per-instance ratios,
+    the spread laptop timings call for. Cost agreement goes to stderr."""
+    rows = join_pathwyse11(bg_path, pw_path)
+
+    grouped: dict[tuple[str, str, str], list[Row]] = defaultdict(list)
+    for r in rows:
+        grouped[(r["set"], r["ng"], r["line"])].append(r)
+
+    def secs(v: str) -> float:
+        return tl if v == "" else float(v)
+
+    lines = [
+        "| set      | ng | line | solver    | sgm (s) | solved | ratio | q1–q3       |",
+        "|----------|---:|------|-----------|--------:|-------:|------:|-------------|",
+    ]
+    for s in [x for x in SET_ORDER if x in INCLUDED_SETS]:
+        for ng in NG_ORDER:
+            for line, _, _ in PW11_LINES:
+                rs = grouped.get((s, ng, line), [])
+                if not rs:
+                    continue
+                bg_ts = [secs(r["bgspprc_s"]) for r in rs]
+                for solver in ("bgspprc", *PW11_ALGOS):
+                    col = f"{solver}_s"
+                    ts = [secs(r[col]) for r in rs]
+                    solved = sum(1 for r in rs if r[col] != "")
+                    if solver == "bgspprc":
+                        ratio, spread = "", ""
+                    else:
+                        rel = [(t + shift) / (b + shift) for t, b in zip(ts, bg_ts, strict=True)]
+                        q1, _, q3 = quartiles(rel)
+                        ratio = f"{shifted_geomean(rel, 0.0):.2f}"
+                        spread = f"{q1:.2f}–{q3:.2f}"
+                    lines.append(
+                        f"| {s:<8} | {int(ng):>2} | {line:<4} | {solver:<9} | "
+                        f"{shifted_geomean(ts, shift):>7.3f} | "
+                        f"{solved:>3}/{len(rs):<3} | {ratio:>5} | {spread:<11} |"
+                    )
+
+    for a in PW11_ALGOS:
+        tags = Counter(r[f"{a}_agree"] for r in rows)
+        print(
+            f"cost agreement ({a}, n={len(rows)}): eq={tags.get('eq', 0)}  "
+            f"ne={tags.get('ne', 0)}  blank={tags.get('', 0)}",
+            file=sys.stderr,
+        )
+    return "\n".join(lines)
+
+
 def modes_table(csv_path: Path, shift: float = 1.0, tl: float = TIMEOUT) -> str:
     """bgspprc-only ablation across (set, ng, mode). Empty cost = timeout
     substituted with `tl` seconds in both the sgm and the arithmetic mean.
@@ -326,11 +466,13 @@ def main() -> int:
         "table",
         nargs="?",
         default="all",
-        choices=["pathwyse", "rcspp", "modes", "all"],
+        choices=["pathwyse", "pathwyse11", "rcspp", "modes", "all"],
     )
     ap.add_argument("--bg", default=str(ROOT / "bgspprc.csv"))
     ap.add_argument("--pw", default=str(ROOT / "pathwyse.csv"))
     ap.add_argument("--paper", default=str(ROOT / "pull_algo_runtimes.csv"))
+    ap.add_argument("--bg11", default=str(PW11_DIR / "bgspprc.csv"))
+    ap.add_argument("--pw11", default=str(PW11_DIR / "pathwyse.csv"))
     ap.add_argument(
         "--rows",
         action="store_true",
@@ -338,17 +480,22 @@ def main() -> int:
     )
     args = ap.parse_args()
     bg, pw, paper = Path(args.bg), Path(args.pw), Path(args.paper)
+    bg11, pw11 = Path(args.bg11), Path(args.pw11)
 
     # Validate the inputs the chosen table actually reads, with a hint on how to
     # generate each one — beats a raw FileNotFoundError traceback.
     needed = {"bg": bg}
+    if args.table == "pathwyse11":
+        needed = {"bg11": bg11, "pw11": pw11}
     if args.table in ("pathwyse", "all"):
         needed["pw"] = pw
     if args.table in ("rcspp", "all"):
         needed["paper"] = paper
     hint = {
         "bg": "generate it with benchmarks/run_benchmarks.sh",
-        "pw": "generate it with benchmarks/run_pathwyse.sh",
+        "pw": "generate it with benchmarks/run_pathwyse.sh --pathwyse 1.0",
+        "bg11": "generate it with BGSPPRC_CSV=<it> benchmarks/run_benchmarks.sh",
+        "pw11": "generate it with benchmarks/run_pathwyse.sh",
         "paper": "checked-in reference data — see benchmarks/README.md",
     }
     missing = [(k, p) for k, p in needed.items() if not p.exists()]
@@ -373,14 +520,27 @@ def main() -> int:
                     "ratio",
                 ],
             )
+        elif args.table == "pathwyse11":
+            dump_rows(
+                join_pathwyse11(bg11, pw11),
+                ["instance", "set", "ng", "line", "bgspprc_s", "bgspprc_cost"]
+                + [f"{a}_{c}" for a in PW11_ALGOS for c in ("s", "cost", "agree")],
+            )
         elif args.table == "rcspp":
             dump_rows(
                 join_rcspp(bg, paper),
                 ["instance", "ng", "bgspprc_s", "paper_all_s", "ratio"],
             )
         else:
-            print("--rows requires an explicit table: pathwyse or rcspp", file=sys.stderr)
+            print(
+                "--rows requires an explicit table: pathwyse, pathwyse11 or rcspp",
+                file=sys.stderr,
+            )
             return 2
+        return 0
+
+    if args.table == "pathwyse11":
+        print(pathwyse11_table(bg11, pw11))
         return 0
 
     if args.table in ("pathwyse", "all"):

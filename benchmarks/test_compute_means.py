@@ -5,15 +5,27 @@ These lock in the join + cost-tolerance + TL logic that is now the sole source
 of every published README number.
 """
 
+import math
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
-from compute_means import classify, join_pathwyse, join_rcspp
+from compute_means import (
+    classify,
+    costs_agree,
+    join_pathwyse,
+    join_pathwyse11,
+    join_rcspp,
+    pathwyse11_table,
+    quartiles,
+)
 
 BG_HEADER = "instance,set,ng,mode,cost,paths,time_s,timestamp"
 PAPER_HEADER = "instance,ng,base_s,vectorised_s,parallel_s,bidir_s,all_s"
 PW_HEADER = "instance,set,ng,cost,time_s,cost_scale,timestamp"
+PW11_HEADER = "instance,set,ng,algo,parallel,cost,time_s,cost_scale,timestamp"
 
 
 def _write(tmp_path: Path, name: str, header: str, rows: list[str]) -> Path:
@@ -170,3 +182,102 @@ class TestJoinPathwyse:
         )
         rows = join_pathwyse(bg, pw)
         assert {r["instance"]: r["set"] for r in rows} == {"P": "spprclib", "Q": "roberti"}
+
+
+class TestCostsAgree:
+    def test_equal_within_tolerance(self) -> None:
+        assert costs_agree("-10.000", "-10.0004", 1_000_000) == "eq"
+
+    def test_lower_bgspprc_is_a_disagreement(self) -> None:
+        # Same relaxation, so a lower bgspprc cost is as wrong as a higher one.
+        assert costs_agree("-10.01", "-10", 1_000_000) == "ne"
+        assert costs_agree("-9.99", "-10", 1_000_000) == "ne"
+
+    def test_tolerance_widens_at_low_cost_scale(self) -> None:
+        assert costs_agree("-19.95", "-20", 1000) == "eq"
+
+    def test_unscaled_integer_costs_are_exact(self) -> None:
+        # cost_scale 1 (.sppcc) converts exactly: no rounding band.
+        assert costs_agree("-11", "-10", 1) == "ne"
+        assert costs_agree("-10.000", "-10", 1) == "eq"
+
+    def test_blank_on_timeout(self) -> None:
+        assert costs_agree("", "-3", 1_000_000) == ""
+        assert costs_agree("-3", "", 1_000_000) == ""
+
+
+class TestQuartiles:
+    def test_single_value(self) -> None:
+        assert quartiles([2.0]) == (2.0, 2.0, 2.0)
+
+    def test_inclusive(self) -> None:
+        assert quartiles([1.0, 2.0, 3.0, 4.0, 5.0]) == (2.0, 3.0, 4.0)
+
+
+def _pw11_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    bg = _write(
+        tmp_path,
+        "bgspprc.csv",
+        BG_HEADER,
+        [
+            "P,spprclib,8,bidir_vec,-10,1,1.000,t",
+            "P,spprclib,8,para_bidir_vec,-10,1,0.500,t",
+            "Q,spprclib,8,bidir_vec,,,,t",  # bgspprc timeout
+            "R,spprclib,8,bidir_vec,-5,1,1.000,t",  # PWBucket row missing
+            "S,ng8,8,bidir_vec,-5,1,1.000,t",  # rcspp: not in this comparison
+            "P,spprclib,8,mono_vec,-10,1,0.100,t",  # mode on no line
+        ],
+    )
+    pw = _write(
+        tmp_path,
+        "pathwyse.csv",
+        PW11_HEADER,
+        [
+            "P,spprclib,8,PWDefault,0,-10,9.000,1,t",  # stale dup, overwritten
+            "P,spprclib,8,PWDefault,0,-10,3.000,1,t",
+            "P,spprclib,8,PWBucket,0,-10,1.000,1,t",
+            "P,spprclib,8,PWDefault,1,-10,2.000,1,t",
+            "P,spprclib,8,PWBucket,1,-11,0.500,1,t",  # cost disagrees
+            "Q,spprclib,8,PWDefault,0,-7,1.000,1,t",
+            "Q,spprclib,8,PWBucket,0,,,1,t",  # PathWyse timeout
+            "R,spprclib,8,PWDefault,0,-5,1.000,1,t",
+            "S,ng8,8,PWDefault,0,-5,1.000,1,t",
+            "S,ng8,8,PWBucket,0,-5,1.000,1,t",
+        ],
+    )
+    return bg, pw
+
+
+class TestJoinPathwyse11:
+    def test_join(self, tmp_path: Path) -> None:
+        rows = join_pathwyse11(*_pw11_fixture(tmp_path))
+        assert [(r["line"], r["instance"]) for r in rows] == [
+            ("seq", "P"),
+            ("seq", "Q"),
+            ("par", "P"),
+        ]
+        seq_p, seq_q, par_p = rows
+        # last-seen PathWyse row wins on duplicate keys
+        assert seq_p["PWDefault_s"] == "3.000"
+        assert seq_p["PWDefault_agree"] == "eq" and seq_p["PWBucket_agree"] == "eq"
+        # a timeout leaves the time blank and the agreement blank
+        assert seq_q["bgspprc_s"] == "" and seq_q["PWBucket_s"] == ""
+        assert seq_q["PWDefault_agree"] == ""
+        assert par_p["bgspprc_s"] == "0.500" and par_p["PWBucket_agree"] == "ne"
+
+    def test_table(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        out = pathwyse11_table(*_pw11_fixture(tmp_path), tl=120.0)
+        lines = {tuple(c.strip() for c in ln.split("|")[3:5]): ln for ln in out.splitlines()[2:]}
+        # seq: P (bg 1 s, PWDefault 3 s) and Q (bg TL, PWDefault 1 s):
+        # ratios (3+1)/(1+1) = 2 and (1+1)/(120+1); geomean sqrt(2*2/121).
+        cells = [c.strip() for c in lines[("seq", "PWDefault")].split("|")]
+        assert cells[6] == "2/2"
+        assert cells[7] == f"{math.sqrt(4 / 121):.2f}"
+        assert [c.strip() for c in lines[("seq", "bgspprc")].split("|")][6] == "1/2"
+        assert [c.strip() for c in lines[("seq", "PWBucket")].split("|")][6] == "1/2"
+        # par: one instance, so the ratio is its own spread.
+        par = [c.strip() for c in lines[("par", "PWBucket")].split("|")]
+        assert par[7] == "1.00" and par[8] == "1.00–1.00"
+        err = capsys.readouterr().err
+        assert "cost agreement (PWBucket, n=3): eq=1  ne=1  blank=1" in err
+        assert "cost agreement (PWDefault, n=3): eq=2  ne=0  blank=1" in err

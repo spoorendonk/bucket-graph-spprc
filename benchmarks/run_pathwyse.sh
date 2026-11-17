@@ -1,42 +1,66 @@
 #!/usr/bin/env bash
-# run_pathwyse.sh — Build Pathwyse, convert instances, run Pathwyse, append rows
-# to benchmarks/pathwyse.csv. One row per (instance, ng) with cost + runtime.
+# run_pathwyse.sh — Build Pathwyse, convert instances, run Pathwyse, write rows
+# to a CSV. One row per (instance, ng[, algo, parallel]) with cost + runtime.
 #
-# No comparison logic — run `compute_means.py pathwyse` to join pathwyse.csv
-# against bgspprc.csv in-memory and print the comparison table.
+# No comparison logic — run `compute_means.py pathwyse` (1.0) or
+# `compute_means.py pathwyse11` (1.1.0) to join the rows against bgspprc's
+# in-memory and print the comparison table.
 #
 # Usage:
-#   ./benchmarks/run_pathwyse.sh [--ng K] [--timeout S] [--skip-build] [--append]
-#                                [PATH...]
+#   ./benchmarks/run_pathwyse.sh [--pathwyse V] [--algo A] [--parallel P]
+#                                [--ng K] [--timeout S] [--skip-build]
+#                                [--append] [PATH...]
 #
 # Arguments:
 #   PATH              Instance file or directory of instances.
 #                     Default: benchmarks/instances/rcspp/ng8
+#   --pathwyse V      1.1.0 (default) or 1.0 — the release to build and run.
+#                     1.0 is pinned commit d53c01b with the two parity patches
+#                     in benchmarks/patches/, the paper's comparison; 1.1.0 is
+#                     the release tag, unpatched (see benchmarks/README.md,
+#                     "Pathwyse parity").
+#   --algo A          1.1.0 only: PWBucket (default) or PWDefault.
+#   --parallel P      1.1.0 only: 0 (default) runs the forward and backward
+#                     searches in turn, 1 runs them concurrently
+#                     (`algo/default/parallel`).
 #   --ng K            ng-neighborhood size (default: 8).
 #   --timeout S       Per-instance Pathwyse timeout in seconds (default: 120).
 #   --skip-build      Skip cloning/building Pathwyse (reuse existing build).
-#   --append          Append rows to existing CSV (skip header write + overwrite).
+#   --append          1.0 only: append rows to the existing CSV (skip the
+#                     header write + overwrite). 1.1.0 always keeps the CSV
+#                     and replaces only rows of the same (instance, set, ng,
+#                     algo, parallel).
 #
 # Environment:
-#   PATHWYSE_DIR      Path to Pathwyse repo (default: ./build/pathwyse).
+#   PATHWYSE_DIR      Path to the Pathwyse checkout (default:
+#                     ./build/pathwyse for 1.0, ./build/pathwyse-1.1.0).
+#   PATHWYSE_CSV      Output CSV (default: benchmarks/pathwyse.csv for 1.0,
+#                     benchmarks/pathwyse-1.1.0/pathwyse.csv for 1.1.0).
+#   SOLVE             bgspprc-solve, which writes the ng sets 1.1.0 reads
+#                     (default: ./build/bgspprc-solve).
+#   RUN_PREFIX        Command each Pathwyse run goes under, word-split
+#                     (default: none), e.g. RUN_PREFIX="xk lock --" to take a
+#                     shared machine's lock per instance.
 #
-# Output:
-#   benchmarks/pathwyse.csv — CSV with columns:
+# Output (1.0): benchmarks/pathwyse.csv — CSV with columns:
 #     instance, set, ng, cost, time_s, cost_scale, timestamp
-#   cost_scale is the per-instance int32 scaling used by convert_to_pathwyse.py;
-#   downstream consumers use it to size float-comparison tolerances.
+# Output (1.1.0): benchmarks/pathwyse-1.1.0/pathwyse.csv — CSV with columns:
+#     instance, set, ng, algo, parallel, cost, time_s, cost_scale, timestamp
+#   cost_scale is the per-instance integer scaling used by
+#   convert_to_pathwyse.py; downstream consumers use it to size
+#   float-comparison tolerances. Empty cost/time_s is a timeout.
 set -euo pipefail
 
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
 REPODIR="$(cd "$SCRIPTDIR/.." && pwd)"
-PATHWYSE_DIR="${PATHWYSE_DIR:-$REPODIR/build/pathwyse}"
-PATHWYSE_BIN="$PATHWYSE_DIR/bin/pathwyse"
-OUT_CSV="$SCRIPTDIR/pathwyse.csv"
-CONVERTED_DIR="$SCRIPTDIR/instances/pathwyse"
+SOLVE="${SOLVE:-$REPODIR/build/bgspprc-solve}"
 TIMEOUT=120
 NG=8
 SKIP_BUILD=0
 APPEND=0
+VERSION="1.1.0"
+ALGO="PWBucket"
+PARALLEL=0
 PATHS=()
 
 # ── Usage ──
@@ -48,6 +72,9 @@ usage() {
 # ── Args ──
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --pathwyse)   VERSION="$2"; shift 2 ;;
+    --algo)       ALGO="$2"; shift 2 ;;
+    --parallel)   PARALLEL="$2"; shift 2 ;;
     --ng)         NG="$2"; shift 2 ;;
     --timeout)    TIMEOUT="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
@@ -57,21 +84,60 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+case "$VERSION" in
+  1.0|1.1.0) ;;
+  *) echo "Error: --pathwyse must be 1.0 or 1.1.0, not $VERSION" >&2; exit 1 ;;
+esac
+case "$ALGO" in
+  PWBucket|PWDefault) ;;
+  *) echo "Error: --algo must be PWBucket or PWDefault, not $ALGO" >&2; exit 1 ;;
+esac
+case "$PARALLEL" in
+  0|1) ;;
+  *) echo "Error: --parallel must be 0 or 1, not $PARALLEL" >&2; exit 1 ;;
+esac
+if [[ "$VERSION" == "1.0" && ( "$ALGO" != "PWBucket" || "$PARALLEL" != 0 ) ]]; then
+  # 1.0 runs the paper's configuration only: PWDefault, sequential.
+  echo "Error: --algo and --parallel are for --pathwyse 1.1.0" >&2
+  exit 1
+fi
+if [[ "$VERSION" == "1.1.0" && $APPEND -eq 1 ]]; then
+  echo "Error: --append is for --pathwyse 1.0 (1.1.0 always keeps the CSV)" >&2
+  exit 1
+fi
+
+read -r -a RUN_PREFIX_ARR <<<"${RUN_PREFIX:-}"
+
 # Default paths
 if [[ ${#PATHS[@]} -eq 0 ]]; then
   PATHS=("$SCRIPTDIR/instances/rcspp/ng${NG}")
 fi
 
 # ── Build Pathwyse ──
-# Pinned upstream Pathwyse commit. The patches in benchmarks/patches/ are
-# line-anchored against this revision; bumping it requires regenerating the
-# patches' line numbers (or re-running `patch --merge` and committing the
-# resolved hunks).
-PATHWYSE_REV="d53c01b2c02743ad2def2c5a6f0f2bfebef1d1b1"
-PATCHES=(
-  "$SCRIPTDIR/patches/pathwyse-skip-terminals-in-buildng.patch"
-  "$SCRIPTDIR/patches/pathwyse-pure-ng.patch"
-)
+# 1.0: pinned upstream commit. The patches in benchmarks/patches/ are
+# line-anchored against this revision.
+# 1.1.0: the release tag's commit, unpatched: two-cycle elimination is off by
+# configuration (`algo/two_cycle_elimination = 0`) and the ng sets are read
+# from bgspprc (`algo/default/ng/set_path`), which replace the two patches.
+if [[ "$VERSION" == "1.0" ]]; then
+  PATHWYSE_REV="d53c01b2c02743ad2def2c5a6f0f2bfebef1d1b1"
+  PATCHES=(
+    "$SCRIPTDIR/patches/pathwyse-skip-terminals-in-buildng.patch"
+    "$SCRIPTDIR/patches/pathwyse-pure-ng.patch"
+  )
+  PATHWYSE_DIR="${PATHWYSE_DIR:-$REPODIR/build/pathwyse}"
+  OUT_CSV="${PATHWYSE_CSV:-$SCRIPTDIR/pathwyse.csv}"
+  CONVERTED_DIR="$SCRIPTDIR/instances/pathwyse"
+  CONVERT_FLAGS=()
+else
+  PATHWYSE_REV="15a7468fc13891d77bf25bbc9235a07101f271ba"  # tag 1.1.0
+  PATCHES=()
+  PATHWYSE_DIR="${PATHWYSE_DIR:-$REPODIR/build/pathwyse-1.1.0}"
+  OUT_CSV="${PATHWYSE_CSV:-$SCRIPTDIR/pathwyse-1.1.0/pathwyse.csv}"
+  CONVERTED_DIR="$SCRIPTDIR/instances/pathwyse-1.1.0"
+  CONVERT_FLAGS=(--wide-costs)
+fi
+PATHWYSE_BIN="$PATHWYSE_DIR/bin/pathwyse"
 
 build_pathwyse() {
   if [[ -x "$PATHWYSE_BIN" && $SKIP_BUILD -eq 1 ]]; then
@@ -89,7 +155,9 @@ build_pathwyse() {
   echo "Pathwyse: checking out pinned revision $PATHWYSE_REV..."
   git -C "$PATHWYSE_DIR" checkout --detach "$PATHWYSE_REV"
 
-  echo "Pathwyse: applying parity patches..."
+  if [[ ${#PATCHES[@]} -gt 0 ]]; then
+    echo "Pathwyse: applying parity patches..."
+  fi
   for p in "${PATCHES[@]}"; do
     if [[ ! -f "$p" ]]; then
       echo "Error: patch not found: $p" >&2
@@ -111,7 +179,7 @@ build_pathwyse() {
     find "$PATHWYSE_DIR" -name pathwyse -type f -executable 2>/dev/null
     exit 1
   fi
-  echo "Pathwyse: built successfully at $PATHWYSE_BIN (patched against $PATHWYSE_REV)"
+  echo "Pathwyse: built successfully at $PATHWYSE_BIN ($VERSION, $PATHWYSE_REV)"
 }
 
 build_pathwyse
@@ -119,7 +187,8 @@ build_pathwyse
 # ── Convert instances to Pathwyse format ──
 echo
 echo "Converting instances to Pathwyse format..."
-python3 "$SCRIPTDIR/convert_to_pathwyse.py" --outdir "$CONVERTED_DIR" "${PATHS[@]}"
+python3 "$SCRIPTDIR/convert_to_pathwyse.py" "${CONVERT_FLAGS[@]}" \
+  --outdir "$CONVERTED_DIR" "${PATHS[@]}"
 
 # ── Collect instance files ──
 collect_files() {
@@ -149,18 +218,17 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
 fi
 
 # ── Pathwyse settings file for ng-path ──
-# Pathwyse reads every numeric field with std::stoi (truncates at the decimal
+# 1.0 reads every numeric field with std::stoi (truncates at the decimal
 # point). convert_to_pathwyse.py pre-multiplies EDGE_COST by a per-extension
 # cost_scale (sppcc=1, vrp=1000, graph=1000) and writes a sidecar `.scales`
 # file; we read it per-instance and divide the reported Obj by cost_scale
 # to recover the true objective.
 # `problem/scaling` is forced to 1.0 (no additional scaling by Pathwyse)
 # since our own pre-scaling already carries all the precision we need.
-write_pathwyse_settings() {
-  local ng_val="$1"
+write_pathwyse_settings_1_0() {
+  local settingsfile="$1" ng_val="$2"
   local ng_mode="off"
   [[ "$ng_val" -gt 0 ]] && ng_mode="standard"
-  local settingsfile="$PATHWYSE_DIR/pathwyse.set"
 
   cat > "$settingsfile" <<SETTINGS
 verbosity = 0
@@ -175,6 +243,45 @@ algo/default/ng/set_size = ${ng_val}
 algo/default/reserve = 10000000
 algo/default/use_visited = 1
 algo/default/compare_unreachables = 1
+data_collection/level = -1
+output/write = 0
+SETTINGS
+}
+
+# 1.1.0: the release's suggested settings for cyclic networks
+# (docs/documentation/SUGGESTED_SETTINGS.md: PWBucket, bidirectional, bucket
+# join, min_res_consumption buckets), with three changes for a pure-ng
+# relaxation, the one bgspprc computes: DSSR off (the search stops at the ng
+# relaxation), two-cycle elimination off, and the ng sets read from
+# bgspprc's --write-ng file instead of built from set_size. PWDefault runs
+# the same settings with its own ordered join (the shipped pathwyse.set).
+# Costs come pre-scaled to integers (--wide-costs), so decimal_digits = 0
+# keeps PathWyse from scaling them again. No time limit inside PathWyse: the
+# outer `timeout` decides, so a run it cuts off is never a returned cost.
+write_pathwyse_settings_1_1() {
+  local settingsfile="$1" ng_file="$2"
+  local join="bucket_node"
+  [[ "$ALGO" == "PWDefault" ]] && join="ordered"
+
+  cat > "$settingsfile" <<SETTINGS
+verbosity = 1
+problem/decimal_digits = 0
+algo_names = ${ALGO}
+algo_active = 1
+algo_parallel = 0
+algo/default/autoconfig = 1
+algo/default/timelimit = 0
+algo/default/search = bidirectional
+algo/default/parallel = ${PARALLEL}
+algo/default/reserve = 10000000
+algo/default/use_visited = 1
+algo/default/compare_unreachables = 1
+algo/two_cycle_elimination = 0
+algo/default/ng = standard
+algo/default/ng/set_path = ${ng_file}
+algo/default/dssr = off
+algo/default/join/type = ${join}
+algo/bucket/size_mode = min_res_consumption
 data_collection/level = -1
 output/write = 0
 SETTINGS
@@ -200,14 +307,44 @@ read_cost_scale() {
   echo "$val"
 }
 
-# ── Write CSV header ──
-if [[ $APPEND -eq 0 ]]; then
-  echo "instance,set,ng,cost,time_s,cost_scale,timestamp" > "$OUT_CSV"
+# ng sets for 1.1.0, as bgspprc builds them for the same --ng (and its default
+# ng metric, cost): written once per (instance, ng) and kept.
+ng_set_file() {
+  local file="$1" parent="$2" stem="$3"
+  local dir="$CONVERTED_DIR/$parent/ngsets"
+  local out="$dir/${stem}.ng${NG}.csv"
+  if [[ ! -f "$out" ]]; then
+    mkdir -p "$dir"
+    "$SOLVE" --write-ng "$dir" --ng "$NG" "$file" >/dev/null
+  fi
+  echo "$out"
+}
+
+# ── CSV header ──
+if [[ "$VERSION" == "1.0" ]]; then
+  HEADER="instance,set,ng,cost,time_s,cost_scale,timestamp"
+  if [[ $APPEND -eq 0 ]]; then
+    echo "$HEADER" > "$OUT_CSV"
+  fi
+else
+  HEADER="instance,set,ng,algo,parallel,cost,time_s,cost_scale,timestamp"
+  mkdir -p "$(dirname "$OUT_CSV")"
+  if [[ ! -f "$OUT_CSV" ]]; then
+    echo "$HEADER" > "$OUT_CSV"
+  elif [[ "$(head -1 "$OUT_CSV")" != "$HEADER" ]]; then
+    echo "Error: $OUT_CSV has another header than $HEADER" >&2
+    exit 1
+  fi
 fi
 
-# Pathwyse settings are ng-dependent, not instance-dependent, so write once.
-# Concurrent script invocations would race on this file.
-write_pathwyse_settings "$NG"
+# Pathwyse reads pathwyse.set from its working directory. 1.0's settings are
+# ng-dependent, not instance-dependent, so are written once; 1.1.0's name the
+# instance's ng-set file, so are written per instance. Concurrent script
+# invocations would race on this file.
+RUN_DIR="$PATHWYSE_DIR"
+if [[ "$VERSION" == "1.0" ]]; then
+  write_pathwyse_settings_1_0 "$RUN_DIR/pathwyse.set" "$NG"
+fi
 
 # ── Run ──
 echo
@@ -234,9 +371,13 @@ for file in "${FILES[@]}"; do
     continue
   fi
 
+  if [[ "$VERSION" == "1.1.0" ]]; then
+    write_pathwyse_settings_1_1 "$RUN_DIR/pathwyse.set" "$(ng_set_file "$file" "$parent" "$stem")"
+  fi
+
   pw_cost="" pw_time_s="" pw_status="OK"
   pw_raw=""
-  if pw_raw=$(cd "$PATHWYSE_DIR" && timeout "${TIMEOUT}s" "$PATHWYSE_BIN" "$pw_file" 2>&1); then
+  if pw_raw=$(cd "$RUN_DIR" && "${RUN_PREFIX_ARR[@]}" timeout "${TIMEOUT}s" "$PATHWYSE_BIN" "$pw_file" 2>&1); then
     :
   else
     rc=$?
@@ -249,12 +390,26 @@ for file in "${FILES[@]}"; do
 
   pw_cost_scale="$(read_cost_scale "$pw_file")"
   if [[ "$pw_status" == "OK" && -n "$pw_raw" ]]; then
-    if [[ "$pw_raw" =~ Obj:[[:space:]]*(-?[0-9]+) ]]; then
+    if [[ "$VERSION" == "1.0" ]]; then
+      cost_re='Obj:[[:space:]]*(-?[0-9]+)'
+      time_re='global time:[[:space:]]*([0-9.eE+-]+)'
+    else
+      # 1.1.0 prints `Obj : -135733.000000` (std::to_string of the scaled
+      # integer cost, so never in exponent form) and `<algo> Time : 0.077926`.
+      cost_re='Obj[[:space:]]*:[[:space:]]*(-?[0-9]+)(\.[0-9]*)?'
+      time_re="${ALGO} Time[[:space:]]*:[[:space:]]*([0-9.eE+-]+)"
+    fi
+    if [[ "$pw_raw" =~ $cost_re ]]; then
       pw_cost_raw="${BASH_REMATCH[1]}"
       pw_cost="$(awk -v raw="$pw_cost_raw" -v scale="$pw_cost_scale" 'BEGIN{printf "%.6f", raw / scale}')"
     fi
-    if [[ "$pw_raw" =~ global\ time:[[:space:]]*([0-9.eE+-]+) ]]; then
+    if [[ "$pw_raw" =~ $time_re ]]; then
       pw_time_s="${BASH_REMATCH[1]}"
+    fi
+    # 1.0 keeps its old behaviour (a half-parsed row is written as is).
+    if [[ "$VERSION" == "1.1.0" && ( -z "$pw_cost" || -z "$pw_time_s" ) ]]; then
+      pw_status="UNPARSED"
+      pw_cost="" pw_time_s=""
     fi
   fi
 
@@ -267,7 +422,16 @@ for file in "${FILES[@]}"; do
   printf "%-20s  %3d  %10s  %12s  %s  [%d/%d]\n" \
     "$stem" "$NG" "${pw_time_s:--}" "${pw_cost:--}" "$pw_status" "$IDX" "$TOTAL"
 
-  echo "${stem},${set_label},${NG},${pw_cost},${pw_time_s},${pw_cost_scale},${ts}" >> "$OUT_CSV"
+  if [[ "$VERSION" == "1.0" ]]; then
+    echo "${stem},${set_label},${NG},${pw_cost},${pw_time_s},${pw_cost_scale},${ts}" >> "$OUT_CSV"
+  else
+    # Replace an earlier row of the same configuration; keep every other.
+    tmp="$(mktemp)"
+    awk -F, -v i="$stem" -v s="$set_label" -v n="$NG" -v a="$ALGO" -v p="$PARALLEL" \
+      'NR==1 || !($1==i && $2==s && $3==n && $4==a && $5==p)' "$OUT_CSV" > "$tmp"
+    mv "$tmp" "$OUT_CSV"
+    echo "${stem},${set_label},${NG},${ALGO},${PARALLEL},${pw_cost},${pw_time_s},${pw_cost_scale},${ts}" >> "$OUT_CSV"
+  fi
 
   if [[ -n "$pw_time_s" && "$pw_status" == "OK" ]]; then
     SUM_LOG="$(awk -v s="$SUM_LOG" -v t="$pw_time_s" -v sh="$SHIFT" 'BEGIN{print s + log(t + sh)}')"

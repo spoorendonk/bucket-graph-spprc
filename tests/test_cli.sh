@@ -148,6 +148,30 @@ run_test "--write-sppg never overwrites (same stem twice) → exit 1" \
 run_test "--write-sppg missing input → exit 1, cannot open" \
   expect_exit_and_output 1 "cannot open" "$SOLVER" --write-sppg "$TMP" "$FIXTURES/missing.graph"
 
+run_test "--write-ng writes tiny.vrp's ng sets" \
+  expect_exit_and_output 0 "tiny.ng2.csv" "$SOLVER" --write-ng "$TMP" --ng 2 "$FIXTURES/tiny.vrp"
+
+# n x n, one 1 per row at least (v itself), the sink's row only its own bit.
+check_ng_csv() {
+  local f="$TMP/tiny.ng2.csv" n
+  n=$(wc -l <"$f")
+  awk -F, -v n="$n" '
+    NF != n { exit 1 }
+    { ones = 0; for (j = 1; j <= NF; j++) { if ($j != 0 && $j != 1) exit 1; ones += $j }
+      if ($NR != 1 || ones > 2) exit 1; last = ones }
+    END { if (last != 1) exit 1 }' "$f"
+}
+run_test "--write-ng csv is n x n 0/1 with each v in N(v), |N(v)| <= 2" check_ng_csv
+
+run_test "--write-ng never overwrites → exit 1" \
+  expect_exit_and_output 1 "exists, not overwriting" "$SOLVER" --write-ng "$TMP" --ng 2 "$FIXTURES/tiny.vrp"
+
+run_test "--write-ng without --ng → exit 1" \
+  expect_exit_and_output 1 "needs --ng K" "$SOLVER" --write-ng "$TMP" "$FIXTURES/tiny.sppcc"
+
+run_test "--write-ng on a .graph → exit 1" \
+  expect_exit_and_output 1 "sppcc and .vrp only" "$SOLVER" --write-ng "$TMP" --ng 2 "$FIXTURES/tiny.graph"
+
 run_test "missing input → exit 1, cannot open" \
   expect_exit_and_output 1 "cannot open" "$SOLVER" "$FIXTURES/missing.graph"
 
