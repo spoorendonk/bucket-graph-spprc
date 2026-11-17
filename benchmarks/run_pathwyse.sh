@@ -13,7 +13,9 @@
 #
 # Arguments:
 #   PATH              Instance file or directory of instances.
-#                     Default: benchmarks/instances/rcspp/ng8
+#                     Default: benchmarks/instances/rcspp/ng8 (1.0),
+#                     benchmarks/instances/{spprclib,roberti} (1.1.0, which
+#                     takes .sppcc and .vrp only).
 #   --pathwyse V      1.1.0 (default) or 1.0 — the release to build and run.
 #                     1.0 is pinned commit d53c01b with the two parity patches
 #                     in benchmarks/patches/, the paper's comparison; 1.1.0 is
@@ -45,10 +47,12 @@
 # Output (1.0): benchmarks/pathwyse.csv — CSV with columns:
 #     instance, set, ng, cost, time_s, cost_scale, timestamp
 # Output (1.1.0): benchmarks/pathwyse-1.1.0/pathwyse.csv — CSV with columns:
-#     instance, set, ng, algo, parallel, cost, time_s, cost_scale, timestamp
+#     instance, set, ng, algo, parallel, status, cost, time_s, cost_scale,
+#     timestamp
 #   cost_scale is the per-instance integer scaling used by
 #   convert_to_pathwyse.py; downstream consumers use it to size
-#   float-comparison tolerances. Empty cost/time_s is a timeout.
+#   float-comparison tolerances. 1.1.0's status is OK, TIMEOUT, ERROR(rc)
+#   or UNPARSED; cost/time_s are empty unless it is OK.
 set -euo pipefail
 
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
@@ -61,6 +65,7 @@ APPEND=0
 VERSION="1.1.0"
 ALGO="PWBucket"
 PARALLEL=0
+ALGO_GIVEN=0
 PATHS=()
 
 # ── Usage ──
@@ -73,8 +78,8 @@ usage() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --pathwyse)   VERSION="$2"; shift 2 ;;
-    --algo)       ALGO="$2"; shift 2 ;;
-    --parallel)   PARALLEL="$2"; shift 2 ;;
+    --algo)       ALGO="$2"; ALGO_GIVEN=1; shift 2 ;;
+    --parallel)   PARALLEL="$2"; ALGO_GIVEN=1; shift 2 ;;
     --ng)         NG="$2"; shift 2 ;;
     --timeout)    TIMEOUT="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
@@ -96,7 +101,7 @@ case "$PARALLEL" in
   0|1) ;;
   *) echo "Error: --parallel must be 0 or 1, not $PARALLEL" >&2; exit 1 ;;
 esac
-if [[ "$VERSION" == "1.0" && ( "$ALGO" != "PWBucket" || "$PARALLEL" != 0 ) ]]; then
+if [[ "$VERSION" == "1.0" && $ALGO_GIVEN -eq 1 ]]; then
   # 1.0 runs the paper's configuration only: PWDefault, sequential.
   echo "Error: --algo and --parallel are for --pathwyse 1.1.0" >&2
   exit 1
@@ -108,9 +113,14 @@ fi
 
 read -r -a RUN_PREFIX_ARR <<<"${RUN_PREFIX:-}"
 
-# Default paths
+# Default paths. 1.1.0 compares on .sppcc/.vrp only: its ng sets come from
+# `bgspprc-solve --write-ng`, which takes no .graph.
 if [[ ${#PATHS[@]} -eq 0 ]]; then
-  PATHS=("$SCRIPTDIR/instances/rcspp/ng${NG}")
+  if [[ "$VERSION" == "1.0" ]]; then
+    PATHS=("$SCRIPTDIR/instances/rcspp/ng${NG}")
+  else
+    PATHS=("$SCRIPTDIR/instances/spprclib" "$SCRIPTDIR/instances/roberti")
+  fi
 fi
 
 # ── Build Pathwyse ──
@@ -307,15 +317,25 @@ read_cost_scale() {
   echo "$val"
 }
 
-# ng sets for 1.1.0, as bgspprc builds them for the same --ng (and its default
-# ng metric, cost): written once per (instance, ng) and kept.
+# ng sets for 1.1.0, as the bgspprc-solve of this checkout builds them for the
+# same --ng (and its default ng metric, cost). Written afresh by every
+# invocation into its own run directory, so a change to bgspprc's ng
+# construction never meets sets cached from before it. Exits on failure: a
+# missing file would make PathWyse abort on every instance.
 ng_set_file() {
-  local file="$1" parent="$2" stem="$3"
-  local dir="$CONVERTED_DIR/$parent/ngsets"
+  local file="$1" stem="$2"
+  local dir="$RUN_DIR/ngsets"
   local out="$dir/${stem}.ng${NG}.csv"
+  rm -f "$out"
+  mkdir -p "$dir"
+  if ! "$SOLVE" --write-ng "$dir" --ng "$NG" "$file" >/dev/null 2>"$dir/write-ng.err"; then
+    echo "Error: $SOLVE --write-ng failed on $file:" >&2
+    cat "$dir/write-ng.err" >&2
+    exit 1
+  fi
   if [[ ! -f "$out" ]]; then
-    mkdir -p "$dir"
-    "$SOLVE" --write-ng "$dir" --ng "$NG" "$file" >/dev/null
+    echo "Error: $SOLVE --write-ng wrote no $out" >&2
+    exit 1
   fi
   echo "$out"
 }
@@ -327,7 +347,7 @@ if [[ "$VERSION" == "1.0" ]]; then
     echo "$HEADER" > "$OUT_CSV"
   fi
 else
-  HEADER="instance,set,ng,algo,parallel,cost,time_s,cost_scale,timestamp"
+  HEADER="instance,set,ng,algo,parallel,status,cost,time_s,cost_scale,timestamp"
   mkdir -p "$(dirname "$OUT_CSV")"
   if [[ ! -f "$OUT_CSV" ]]; then
     echo "$HEADER" > "$OUT_CSV"
@@ -338,12 +358,17 @@ else
 fi
 
 # Pathwyse reads pathwyse.set from its working directory. 1.0's settings are
-# ng-dependent, not instance-dependent, so are written once; 1.1.0's name the
-# instance's ng-set file, so are written per instance. Concurrent script
-# invocations would race on this file.
-RUN_DIR="$PATHWYSE_DIR"
+# ng-dependent, not instance-dependent, so are written once into the checkout
+# (concurrent 1.0 invocations would race on it). 1.1.0's name the instance's
+# ng-set file, so are written per instance, into a run directory of this
+# invocation's own: concurrent invocations waiting on RUN_PREFIX's lock never
+# overwrite each other's settings.
 if [[ "$VERSION" == "1.0" ]]; then
+  RUN_DIR="$PATHWYSE_DIR"
   write_pathwyse_settings_1_0 "$RUN_DIR/pathwyse.set" "$NG"
+else
+  RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/run_pathwyse.XXXXXX")"
+  trap 'rm -rf "$RUN_DIR"' EXIT
 fi
 
 # ── Run ──
@@ -372,7 +397,8 @@ for file in "${FILES[@]}"; do
   fi
 
   if [[ "$VERSION" == "1.1.0" ]]; then
-    write_pathwyse_settings_1_1 "$RUN_DIR/pathwyse.set" "$(ng_set_file "$file" "$parent" "$stem")"
+    ng_file="$(ng_set_file "$file" "$stem")"  # a plain assignment: set -e sees a failure
+    write_pathwyse_settings_1_1 "$RUN_DIR/pathwyse.set" "$ng_file"
   fi
 
   pw_cost="" pw_time_s="" pw_status="OK"
@@ -430,7 +456,7 @@ for file in "${FILES[@]}"; do
     awk -F, -v i="$stem" -v s="$set_label" -v n="$NG" -v a="$ALGO" -v p="$PARALLEL" \
       'NR==1 || !($1==i && $2==s && $3==n && $4==a && $5==p)' "$OUT_CSV" > "$tmp"
     mv "$tmp" "$OUT_CSV"
-    echo "${stem},${set_label},${NG},${ALGO},${PARALLEL},${pw_cost},${pw_time_s},${pw_cost_scale},${ts}" >> "$OUT_CSV"
+    echo "${stem},${set_label},${NG},${ALGO},${PARALLEL},${pw_status},${pw_cost},${pw_time_s},${pw_cost_scale},${ts}" >> "$OUT_CSV"
   fi
 
   if [[ -n "$pw_time_s" && "$pw_status" == "OK" ]]; then

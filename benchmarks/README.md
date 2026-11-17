@@ -226,9 +226,18 @@ python3 benchmarks/compute_means.py pathwyse11   # add --rows for per-row costs
 ```
 
 On a shared machine, `RUN_PREFIX="xk lock --"` on either script takes the
-machine lock per instance. The comparison expects equal costs, not just
-bgspprc ≤ PathWyse: `compute_means.py pathwyse11` tallies `eq`/`ne` per
-algorithm on stderr.
+machine lock per instance; each `run_pathwyse.sh` writes its settings and ng
+sets into a run directory of its own, so concurrent invocations do not
+collide, and writes the ng sets afresh with this checkout's `bgspprc-solve`.
+The comparison expects equal costs, not just bgspprc ≤ PathWyse:
+`compute_means.py pathwyse11` tallies `eq`/`ne` per algorithm on stderr.
+
+The two solvers time slightly different work. bgspprc's `time_s` covers
+building the solver (bucket graph included) and solving, after the instance
+and its ng sets are read; PathWyse 1.1.0 prints only its `<algo> Time`, the
+search loop after its own setup (which reads the ng sets). bgspprc's
+interval is the wider one, so the ratios lean, if anything, in PathWyse's
+favour.
 
 ## Results
 
@@ -386,13 +395,13 @@ picks the last-seen row). Empty `cost`/`time_s` means Pathwyse timed out.
 
 The PathWyse 1.1.0 rerun, produced by `run_pathwyse.sh` (default
 `--pathwyse 1.1.0`). One row per (instance, set, ng, algo, parallel): a rerun
-of the same configuration replaces its row. Empty `cost`/`time_s` means
-PathWyse timed out (or its output did not parse). The columns of
-`pathwyse.csv`, plus:
+of the same configuration replaces its row. The columns of `pathwyse.csv`,
+plus:
 
 | Column | Description |
 |--------|-------------|
 | `algo` | `PWDefault` or `PWBucket` |
+| `status` | `OK`, `TIMEOUT`, `ERROR(rc)` (PathWyse exited with rc) or `UNPARSED`; `cost`/`time_s` are empty unless `OK`. `compute_means.py pathwyse11` scores `TIMEOUT` as unsolved at 120 s and leaves out, on stderr, any instance a PathWyse run failed on |
 | `parallel` | `algo/default/parallel`: 0 sequential, 1 forward and backward searches concurrent |
 | `time_s` | PathWyse's own `<algo> Time`: its search loop (labeling and join), not reading the instance or `initAlgorithm` |
 | `cost_scale` | Per-instance integer scaling (`--wide-costs`: 1 on `.sppcc`, 10⁶ on `.vrp`) |

@@ -223,18 +223,25 @@ PW11_ALGOS = ("PWDefault", "PWBucket")
 PW11_DIR = ROOT / "pathwyse-1.1.0"
 
 
-def costs_agree(bg_cost: str, pw_cost: str, cost_scale: int) -> str:
+# Sets whose arc costs are integers, so convert to PathWyse at any cost_scale
+# without rounding (spprclib's `.sppcc`).
+INTEGER_COST_SETS = {"spprclib"}
+# PathWyse 1.1.0 row statuses that are results: a solve, or a timeout (scored
+# as unsolved). ERROR(rc) and UNPARSED rows are failures, not timeouts.
+PW11_RESULT_STATUSES = {"OK", "TIMEOUT"}
+
+
+def costs_agree(bg_cost: str, pw_cost: str, cost_scale: int, integer_costs: bool) -> str:
     """Return eq / ne / '' for a bgspprc and a PathWyse 1.1.0 cost.
 
     Both solve the same pure ng relaxation over the same ng sets, so their
-    optima must match, not merely order: within max(1e-3, 100/cost_scale), the
-    3-decimal quantum of bgspprc.csv plus the per-arc integer rounding of the
-    converted instance. A cost_scale of 1 is the converter's choice only for
-    `.sppcc`, whose costs are integers and convert exactly, so it gets 1e-3.
+    optima must match, not merely order: within 1e-3, the 3-decimal quantum
+    of bgspprc.csv, widened to 100/cost_scale for the per-arc integer
+    rounding of the converted instance unless its costs are integers.
     '' when either side has no cost (a timeout)."""
     if not bg_cost or not pw_cost:
         return ""
-    tol = 1e-3 if cost_scale == 1 else max(1e-3, 100.0 / cost_scale)
+    tol = 1e-3 if integer_costs else max(1e-3, 100.0 / cost_scale)
     return "eq" if abs(float(bg_cost) - float(pw_cost)) <= tol else "ne"
 
 
@@ -245,7 +252,9 @@ def join_pathwyse11(bg_path: Path, pw_path: Path) -> list[Row]:
     A (instance, ng, line) is joined only when bgspprc and both algorithms
     have a row for it, so every solver in a table line covers the same
     instances. Empty times stay '' (downstream substitutes the timeout).
-    Sorted by (line, ng, instance)."""
+    Each algorithm's row status is kept (`<algo>_status`; '' for a CSV
+    without the column); the table drops failed rows. Sorted by (line, ng,
+    instance)."""
     bg: dict[tuple[str, str, str], Row] = {}
     with open(bg_path) as f:
         for r in csv.DictReader(f):
@@ -258,17 +267,20 @@ def join_pathwyse11(bg_path: Path, pw_path: Path) -> list[Row]:
 
     rows = []
     for line, mode, parallel in PW11_LINES:
+        # Filter before sorting: only joined keys need an integer ng.
         keys = sorted(
-            ((inst, ng) for inst, ng, m in bg if m == mode),
+            (
+                (inst, ng)
+                for inst, ng, m in bg
+                if m == mode
+                and bg[(inst, ng, m)]["set"] in INCLUDED_SETS
+                and all((inst, ng, a, parallel) in pw for a in PW11_ALGOS)
+            ),
             key=lambda k: (int(k[1]), k[0]),
         )
         for inst, ng in keys:
             b = bg[(inst, ng, mode)]
-            if b["set"] not in INCLUDED_SETS:
-                continue
-            ps = [pw.get((inst, ng, a, parallel)) for a in PW11_ALGOS]
-            if any(p is None for p in ps):
-                continue
+            ps = [pw[(inst, ng, a, parallel)] for a in PW11_ALGOS]
             row = {
                 "instance": inst,
                 "ng": ng,
@@ -278,11 +290,13 @@ def join_pathwyse11(bg_path: Path, pw_path: Path) -> list[Row]:
                 "bgspprc_cost": b["cost"],
             }
             for a, p in zip(PW11_ALGOS, ps, strict=True):
-                assert p is not None
                 cost_scale = int(p.get("cost_scale") or 1_000_000)
+                row[f"{a}_status"] = p.get("status") or ""
                 row[f"{a}_s"] = p["time_s"] if p["cost"] else ""
                 row[f"{a}_cost"] = p["cost"]
-                row[f"{a}_agree"] = costs_agree(b["cost"], p["cost"], cost_scale)
+                row[f"{a}_agree"] = costs_agree(
+                    b["cost"], p["cost"], cost_scale, b["set"] in INTEGER_COST_SETS
+                )
             rows.append(row)
     return rows
 
@@ -302,7 +316,21 @@ def pathwyse11_table(bg_path: Path, pw_path: Path, shift: float = 1.0, tl: float
     per-instance ratios (t + shift) / (t_bg + shift), so > 1 means bgspprc is
     faster; `q1–q3` is the interquartile range of those per-instance ratios,
     the spread laptop timings call for. Cost agreement goes to stderr."""
-    rows = join_pathwyse11(bg_path, pw_path)
+    joined = join_pathwyse11(bg_path, pw_path)
+    # A failed PathWyse run is no result: scoring it as a 120 s timeout would
+    # inflate PathWyse's times, so its (instance, ng, line) is left out, loudly.
+    failed = [
+        r
+        for r in joined
+        if any(r[f"{a}_status"] not in PW11_RESULT_STATUSES | {""} for a in PW11_ALGOS)
+    ]
+    for r in failed:
+        statuses = ", ".join(f"{a} {r[f'{a}_status']}" for a in PW11_ALGOS)
+        print(
+            f"excluded (PathWyse failed): {r['instance']} ng{r['ng']} {r['line']}: {statuses}",
+            file=sys.stderr,
+        )
+    rows = [r for r in joined if r not in failed]
 
     grouped: dict[tuple[str, str, str], list[Row]] = defaultdict(list)
     for r in rows:
@@ -524,7 +552,7 @@ def main() -> int:
             dump_rows(
                 join_pathwyse11(bg11, pw11),
                 ["instance", "set", "ng", "line", "bgspprc_s", "bgspprc_cost"]
-                + [f"{a}_{c}" for a in PW11_ALGOS for c in ("s", "cost", "agree")],
+                + [f"{a}_{c}" for a in PW11_ALGOS for c in ("status", "s", "cost", "agree")],
             )
         elif args.table == "rcspp":
             dump_rows(

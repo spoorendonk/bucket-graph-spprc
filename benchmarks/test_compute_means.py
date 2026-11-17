@@ -25,7 +25,7 @@ from compute_means import (
 BG_HEADER = "instance,set,ng,mode,cost,paths,time_s,timestamp"
 PAPER_HEADER = "instance,ng,base_s,vectorised_s,parallel_s,bidir_s,all_s"
 PW_HEADER = "instance,set,ng,cost,time_s,cost_scale,timestamp"
-PW11_HEADER = "instance,set,ng,algo,parallel,cost,time_s,cost_scale,timestamp"
+PW11_HEADER = "instance,set,ng,algo,parallel,status,cost,time_s,cost_scale,timestamp"
 
 
 def _write(tmp_path: Path, name: str, header: str, rows: list[str]) -> Path:
@@ -186,24 +186,28 @@ class TestJoinPathwyse:
 
 class TestCostsAgree:
     def test_equal_within_tolerance(self) -> None:
-        assert costs_agree("-10.000", "-10.0004", 1_000_000) == "eq"
+        assert costs_agree("-10.000", "-10.0004", 1_000_000, False) == "eq"
 
     def test_lower_bgspprc_is_a_disagreement(self) -> None:
         # Same relaxation, so a lower bgspprc cost is as wrong as a higher one.
-        assert costs_agree("-10.01", "-10", 1_000_000) == "ne"
-        assert costs_agree("-9.99", "-10", 1_000_000) == "ne"
+        assert costs_agree("-10.01", "-10", 1_000_000, False) == "ne"
+        assert costs_agree("-9.99", "-10", 1_000_000, False) == "ne"
 
     def test_tolerance_widens_at_low_cost_scale(self) -> None:
-        assert costs_agree("-19.95", "-20", 1000) == "eq"
+        assert costs_agree("-19.95", "-20", 1000, False) == "eq"
 
-    def test_unscaled_integer_costs_are_exact(self) -> None:
-        # cost_scale 1 (.sppcc) converts exactly: no rounding band.
-        assert costs_agree("-11", "-10", 1) == "ne"
-        assert costs_agree("-10.000", "-10", 1) == "eq"
+    def test_integer_costs_are_exact(self) -> None:
+        # Integer arc costs (.sppcc) convert exactly: no rounding band.
+        assert costs_agree("-11", "-10", 1, True) == "ne"
+        assert costs_agree("-10.000", "-10", 1, True) == "eq"
+
+    def test_float_costs_at_scale_one_keep_the_rounding_band(self) -> None:
+        # A .vrp converted with --cost-scale 1 rounds every arc.
+        assert costs_agree("-11", "-10", 1, False) == "eq"
 
     def test_blank_on_timeout(self) -> None:
-        assert costs_agree("", "-3", 1_000_000) == ""
-        assert costs_agree("-3", "", 1_000_000) == ""
+        assert costs_agree("", "-3", 1_000_000, False) == ""
+        assert costs_agree("-3", "", 1_000_000, False) == ""
 
 
 class TestQuartiles:
@@ -233,16 +237,16 @@ def _pw11_fixture(tmp_path: Path) -> tuple[Path, Path]:
         "pathwyse.csv",
         PW11_HEADER,
         [
-            "P,spprclib,8,PWDefault,0,-10,9.000,1,t",  # stale dup, overwritten
-            "P,spprclib,8,PWDefault,0,-10,3.000,1,t",
-            "P,spprclib,8,PWBucket,0,-10,1.000,1,t",
-            "P,spprclib,8,PWDefault,1,-10,2.000,1,t",
-            "P,spprclib,8,PWBucket,1,-11,0.500,1,t",  # cost disagrees
-            "Q,spprclib,8,PWDefault,0,-7,1.000,1,t",
-            "Q,spprclib,8,PWBucket,0,,,1,t",  # PathWyse timeout
-            "R,spprclib,8,PWDefault,0,-5,1.000,1,t",
-            "S,ng8,8,PWDefault,0,-5,1.000,1,t",
-            "S,ng8,8,PWBucket,0,-5,1.000,1,t",
+            "P,spprclib,8,PWDefault,0,OK,-10,9.000,1,t",  # stale dup, overwritten
+            "P,spprclib,8,PWDefault,0,OK,-10,3.000,1,t",
+            "P,spprclib,8,PWBucket,0,OK,-10,1.000,1,t",
+            "P,spprclib,8,PWDefault,1,OK,-10,2.000,1,t",
+            "P,spprclib,8,PWBucket,1,OK,-11,0.500,1,t",  # cost disagrees
+            "Q,spprclib,8,PWDefault,0,OK,-7,1.000,1,t",
+            "Q,spprclib,8,PWBucket,0,TIMEOUT,,,1,t",  # PathWyse timeout
+            "R,spprclib,8,PWDefault,0,OK,-5,1.000,1,t",
+            "S,ng8,8,PWDefault,0,OK,-5,1.000,1,t",
+            "S,ng8,8,PWBucket,0,OK,-5,1.000,1,t",
         ],
     )
     return bg, pw
@@ -281,3 +285,47 @@ class TestJoinPathwyse11:
         err = capsys.readouterr().err
         assert "cost agreement (PWBucket, n=3): eq=1  ne=1  blank=1" in err
         assert "cost agreement (PWDefault, n=3): eq=2  ne=0  blank=1" in err
+
+    def test_failed_pathwyse_run_is_excluded_not_a_timeout(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bg = _write(
+            tmp_path,
+            "bgspprc.csv",
+            BG_HEADER,
+            ["P,spprclib,8,bidir_vec,-10,1,1.000,t", "Q,spprclib,8,bidir_vec,-7,1,1.000,t"],
+        )
+        pw = _write(
+            tmp_path,
+            "pathwyse.csv",
+            PW11_HEADER,
+            [
+                "P,spprclib,8,PWDefault,0,ERROR(134),,,1,t",
+                "P,spprclib,8,PWBucket,0,OK,-10,1.000,1,t",
+                "Q,spprclib,8,PWDefault,0,OK,-7,1.000,1,t",
+                "Q,spprclib,8,PWBucket,0,UNPARSED,,,1,t",
+            ],
+        )
+        out = pathwyse11_table(bg, pw)
+        assert len(out.splitlines()) == 2  # header only: both instances failed
+        err = capsys.readouterr().err
+        assert "excluded (PathWyse failed): P ng8 seq: PWDefault ERROR(134), PWBucket OK" in err
+        assert "excluded (PathWyse failed): Q ng8 seq" in err
+
+    def test_bgspprc_row_without_ng_does_not_break_the_join(self, tmp_path: Path) -> None:
+        bg = _write(
+            tmp_path,
+            "bgspprc.csv",
+            BG_HEADER,
+            ["P,spprclib,8,bidir_vec,-10,1,1.000,t", "X,other,,bidir_vec,-1,1,1.000,t"],
+        )
+        pw = _write(
+            tmp_path,
+            "pathwyse.csv",
+            PW11_HEADER,
+            [
+                "P,spprclib,8,PWDefault,0,OK,-10,1.000,1,t",
+                "P,spprclib,8,PWBucket,0,OK,-10,1.000,1,t",
+            ],
+        )
+        assert [r["instance"] for r in join_pathwyse11(bg, pw)] == ["P"]
