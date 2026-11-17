@@ -134,14 +134,14 @@ python3 benchmarks/compute_means.py rcspp
 
 ### Pathwyse comparison
 
-`run_pathwyse.sh` runs Pathwyse and appends rows to `pathwyse.csv`;
+`run_pathwyse.sh --pathwyse 1.0` runs Pathwyse 1.0 and appends rows to `pathwyse.csv`;
 `compute_means.py pathwyse` joins it with `bgspprc.csv` in-memory and prints the
 table (plus a bgspprc-vs-Pathwyse cost-agreement tally to stderr).
 
 ```bash
 # Step 1: run Pathwyse on spprclib + roberti at ng 8/16/24
 for ng in 8 16 24; do
-  ./benchmarks/run_pathwyse.sh --ng $ng --timeout 120 --append --skip-build \
+  ./benchmarks/run_pathwyse.sh --pathwyse 1.0 --ng $ng --timeout 120 --append --skip-build \
     benchmarks/instances/spprclib benchmarks/instances/roberti
 done
 
@@ -167,13 +167,13 @@ Patches for both are checked in under `benchmarks/patches/`:
 bgspprc itself does **not** include 2-cycle elimination — it implements the
 paper's pure-ng relaxation. The patches make Pathwyse match.
 
-`run_pathwyse.sh` applies both patches automatically as part of the
+`run_pathwyse.sh --pathwyse 1.0` applies both patches automatically as part of the
 build step. The script clones upstream Pathwyse, checks out pinned commit
 [`d53c01b`](https://github.com/pathwyse/pathwyse/commit/d53c01b), applies
 both patches in `benchmarks/patches/`, and builds. No manual step needed:
 
 ```bash
-./benchmarks/run_pathwyse.sh --ng 8 ...   # patches applied during build
+./benchmarks/run_pathwyse.sh --pathwyse 1.0 --ng 8 ...   # patches applied during build
 ```
 
 Bumping `PATHWYSE_REV` in `run_pathwyse.sh` to a newer upstream commit

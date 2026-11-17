@@ -145,6 +145,7 @@ fi
 # ── Ensure CSV header ──
 EXPECTED_HEADER="instance,set,ng,mode,cost,paths,time_s,timestamp"
 if [[ ! -f "$CSV" ]]; then
+  mkdir -p "$(dirname "$CSV")"
   echo "$EXPECTED_HEADER" > "$CSV"
 else
   existing_header="$(head -1 "$CSV")"

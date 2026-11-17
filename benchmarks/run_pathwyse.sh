@@ -106,6 +106,11 @@ if [[ "$VERSION" == "1.0" && $ALGO_GIVEN -eq 1 ]]; then
   echo "Error: --algo and --parallel are for --pathwyse 1.1.0" >&2
   exit 1
 fi
+if [[ "$VERSION" == "1.1.0" && "$NG" -le 0 ]]; then
+  # The ng sets come from bgspprc-solve --write-ng, which needs K >= 1.
+  echo "Error: --pathwyse 1.1.0 needs --ng K with K >= 1" >&2
+  exit 1
+fi
 if [[ "$VERSION" == "1.1.0" && $APPEND -eq 1 ]]; then
   echo "Error: --append is for --pathwyse 1.0 (1.1.0 always keeps the CSV)" >&2
   exit 1
@@ -432,11 +437,13 @@ for file in "${FILES[@]}"; do
     if [[ "$pw_raw" =~ $time_re ]]; then
       pw_time_s="${BASH_REMATCH[1]}"
     fi
-    # 1.0 keeps its old behaviour (a half-parsed row is written as is).
-    if [[ "$VERSION" == "1.1.0" && ( -z "$pw_cost" || -z "$pw_time_s" ) ]]; then
-      pw_status="UNPARSED"
-      pw_cost="" pw_time_s=""
-    fi
+  fi
+  # 1.0 keeps its old behaviour (a half-parsed row is written as is). On
+  # 1.1.0 a clean exit without both values, empty output included, is no
+  # result, never a timeout.
+  if [[ "$VERSION" == "1.1.0" && "$pw_status" == "OK" && ( -z "$pw_cost" || -z "$pw_time_s" ) ]]; then
+    pw_status="UNPARSED"
+    pw_cost="" pw_time_s=""
   fi
 
   # Set label from parent directory (matches bgspprc.csv convention:
@@ -452,7 +459,7 @@ for file in "${FILES[@]}"; do
     echo "${stem},${set_label},${NG},${pw_cost},${pw_time_s},${pw_cost_scale},${ts}" >> "$OUT_CSV"
   else
     # Replace an earlier row of the same configuration; keep every other.
-    tmp="$(mktemp)"
+    tmp="$(mktemp "$OUT_CSV.XXXXXX")"
     awk -F, -v i="$stem" -v s="$set_label" -v n="$NG" -v a="$ALGO" -v p="$PARALLEL" \
       'NR==1 || !($1==i && $2==s && $3==n && $4==a && $5==p)' "$OUT_CSV" > "$tmp"
     mv "$tmp" "$OUT_CSV"
