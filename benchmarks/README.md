@@ -254,7 +254,9 @@ followed by a one-liner that reproduces it. Columns:
   differences here.
 - **`mean (s)`** — arithmetic mean of times.
 - **`solved`** — count of instances that finished within the 120 s
-  timeout (timeouts substitute as 120 s in both `sgm` and `mean`).
+  timeout (timeouts substitute as 120 s in both `sgm` and `mean`). A failed
+  run (`status` `ERROR(rc)` or `UNPARSED`) is not a timeout: its instance is
+  left out of the table and named on stderr.
 
 ### Pathwyse comparison (sppcc + vrp)
 
@@ -370,10 +372,11 @@ table including spprclib + roberti).
 | `set` | Instance set (`spprclib`, `roberti`, `ng8`, `ng16`, `ng24`) |
 | `ng` | ng-neighborhood size used |
 | `mode` | Solver mode (`mono_base`, `mono_vec`, `bidir_base`, `bidir_vec`, `para_bidir_base`, `para_bidir_vec`) |
-| `cost` | Optimal cost found (empty on timeout/error) |
+| `cost` | Optimal cost found (empty unless `status` is `OK`) |
 | `paths` | Number of optimal paths found |
 | `time_s` | Wall-clock time in seconds |
 | `timestamp` | UTC timestamp of the run |
+| `status` | `OK`, `TIMEOUT`, `ERROR(rc)` (bgspprc-solve exited with rc) or `UNPARSED` (a clean exit without a result line). Rows from before the column read `OK` with a time, else `TIMEOUT`: a failed run was written like a timeout then |
 
 ### `pathwyse.csv`
 
@@ -401,7 +404,7 @@ plus:
 | Column | Description |
 |--------|-------------|
 | `algo` | `PWDefault` or `PWBucket` |
-| `status` | `OK`, `TIMEOUT`, `ERROR(rc)` (PathWyse exited with rc) or `UNPARSED`; `cost`/`time_s` are empty unless `OK`. `compute_means.py pathwyse11` scores `TIMEOUT` as unsolved at 120 s and leaves out, on stderr, any instance a PathWyse run failed on |
+| `status` | `OK`, `TIMEOUT`, `ERROR(rc)` (PathWyse exited with rc) or `UNPARSED`; `cost`/`time_s` are empty unless `OK`. `compute_means.py pathwyse11` scores `TIMEOUT` as unsolved at 120 s and leaves out, on stderr, any instance a PathWyse or bgspprc run failed on |
 | `parallel` | `algo/default/parallel`: 0 sequential, 1 forward and backward searches concurrent |
 | `time_s` | PathWyse's own `<algo> Time`: its search loop (labeling and join), not reading the instance or `initAlgorithm` |
 | `cost_scale` | Per-instance integer scaling (`--wide-costs`: 1 on `.sppcc`, 10⁶ on `.vrp`) |

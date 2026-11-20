@@ -21,7 +21,9 @@ intermediate `comparison_*.csv` files. The joins reproduce the ones that
 Each row reports `sgm (s)` (shifted geometric mean, `exp(mean(log(t + s))) − s`,
 with `s` = 1 s), `mean (s)` (arithmetic mean), and `solved` (count of instances
 completed within the 120 s timeout). Timeouts substitute as 120 s in both means
-(never dropped). Each table is printed as github-flavored markdown so the output
+(never dropped). A failed run (status `ERROR(rc)` or `UNPARSED`, of bgspprc or
+PathWyse 1.1.0) is no result: its row is left out of the table and named on
+stderr. Each table is printed as github-flavored markdown so the output
 can be pasted directly into `benchmarks/README.md`.
 
 Usage:
@@ -40,6 +42,7 @@ import math
 import statistics
 import sys
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -70,6 +73,35 @@ BG_MODE = "para_bidir_vec"
 INCLUDED_SETS = {"spprclib", "roberti"}
 RCSPP_NG_GROUPS = (8, 16, 24)
 TIMEOUT = 120.0
+# Row statuses that are results: a solve, or a timeout (scored as unsolved at
+# the time limit). ERROR(rc) and UNPARSED rows are failed runs, not timeouts:
+# scoring one as a timeout would inflate that solver's times, so the tables
+# leave its row out, loudly (`drop_failed`).
+RESULT_STATUSES = {"OK", "TIMEOUT"}
+
+
+def bg_status(r: Row) -> str:
+    """A bgspprc.csv row's status. A row from before the column (#157) reads
+    OK when it has a time, else TIMEOUT: the runner then wrote a failed run
+    like a timeout, so an old failure cannot be told apart."""
+    return r.get("status") or ("OK" if r["time_s"] else "TIMEOUT")
+
+
+def drop_failed(
+    rows: list[Row], solvers: tuple[str, ...], where: Callable[[Row], str]
+) -> list[Row]:
+    """The rows on which no solver's run failed, by its `<solver>_status`
+    ('' is a CSV without the column, read as a result). Each row left out is
+    named on stderr by `where(row)`, with every solver's status."""
+    kept = []
+    for r in rows:
+        statuses = [(s, r[f"{s}_status"]) for s in solvers]
+        if all(st in RESULT_STATUSES or st == "" for _, st in statuses):
+            kept.append(r)
+            continue
+        listed = ", ".join(f"{s} {st}" for s, st in statuses)
+        print(f"excluded (failed run): {where(r)}: {listed}", file=sys.stderr)
+    return kept
 
 
 def shifted_geomean(values: list[float], shift: float) -> float:
@@ -107,8 +139,10 @@ def join_rcspp(
     """bgspprc `para_bidir_vec` (rcspp sets) ⋈ paper `all_s` on (instance, ng).
 
     Pure join over existing data — no solver run. Cells that timed out on
-    either side are `'TL'` and substitute as `timeout` seconds downstream.
-    Returns one dict per joined (instance, ng), sorted by (ng, instance)."""
+    either side are `'TL'` and substitute as `timeout` seconds downstream;
+    a failed bgspprc run is `'TL'` too, and its `bgspprc_status` tells it
+    apart. Returns one dict per joined (instance, ng), sorted by (ng,
+    instance)."""
     ng_set = set(ng_groups)
 
     # Paper all_s — mark >timeout as TL; skip unparseable.
@@ -128,7 +162,7 @@ def join_rcspp(
             paper[(r["instance"], ng)] = "TL" if t > timeout else f"{t:.3f}"
 
     # bgspprc para_bidir_vec rows on rcspp sets — empty cost/time = TL.
-    bg: dict[tuple[str, int], str] = {}
+    bg: dict[tuple[str, int], tuple[str, str]] = {}
     with open(bg_path) as f:
         for r in csv.DictReader(f):
             if r["mode"] != BG_MODE or not r["set"].startswith("ng"):
@@ -141,13 +175,13 @@ def join_rcspp(
                 continue
             key = (r["instance"], ng)
             if not r["cost"] or not r["time_s"]:
-                bg[key] = "TL"
+                bg[key] = ("TL", bg_status(r))
             else:
-                bg[key] = f"{float(r['time_s']):.3f}"
+                bg[key] = (f"{float(r['time_s']):.3f}", bg_status(r))
 
     rows = []
     for inst, ng in sorted(set(bg) & set(paper), key=lambda k: (k[1], k[0])):
-        bg_v, paper_v = bg[(inst, ng)], paper[(inst, ng)]
+        (bg_v, bg_st), paper_v = bg[(inst, ng)], paper[(inst, ng)]
         bg_sgm = timeout if bg_v == "TL" else float(bg_v)
         paper_sgm = timeout if paper_v == "TL" else float(paper_v)
         rows.append(
@@ -155,6 +189,7 @@ def join_rcspp(
                 "instance": inst,
                 "ng": str(ng),
                 "bgspprc_s": bg_v,
+                "bgspprc_status": bg_st,
                 "paper_all_s": paper_v,
                 "ratio": f"{bg_sgm / paper_sgm:.2f}",
             }
@@ -205,6 +240,7 @@ def join_pathwyse(
                 "ng": ng,
                 "set": b["set"],
                 "bgspprc_s": b["time_s"],
+                "bgspprc_status": bg_status(b),
                 "pathwyse_s": p["time_s"],
                 "bgspprc_cost": b["cost"],
                 "pathwyse_cost": p["cost"],
@@ -226,9 +262,6 @@ PW11_DIR = ROOT / "pathwyse-1.1.0"
 # Sets whose arc costs are integers, so convert to PathWyse at any cost_scale
 # without rounding (spprclib's `.sppcc`).
 INTEGER_COST_SETS = {"spprclib"}
-# PathWyse 1.1.0 row statuses that are results: a solve, or a timeout (scored
-# as unsolved). ERROR(rc) and UNPARSED rows are failures, not timeouts.
-PW11_RESULT_STATUSES = {"OK", "TIMEOUT"}
 
 
 def costs_agree(bg_cost: str, pw_cost: str, cost_scale: int, integer_costs: bool) -> str:
@@ -252,8 +285,8 @@ def join_pathwyse11(bg_path: Path, pw_path: Path) -> list[Row]:
     A (instance, ng, line) is joined only when bgspprc and both algorithms
     have a row for it, so every solver in a table line covers the same
     instances. Empty times stay '' (downstream substitutes the timeout).
-    Each algorithm's row status is kept (`<algo>_status`; '' for a CSV
-    without the column); the table drops failed rows. Sorted by (line, ng,
+    Each solver's row status is kept (`bgspprc_status`, `<algo>_status`; ''
+    for a PathWyse CSV without the column); the table drops failed rows. Sorted by (line, ng,
     instance)."""
     bg: dict[tuple[str, str, str], Row] = {}
     with open(bg_path) as f:
@@ -287,6 +320,7 @@ def join_pathwyse11(bg_path: Path, pw_path: Path) -> list[Row]:
                 "set": b["set"],
                 "line": line,
                 "bgspprc_s": b["time_s"] if b["cost"] else "",
+                "bgspprc_status": bg_status(b),
                 "bgspprc_cost": b["cost"],
             }
             for a, p in zip(PW11_ALGOS, ps, strict=True):
@@ -316,21 +350,13 @@ def pathwyse11_table(bg_path: Path, pw_path: Path, shift: float = 1.0, tl: float
     per-instance ratios (t + shift) / (t_bg + shift), so > 1 means bgspprc is
     faster; `q1–q3` is the interquartile range of those per-instance ratios,
     the spread laptop timings call for. Cost agreement goes to stderr."""
-    joined = join_pathwyse11(bg_path, pw_path)
-    # A failed PathWyse run is no result: scoring it as a 120 s timeout would
-    # inflate PathWyse's times, so its (instance, ng, line) is left out, loudly.
-    failed = [
-        r
-        for r in joined
-        if any(r[f"{a}_status"] not in PW11_RESULT_STATUSES | {""} for a in PW11_ALGOS)
-    ]
-    for r in failed:
-        statuses = ", ".join(f"{a} {r[f'{a}_status']}" for a in PW11_ALGOS)
-        print(
-            f"excluded (PathWyse failed): {r['instance']} ng{r['ng']} {r['line']}: {statuses}",
-            file=sys.stderr,
-        )
-    rows = [r for r in joined if r not in failed]
+    # A failed run of any solver leaves its (instance, ng, line) out, so every
+    # solver in a table line still covers the same instances.
+    rows = drop_failed(
+        join_pathwyse11(bg_path, pw_path),
+        ("bgspprc", *PW11_ALGOS),
+        lambda r: f"{r['instance']} ng{r['ng']} {r['line']}",
+    )
 
     grouped: dict[tuple[str, str, str], list[Row]] = defaultdict(list)
     for r in rows:
@@ -380,9 +406,14 @@ def pathwyse11_table(bg_path: Path, pw_path: Path, shift: float = 1.0, tl: float
 def modes_table(csv_path: Path, shift: float = 1.0, tl: float = TIMEOUT) -> str:
     """bgspprc-only ablation across (set, ng, mode). Empty cost = timeout
     substituted with `tl` seconds in both the sgm and the arithmetic mean.
-    `solved` is the count of instances that finished without TL."""
+    `solved` is the count of instances that finished without TL. Failed runs
+    are left out (`drop_failed`)."""
     with open(csv_path) as f:
-        rows = list(csv.DictReader(f))
+        rows = drop_failed(
+            [{**r, "bgspprc_status": bg_status(r)} for r in csv.DictReader(f)],
+            ("bgspprc",),
+            lambda r: f"{r['instance']} {r['set']} ng{r['ng']} {r['mode']}",
+        )
     grouped: dict[tuple[str, str, str], list[Row]] = defaultdict(list)
     for r in rows:
         s = SET_DISPLAY.get(r["set"], r["set"])
@@ -413,8 +444,13 @@ def pathwyse_table(bg_path: Path, pw_path: Path, shift: float = 1.0, tl: float =
     """bgspprc para_bidir_vec vs patched Pathwyse on `.sppcc`/`.vrp`, in Plato
     style: one row per (set, ng, solver). Timeouts substitute as `tl` seconds
     (never dropped). Cost equality is checked per row; the bg_leq/bg_gt/bg_zero
-    tally is printed to stderr (inspect `--rows` for the per-row costs)."""
-    rows = join_pathwyse(bg_path, pw_path)
+    tally is printed to stderr (inspect `--rows` for the per-row costs).
+    Failed bgspprc runs are left out (`drop_failed`)."""
+    rows = drop_failed(
+        join_pathwyse(bg_path, pw_path),
+        ("bgspprc",),
+        lambda r: f"{r['instance']} ng{r['ng']}",
+    )
 
     grouped: dict[tuple[str, str], list[Row]] = defaultdict(list)
     for r in rows:
@@ -453,8 +489,13 @@ def pathwyse_table(bg_path: Path, pw_path: Path, shift: float = 1.0, tl: float =
 
 def rcspp_table(bg_path: Path, paper_path: Path, shift: float = 1.0, tl: float = TIMEOUT) -> str:
     """bgspprc para_bidir_vec vs Petersen & Spoorendonk 2025 paper runtimes per
-    ng, Plato-style. `TL` cells substitute as `tl` seconds."""
-    rows = join_rcspp(bg_path, paper_path)
+    ng, Plato-style. `TL` cells substitute as `tl` seconds. Failed bgspprc
+    runs are left out (`drop_failed`)."""
+    rows = drop_failed(
+        join_rcspp(bg_path, paper_path),
+        ("bgspprc",),
+        lambda r: f"{r['instance']} ng{r['ng']}",
+    )
 
     def to_s(v: str) -> float:
         return tl if v == "TL" else float(v)
@@ -541,6 +582,7 @@ def main() -> int:
                     "instance",
                     "ng",
                     "bgspprc_s",
+                    "bgspprc_status",
                     "pathwyse_s",
                     "bgspprc_cost",
                     "pathwyse_cost",
@@ -551,13 +593,13 @@ def main() -> int:
         elif args.table == "pathwyse11":
             dump_rows(
                 join_pathwyse11(bg11, pw11),
-                ["instance", "set", "ng", "line", "bgspprc_s", "bgspprc_cost"]
+                ["instance", "set", "ng", "line", "bgspprc_s", "bgspprc_status", "bgspprc_cost"]
                 + [f"{a}_{c}" for a in PW11_ALGOS for c in ("status", "s", "cost", "agree")],
             )
         elif args.table == "rcspp":
             dump_rows(
                 join_rcspp(bg, paper),
-                ["instance", "ng", "bgspprc_s", "paper_all_s", "ratio"],
+                ["instance", "ng", "bgspprc_s", "bgspprc_status", "paper_all_s", "ratio"],
             )
         else:
             print(

@@ -38,9 +38,12 @@
 #
 # Output:
 #   benchmarks/bgspprc.csv — CSV with columns:
-#     instance, set, ng, mode, cost, paths, time_s, timestamp
-#   Existing rows for the same (instance, set, ng, mode) are replaced;
-#   other rows preserved.
+#     instance, set, ng, mode, cost, paths, time_s, timestamp, status
+#   status is OK, TIMEOUT, ERROR(rc) (the solver exited with rc) or UNPARSED
+#   (it exited cleanly without a result line); cost, paths and time_s are
+#   empty unless it is OK. Existing rows for the same (instance, set, ng,
+#   mode) are replaced; other rows preserved. A CSV from before the status
+#   column gets it on the next run: OK where a row has a time, else TIMEOUT.
 #
 # Parsed fields from bgspprc-solve stdout:
 #   "name  type  n=NN  arcs=NN  cost=X.XXX  paths=N  X.Xms"
@@ -143,13 +146,23 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
 fi
 
 # ── Ensure CSV header ──
-EXPECTED_HEADER="instance,set,ng,mode,cost,paths,time_s,timestamp"
+EXPECTED_HEADER="instance,set,ng,mode,cost,paths,time_s,timestamp,status"
+# Before the status column (#157) a failed run was written like a timeout,
+# with no cost and no time, so an old row without a time reads as a timeout.
+LEGACY_HEADER="instance,set,ng,mode,cost,paths,time_s,timestamp"
 if [[ ! -f "$CSV" ]]; then
   mkdir -p "$(dirname "$CSV")"
   echo "$EXPECTED_HEADER" > "$CSV"
 else
   existing_header="$(head -1 "$CSV")"
-  if [[ "$existing_header" != "$EXPECTED_HEADER" ]]; then
+  if [[ "$existing_header" == "$LEGACY_HEADER" ]]; then
+    tmp="$(mktemp)"
+    awk -F, -v header="$EXPECTED_HEADER" \
+      'NR==1 {print header; next} {print $0 "," ($7 == "" ? "TIMEOUT" : "OK")}' \
+      "$CSV" > "$tmp"
+    mv "$tmp" "$CSV"
+    echo "Note: added the status column to $CSV (OK with a time, else TIMEOUT)" >&2
+  elif [[ "$existing_header" != "$EXPECTED_HEADER" ]]; then
     echo "Error: $CSV has an outdated header." >&2
     echo "  expected: $EXPECTED_HEADER" >&2
     echo "  found:    $existing_header" >&2
@@ -197,10 +210,14 @@ for file in "${FILES[@]}"; do
   set_name="$(infer_set "$file")"
   ng_val="$(infer_ng "$file")"
 
-  # Run solver with timeout
+  # Run solver with timeout. An empty array is spelled ${A[@]+"${A[@]}"}:
+  # bash before 4.4 (macOS's 3.2) takes a bare "${A[@]}" of one as unbound
+  # under `set -u`, which failed every solve.
   output=""
   status="OK"
-  if output=$("${RUN_PREFIX_ARR[@]}" timeout "${TIMEOUT}s" "$SOLVE_BIN" "${MODE_FLAGS[@]}" "${NG_FLAG[@]}" "${MAX_PATHS_FLAG[@]}" "$file" 2>&1); then
+  if output=$(${RUN_PREFIX_ARR[@]+"${RUN_PREFIX_ARR[@]}"} timeout "${TIMEOUT}s" "$SOLVE_BIN" \
+    ${MODE_FLAGS[@]+"${MODE_FLAGS[@]}"} ${NG_FLAG[@]+"${NG_FLAG[@]}"} \
+    ${MAX_PATHS_FLAG[@]+"${MAX_PATHS_FLAG[@]}"} "$file" 2>&1); then
     :
   else
     rc=$?
@@ -227,6 +244,12 @@ for file in "${FILES[@]}"; do
       time_ms="${BASH_REMATCH[1]}"
     fi
   fi
+  # A clean exit without a cost and a time, empty output included, is no
+  # result, never a timeout.
+  if [[ "$status" == "OK" && ( -z "$cost" || -z "$time_ms" ) ]]; then
+    status="UNPARSED"
+    cost="" paths="" time_ms=""
+  fi
 
   # Convert ms to seconds for CSV
   time_s=""
@@ -246,8 +269,8 @@ for file in "${FILES[@]}"; do
     mv "$tmp" "$CSV"
   fi
 
-  # Append result (even for failures, with empty fields)
-  echo "${stem},${set_name},${ng_val},${MODE},${cost},${paths},${time_s},${TIMESTAMP}" >> "$CSV"
+  # Append result (even for failures, with empty fields and their status)
+  echo "${stem},${set_name},${ng_val},${MODE},${cost},${paths},${time_s},${TIMESTAMP},${status}" >> "$CSV"
 done
 
 echo

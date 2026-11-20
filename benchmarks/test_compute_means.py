@@ -13,16 +13,22 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 from compute_means import (
+    bg_status,
     classify,
     costs_agree,
     join_pathwyse,
     join_pathwyse11,
     join_rcspp,
+    modes_table,
     pathwyse11_table,
+    pathwyse_table,
     quartiles,
+    rcspp_table,
 )
 
+# bgspprc.csv before its status column (#157), and since.
 BG_HEADER = "instance,set,ng,mode,cost,paths,time_s,timestamp"
+BG_STATUS_HEADER = BG_HEADER + ",status"
 PAPER_HEADER = "instance,ng,base_s,vectorised_s,parallel_s,bidir_s,all_s"
 PW_HEADER = "instance,set,ng,cost,time_s,cost_scale,timestamp"
 PW11_HEADER = "instance,set,ng,algo,parallel,status,cost,time_s,cost_scale,timestamp"
@@ -309,8 +315,42 @@ class TestJoinPathwyse11:
         out = pathwyse11_table(bg, pw)
         assert len(out.splitlines()) == 2  # header only: both instances failed
         err = capsys.readouterr().err
-        assert "excluded (PathWyse failed): P ng8 seq: PWDefault ERROR(134), PWBucket OK" in err
-        assert "excluded (PathWyse failed): Q ng8 seq" in err
+        assert (
+            "excluded (failed run): P ng8 seq: bgspprc OK, PWDefault ERROR(134), PWBucket OK" in err
+        )
+        assert (
+            "excluded (failed run): Q ng8 seq: bgspprc OK, PWDefault OK, PWBucket UNPARSED" in err
+        )
+
+    def test_failed_bgspprc_run_is_excluded_not_a_timeout(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bg = _write(
+            tmp_path,
+            "bgspprc.csv",
+            BG_STATUS_HEADER,
+            [
+                "P,spprclib,8,bidir_vec,-10,1,1.000,t,OK",
+                "Q,spprclib,8,bidir_vec,,,,t,ERROR(134)",
+                "R,spprclib,8,bidir_vec,,,,t,TIMEOUT",
+            ],
+        )
+        pw = _write(
+            tmp_path,
+            "pathwyse.csv",
+            PW11_HEADER,
+            [
+                f"{i},spprclib,8,{a},0,OK,-7,1.000,1,t"
+                for i in ("P", "Q", "R")
+                for a in ("PWDefault", "PWBucket")
+            ],
+        )
+        out = pathwyse11_table(bg, pw)
+        cells = [c.strip() for c in out.splitlines()[2].split("|")]
+        assert cells[4] == "bgspprc" and cells[6] == "1/2"  # P solved, R timed out
+        err = capsys.readouterr().err
+        assert "excluded (failed run): Q ng8 seq: bgspprc ERROR(134)" in err
+        assert " P ng8" not in err and " R ng8" not in err
 
     def test_bgspprc_row_without_ng_does_not_break_the_join(self, tmp_path: Path) -> None:
         bg = _write(
@@ -329,3 +369,88 @@ class TestJoinPathwyse11:
             ],
         )
         assert [r["instance"] for r in join_pathwyse11(bg, pw)] == ["P"]
+
+
+class TestBgStatus:
+    def test_legacy_row_reads_ok_with_a_time_else_timeout(self) -> None:
+        assert bg_status({"time_s": "0.100"}) == "OK"
+        assert bg_status({"time_s": ""}) == "TIMEOUT"
+
+    def test_status_column_wins(self) -> None:
+        assert bg_status({"time_s": "", "status": "ERROR(3)"}) == "ERROR(3)"
+        assert bg_status({"time_s": "", "status": "UNPARSED"}) == "UNPARSED"
+        assert bg_status({"time_s": "", "status": "TIMEOUT"}) == "TIMEOUT"
+
+
+def _solved(table: str, *key: str) -> str:
+    """The `solved` cell of the table row whose leading cells are `key`."""
+    for ln in table.splitlines()[2:]:
+        cells = [c.strip() for c in ln.split("|")[1:-1]]
+        if tuple(cells[: len(key)]) == key:
+            return cells[-1]
+    raise AssertionError(f"no row {key} in\n{table}")
+
+
+BG_STATUS_ROWS = (
+    "A,spprclib,8,para_bidir_vec,-1,1,0.500,t,OK",
+    "B,spprclib,8,para_bidir_vec,,,,t,TIMEOUT",
+    "C,spprclib,8,para_bidir_vec,,,,t,ERROR(134)",
+    "D,spprclib,8,para_bidir_vec,,,,t,UNPARSED",
+    "A,ng8,8,para_bidir_vec,-1,1,0.500,t,OK",
+    "B,ng8,8,para_bidir_vec,,,,t,TIMEOUT",
+    "C,ng8,8,para_bidir_vec,,,,t,ERROR(6)",
+)
+
+
+class TestFailedBgspprcRunsExcluded:
+    """A failed bgspprc run (ERROR/UNPARSED) is left out of every table that
+    reads bgspprc.csv and named on stderr; a timeout still counts at 120 s."""
+
+    def test_pathwyse_table(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # spprclib rows only: the join keys on (instance, ng), which the rcspp
+        # rows of the same names would overwrite.
+        spprclib = [r for r in BG_STATUS_ROWS if ",spprclib," in r]
+        bg = _write(tmp_path, "bgspprc.csv", BG_STATUS_HEADER, spprclib)
+        pw = _write(
+            tmp_path,
+            "pathwyse.csv",
+            PW_HEADER,
+            [f"{i},spprclib,8,-1,1.000,1000000,t" for i in "ABCD"],
+        )
+        out = pathwyse_table(bg, pw)
+        assert _solved(out, "spprclib", "8", "bgspprc") == "1/2"
+        assert _solved(out, "spprclib", "8", "pathwyse") == "2/2"
+        err = capsys.readouterr().err
+        assert "excluded (failed run): C ng8: bgspprc ERROR(134)" in err
+        assert "excluded (failed run): D ng8: bgspprc UNPARSED" in err
+        assert "B ng8" not in err
+        # --rows keeps the failed rows, with their status
+        statuses = {r["instance"]: r["bgspprc_status"] for r in join_pathwyse(bg, pw)}
+        assert statuses == {"A": "OK", "B": "TIMEOUT", "C": "ERROR(134)", "D": "UNPARSED"}
+
+    def test_rcspp_table(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        bg = _write(tmp_path, "bgspprc.csv", BG_STATUS_HEADER, list(BG_STATUS_ROWS))
+        paper = _write(tmp_path, "paper.csv", PAPER_HEADER, [f"{i},8,0,0,0,0,1.000" for i in "ABC"])
+        out = rcspp_table(bg, paper)
+        assert _solved(out, "8", "bgspprc") == "1/2"
+        assert _solved(out, "8", "paper") == "2/2"
+        assert "excluded (failed run): C ng8: bgspprc ERROR(6)" in capsys.readouterr().err
+        rows = {r["instance"]: r for r in join_rcspp(bg, paper)}
+        assert rows["C"]["bgspprc_s"] == "TL" and rows["C"]["bgspprc_status"] == "ERROR(6)"
+
+    def test_modes_table(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        bg = _write(tmp_path, "bgspprc.csv", BG_STATUS_HEADER, list(BG_STATUS_ROWS))
+        out = modes_table(bg)
+        assert _solved(out, "spprclib", "8", "para_bidir_vec") == "1/2"
+        assert _solved(out, "rcspp", "8", "para_bidir_vec") == "1/2"
+        err = capsys.readouterr().err
+        assert "excluded (failed run): C spprclib ng8 para_bidir_vec: bgspprc ERROR(134)" in err
+        assert "excluded (failed run): C ng8 ng8 para_bidir_vec: bgspprc ERROR(6)" in err
+
+    def test_legacy_csv_reads_every_blank_row_as_a_timeout(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        legacy = [ln.rsplit(",", 1)[0] for ln in BG_STATUS_ROWS]
+        out = modes_table(_write(tmp_path, "bgspprc.csv", BG_HEADER, legacy))
+        assert _solved(out, "spprclib", "8", "para_bidir_vec") == "1/4"
+        assert "excluded" not in capsys.readouterr().err
