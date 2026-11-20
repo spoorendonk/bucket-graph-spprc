@@ -42,7 +42,7 @@
 #                     Where the converted instances go (default:
 #                     benchmarks/instances/pathwyse for 1.0,
 #                     benchmarks/instances/pathwyse-1.1.0 for 1.1.0).
-#   SOLVE            bgspprc-solve, which writes the ng sets 1.1.0 reads
+#   SOLVE             bgspprc-solve, which writes the ng sets 1.1.0 reads
 #                     (default: ./build/bgspprc-solve).
 #   RUN_PREFIX        Command each Pathwyse run goes under, word-split
 #                     (default: none), e.g. RUN_PREFIX="xk lock --" to take a
