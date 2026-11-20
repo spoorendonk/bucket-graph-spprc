@@ -159,7 +159,7 @@ else
   if [[ "$existing_header" == "$LEGACY_HEADER" ]]; then
     tmp="$(mktemp)"
     awk -F, -v header="$EXPECTED_HEADER" \
-      'NR==1 {print header; next} {print $0 "," ($5 == "" || $7 == "" ? "TIMEOUT" : "OK")}' \
+      'NR==1 {print header; next} NF==0 {next} {print $0 "," ($5 == "" || $7 == "" ? "TIMEOUT" : "OK")}' \
       "$CSV" > "$tmp"
     mv "$tmp" "$CSV"
     echo "Note: added the status column to $CSV (OK with a cost and a time, else TIMEOUT)" >&2
@@ -234,7 +234,9 @@ for file in "${FILES[@]}"; do
   # by grabbing the first line that contains `cost=`.
   cost="" paths="" time_ms=""
   if [[ "$status" == "OK" && -n "$output" ]]; then
-    line="$(echo "$output" | awk '/cost=/{print; exit}')"
+    # A here-string, not `echo | awk`: awk exits at its match, and under
+    # pipefail echo's SIGPIPE on long output would abort the whole run.
+    line="$(awk '/cost=/{print; exit}' <<<"$output")"
     if [[ "$line" =~ cost=([0-9.eE+-]+) ]]; then
       cost="${BASH_REMATCH[1]}"
     fi

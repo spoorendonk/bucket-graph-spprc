@@ -159,7 +159,7 @@ while IFS=, read -r inst set ng mode cost _paths _time_s _ts _status; do
   fi
 
   if [[ -z "$cost" ]]; then
-    printf "%-30s  %4s  %-10s  %10s  %10s  FAIL (no result)\n" "$inst" "${ng:--}" "${mode:--}" "-" "$opt"
+    printf "%-30s  %4s  %-10s  %10s  %10s  FAIL (%s)\n" "$inst" "${ng:--}" "${mode:--}" "-" "$opt" "${_status:-no result}"
     FAIL=$((FAIL + 1))
     continue
   fi
