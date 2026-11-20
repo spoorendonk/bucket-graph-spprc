@@ -82,9 +82,9 @@ RESULT_STATUSES = {"OK", "TIMEOUT"}
 
 def bg_status(r: Row) -> str:
     """A bgspprc.csv row's status. A row from before the column (#157) reads
-    OK when it has a time, else TIMEOUT: the runner then wrote a failed run
-    like a timeout, so an old failure cannot be told apart."""
-    return r.get("status") or ("OK" if r["time_s"] else "TIMEOUT")
+    OK when it has a cost and a time, else TIMEOUT: the runner then wrote a
+    failed run like a timeout, so an old failure cannot be told apart."""
+    return r.get("status") or ("OK" if r["cost"] and r["time_s"] else "TIMEOUT")
 
 
 def drop_failed(
@@ -406,14 +406,25 @@ def pathwyse11_table(bg_path: Path, pw_path: Path, shift: float = 1.0, tl: float
 def modes_table(csv_path: Path, shift: float = 1.0, tl: float = TIMEOUT) -> str:
     """bgspprc-only ablation across (set, ng, mode). Empty cost = timeout
     substituted with `tl` seconds in both the sgm and the arithmetic mean.
-    `solved` is the count of instances that finished without TL. Failed runs
-    are left out (`drop_failed`)."""
+    `solved` is the count of instances that finished without TL. A failed
+    run (`drop_failed`) leaves its instance out of every mode of its (set,
+    ng), so the modes are still compared on the same instances."""
     with open(csv_path) as f:
-        rows = drop_failed(
-            [{**r, "bgspprc_status": bg_status(r)} for r in csv.DictReader(f)],
+        rows = [{**r, "bgspprc_status": bg_status(r)} for r in csv.DictReader(f)]
+    failed = {
+        (r["set"], r["ng"], r["instance"])
+        for r in rows
+        if r["bgspprc_status"] not in RESULT_STATUSES
+    }
+    rows = [
+        r
+        for r in drop_failed(
+            rows,
             ("bgspprc",),
-            lambda r: f"{r['instance']} {r['set']} ng{r['ng']} {r['mode']}",
+            lambda r: f"{r['instance']} {r['set']} ng{r['ng']} {r['mode']} (all modes)",
         )
+        if (r["set"], r["ng"], r["instance"]) not in failed
+    ]
     grouped: dict[tuple[str, str, str], list[Row]] = defaultdict(list)
     for r in rows:
         s = SET_DISPLAY.get(r["set"], r["set"])

@@ -82,6 +82,7 @@ def test_legacy_csv_gains_the_status_column(tmp_path: Path) -> None:
                 LEGACY_HEADER,
                 "solved,roberti,8,para_bidir_vec,-2,1,0.100,t",
                 "blank,roberti,8,para_bidir_vec,,,,t",
+                "costless,roberti,8,para_bidir_vec,,,0.100,t",
                 "ok,spprclib,,para_bidir_vec,,,,t",  # replaced by the rerun
             ]
         )
@@ -93,6 +94,7 @@ def test_legacy_csv_gains_the_status_column(tmp_path: Path) -> None:
     assert {i: r["status"] for i, r in rows.items()} == {
         "solved": "OK",
         "blank": "TIMEOUT",
+        "costless": "TIMEOUT",
         "ok": "OK",
     }
     assert rows["ok"]["cost"] == "-1.500"

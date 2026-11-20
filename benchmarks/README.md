@@ -256,7 +256,8 @@ followed by a one-liner that reproduces it. Columns:
 - **`solved`** — count of instances that finished within the 120 s
   timeout (timeouts substitute as 120 s in both `sgm` and `mean`). A failed
   run (`status` `ERROR(rc)` or `UNPARSED`) is not a timeout: its instance is
-  left out of the table and named on stderr.
+  left out of the table and named on stderr (in the mode ablation, out of
+  every mode of its set and ng).
 
 ### Pathwyse comparison (sppcc + vrp)
 
@@ -376,7 +377,7 @@ table including spprclib + roberti).
 | `paths` | Number of optimal paths found |
 | `time_s` | Wall-clock time in seconds |
 | `timestamp` | UTC timestamp of the run |
-| `status` | `OK`, `TIMEOUT`, `ERROR(rc)` (bgspprc-solve exited with rc) or `UNPARSED` (a clean exit without a result line). Rows from before the column read `OK` with a time, else `TIMEOUT`: a failed run was written like a timeout then |
+| `status` | `OK`, `TIMEOUT`, `ERROR(rc)` (bgspprc-solve exited with rc) or `UNPARSED` (a clean exit without a result line). Rows from before the column read `OK` with a cost and a time, else `TIMEOUT`: a failed run was written like a timeout then |
 
 ### `pathwyse.csv`
 

@@ -43,7 +43,8 @@
 #   (it exited cleanly without a result line); cost, paths and time_s are
 #   empty unless it is OK. Existing rows for the same (instance, set, ng,
 #   mode) are replaced; other rows preserved. A CSV from before the status
-#   column gets it on the next run: OK where a row has a time, else TIMEOUT.
+#   column gets it on the next run: OK where a row has a cost and a time,
+#   else TIMEOUT.
 #
 # Parsed fields from bgspprc-solve stdout:
 #   "name  type  n=NN  arcs=NN  cost=X.XXX  paths=N  X.Xms"
@@ -132,7 +133,7 @@ collect_files() {
       echo "Warning: $p not found, skipping" >&2
     fi
   done
-  printf '%s\n' "${files[@]}"
+  printf '%s\n' ${files[@]+"${files[@]}"}
 }
 
 FILES=()
@@ -158,10 +159,10 @@ else
   if [[ "$existing_header" == "$LEGACY_HEADER" ]]; then
     tmp="$(mktemp)"
     awk -F, -v header="$EXPECTED_HEADER" \
-      'NR==1 {print header; next} {print $0 "," ($7 == "" ? "TIMEOUT" : "OK")}' \
+      'NR==1 {print header; next} {print $0 "," ($5 == "" || $7 == "" ? "TIMEOUT" : "OK")}' \
       "$CSV" > "$tmp"
     mv "$tmp" "$CSV"
-    echo "Note: added the status column to $CSV (OK with a time, else TIMEOUT)" >&2
+    echo "Note: added the status column to $CSV (OK with a cost and a time, else TIMEOUT)" >&2
   elif [[ "$existing_header" != "$EXPECTED_HEADER" ]]; then
     echo "Error: $CSV has an outdated header." >&2
     echo "  expected: $EXPECTED_HEADER" >&2

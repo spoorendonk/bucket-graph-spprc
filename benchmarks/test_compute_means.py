@@ -372,9 +372,10 @@ class TestJoinPathwyse11:
 
 
 class TestBgStatus:
-    def test_legacy_row_reads_ok_with_a_time_else_timeout(self) -> None:
-        assert bg_status({"time_s": "0.100"}) == "OK"
-        assert bg_status({"time_s": ""}) == "TIMEOUT"
+    def test_legacy_row_reads_ok_with_a_cost_and_time_else_timeout(self) -> None:
+        assert bg_status({"cost": "-1", "time_s": "0.100"}) == "OK"
+        assert bg_status({"cost": "", "time_s": "0.100"}) == "TIMEOUT"
+        assert bg_status({"cost": "", "time_s": ""}) == "TIMEOUT"
 
     def test_status_column_wins(self) -> None:
         assert bg_status({"time_s": "", "status": "ERROR(3)"}) == "ERROR(3)"
@@ -444,8 +445,35 @@ class TestFailedBgspprcRunsExcluded:
         assert _solved(out, "spprclib", "8", "para_bidir_vec") == "1/2"
         assert _solved(out, "rcspp", "8", "para_bidir_vec") == "1/2"
         err = capsys.readouterr().err
-        assert "excluded (failed run): C spprclib ng8 para_bidir_vec: bgspprc ERROR(134)" in err
-        assert "excluded (failed run): C ng8 ng8 para_bidir_vec: bgspprc ERROR(6)" in err
+        assert (
+            "excluded (failed run): C spprclib ng8 para_bidir_vec (all modes): bgspprc ERROR(134)"
+            in err
+        )
+        assert (
+            "excluded (failed run): C ng8 ng8 para_bidir_vec (all modes): bgspprc ERROR(6)" in err
+        )
+
+    def test_modes_table_drops_a_failed_instance_from_every_mode(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bg = _write(
+            tmp_path,
+            "bgspprc.csv",
+            BG_STATUS_HEADER,
+            [
+                "A,spprclib,8,mono_base,-1,1,0.500,t,OK",
+                "D,spprclib,8,mono_base,,,,t,ERROR(134)",
+                "A,spprclib,8,mono_vec,-1,1,0.500,t,OK",
+                "D,spprclib,8,mono_vec,-1,1,90.000,t,OK",
+                "D,spprclib,16,mono_vec,-1,1,90.000,t,OK",  # other ng: kept
+            ],
+        )
+        out = modes_table(bg)
+        assert _solved(out, "spprclib", "8", "mono_base") == "1/1"
+        assert _solved(out, "spprclib", "8", "mono_vec") == "1/1"
+        assert _solved(out, "spprclib", "16", "mono_vec") == "1/1"
+        err = capsys.readouterr().err
+        assert "excluded (failed run): D spprclib ng8 mono_base (all modes)" in err
 
     def test_legacy_csv_reads_every_blank_row_as_a_timeout(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
