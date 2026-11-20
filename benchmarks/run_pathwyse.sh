@@ -38,7 +38,11 @@
 #                     ./build/pathwyse for 1.0, ./build/pathwyse-1.1.0).
 #   PATHWYSE_CSV      Output CSV (default: benchmarks/pathwyse.csv for 1.0,
 #                     benchmarks/pathwyse-1.1.0/pathwyse.csv for 1.1.0).
-#   SOLVE             bgspprc-solve, which writes the ng sets 1.1.0 reads
+#   PATHWYSE_CONVERTED_DIR
+#                     Where the converted instances go (default:
+#                     benchmarks/instances/pathwyse for 1.0,
+#                     benchmarks/instances/pathwyse-1.1.0 for 1.1.0).
+#   SOLVE            bgspprc-solve, which writes the ng sets 1.1.0 reads
 #                     (default: ./build/bgspprc-solve).
 #   RUN_PREFIX        Command each Pathwyse run goes under, word-split
 #                     (default: none), e.g. RUN_PREFIX="xk lock --" to take a
@@ -142,14 +146,14 @@ if [[ "$VERSION" == "1.0" ]]; then
   )
   PATHWYSE_DIR="${PATHWYSE_DIR:-$REPODIR/build/pathwyse}"
   OUT_CSV="${PATHWYSE_CSV:-$SCRIPTDIR/pathwyse.csv}"
-  CONVERTED_DIR="$SCRIPTDIR/instances/pathwyse"
+  CONVERTED_DIR="${PATHWYSE_CONVERTED_DIR:-$SCRIPTDIR/instances/pathwyse}"
   CONVERT_FLAGS=()
 else
   PATHWYSE_REV="15a7468fc13891d77bf25bbc9235a07101f271ba"  # tag 1.1.0
   PATCHES=()
   PATHWYSE_DIR="${PATHWYSE_DIR:-$REPODIR/build/pathwyse-1.1.0}"
   OUT_CSV="${PATHWYSE_CSV:-$SCRIPTDIR/pathwyse-1.1.0/pathwyse.csv}"
-  CONVERTED_DIR="$SCRIPTDIR/instances/pathwyse-1.1.0"
+  CONVERTED_DIR="${PATHWYSE_CONVERTED_DIR:-$SCRIPTDIR/instances/pathwyse-1.1.0}"
   CONVERT_FLAGS=(--wide-costs)
 fi
 PATHWYSE_BIN="$PATHWYSE_DIR/bin/pathwyse"
@@ -173,7 +177,7 @@ build_pathwyse() {
   if [[ ${#PATCHES[@]} -gt 0 ]]; then
     echo "Pathwyse: applying parity patches..."
   fi
-  for p in "${PATCHES[@]}"; do
+  for p in ${PATCHES[@]+"${PATCHES[@]}"}; do
     if [[ ! -f "$p" ]]; then
       echo "Error: patch not found: $p" >&2
       exit 1
@@ -202,7 +206,7 @@ build_pathwyse
 # ── Convert instances to Pathwyse format ──
 echo
 echo "Converting instances to Pathwyse format..."
-python3 "$SCRIPTDIR/convert_to_pathwyse.py" "${CONVERT_FLAGS[@]}" \
+python3 "$SCRIPTDIR/convert_to_pathwyse.py" ${CONVERT_FLAGS[@]+"${CONVERT_FLAGS[@]}"} \
   --outdir "$CONVERTED_DIR" "${PATHS[@]}"
 
 # ── Collect instance files ──
@@ -219,7 +223,7 @@ collect_files() {
       echo "Warning: $p not found, skipping" >&2
     fi
   done
-  printf '%s\n' "${files[@]}"
+  printf '%s\n' ${files[@]+"${files[@]}"}
 }
 
 FILES=()
@@ -408,7 +412,7 @@ for file in "${FILES[@]}"; do
 
   pw_cost="" pw_time_s="" pw_status="OK"
   pw_raw=""
-  if pw_raw=$(cd "$RUN_DIR" && "${RUN_PREFIX_ARR[@]}" timeout "${TIMEOUT}s" "$PATHWYSE_BIN" "$pw_file" 2>&1); then
+  if pw_raw=$(cd "$RUN_DIR" && ${RUN_PREFIX_ARR[@]+"${RUN_PREFIX_ARR[@]}"} timeout "${TIMEOUT}s" "$PATHWYSE_BIN" "$pw_file" 2>&1); then
     :
   else
     rc=$?
