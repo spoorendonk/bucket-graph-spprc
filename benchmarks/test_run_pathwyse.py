@@ -84,12 +84,13 @@ def test_solves_with_run_prefix_unset(tmp_path: Path, bash: str, version: str) -
         "TMPDIR": str(tmp_path),
         "PATHWYSE_DIR": str(pw_dir),
         "PATHWYSE_CSV": str(out),
-        "PATHWYSE_CONVERTED_DIR": str(tmp_path / "converted"),
+        "PATHWYSE_CONVERTED_DIR": "converted",  # relative to cwd, not to RUN_DIR
         "SOLVE": str(_exe(tmp_path / "solve", FAKE_SOLVE)),
     }
     res = subprocess.run(
         [bash, str(SCRIPT), "--pathwyse", version, "--skip-build", str(instances)],
         env=env,
+        cwd=tmp_path,
         capture_output=True,
         text=True,
     )

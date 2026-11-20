@@ -156,6 +156,9 @@ else
   CONVERTED_DIR="${PATHWYSE_CONVERTED_DIR:-$SCRIPTDIR/instances/pathwyse-1.1.0}"
   CONVERT_FLAGS=(--wide-costs)
 fi
+# Absolute: PathWyse reads the converted instance from $RUN_DIR, not here.
+mkdir -p "$CONVERTED_DIR"
+CONVERTED_DIR="$(cd "$CONVERTED_DIR" && pwd)"
 PATHWYSE_BIN="$PATHWYSE_DIR/bin/pathwyse"
 
 build_pathwyse() {
