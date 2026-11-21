@@ -357,12 +357,14 @@ later, while 19 timeouts alone take 38 min, and the April run of the same
 mode it replaced solved all 19, none slower than 43.5 s. That sweep's
 commit (05064d7) reports the build removing the solver binaries while it
 ran, which `timeout` reports as exit 127. So `bgspprc.csv` records them as
-`ERROR(127)`, and the table leaves those 19 instances out of every ng=8
+`ERROR(127)` (inferred: the runner of the time recorded no code), and the table leaves those 19 instances out of every ng=8
 mode, keeping the modes on the same instances. The ng=8 `para_bidir_vec`
 row here is therefore not the paper comparison's, which has all 56.
 
-On rcspp, mono leads at every ng (sgm 1.10 / 1.58 / 1.94 s), with
-para_bidir_vec 0.5–0.7 s behind it and plain bidir further back. By sgm,
+On rcspp, mono leads at every ng, with para_bidir_vec 0.5–0.7 s of sgm
+behind it and plain bidir further back. Read the ng=8 rows against each
+other only: they leave out the RC family, so they are no point on a trend
+with ng=16 and ng=24. By sgm,
 SIMD (`_vec`) and scalar (`_base`) are within 5% of each other in every
 rcspp row — these instances are dominated by graph traversal, not the
 dominance inner loop.
@@ -385,7 +387,7 @@ table including spprclib + roberti).
 | `paths` | Number of optimal paths found |
 | `time_s` | Wall-clock time in seconds |
 | `timestamp` | UTC timestamp of the run |
-| `status` | `OK`, `TIMEOUT`, `ERROR(rc)` (bgspprc-solve exited with rc) or `UNPARSED` (a clean exit without a result line). Rows from before the column read `OK` with a cost and a time, else `TIMEOUT`: a failed run was written like a timeout then |
+| `status` | `OK`, `TIMEOUT`, `ERROR(rc)` (bgspprc-solve exited with rc; 127 is `timeout`'s code for a solver binary it could not find) or `UNPARSED` (a clean exit without a result line). Rows from before the column read `OK` with a cost and a time, else `TIMEOUT`: a failed run was written like a timeout then |
 
 ### `pathwyse.csv`
 
