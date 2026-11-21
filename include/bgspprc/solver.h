@@ -173,11 +173,11 @@ public:
     void reset_midpoint() { bg_.reset_midpoint(); }
     [[nodiscard]] double midpoint() const { return bg_.midpoint(); }
 
-    /// Access a resource in the pack (for runtime reconfiguration); drops the
-    /// last solve as proof, as update_arc_costs() does.
+    /// Access a resource in the pack (for runtime reconfiguration). Call
+    /// update_arc_costs() after reconfiguring it, so the last solve no
+    /// longer counts as proof; see BucketGraph::resource().
     template <typename R>
     R& resource() {
-        invalidate_proof();
         return bg_.template resource<R>();
     }
 

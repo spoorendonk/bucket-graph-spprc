@@ -1705,31 +1705,54 @@ TEST_CASE("Cost update drops the elimination proof of the old costs (#160)") {
     }
 }
 
-TEST_CASE("Resource reconfiguration drops the elimination proof (#160)") {
+TEST_CASE("Resource reconfiguration then update_arc_costs drops the proof (#160)") {
     using R1CPack = ResourcePack<R1CResource>;
-    OneArcGraph g;
-    BucketGraph<R1CPack> bg(g.pv, R1CPack{R1CResource{}}, {.bucket_steps = {5.0, 1.0}});
-    bg.build();
-    bg.update_arc_costs(g.rc);
-    CHECK(bg.solve().empty());
-    REQUIRE(bg.exact_complete());
-    REQUIRE(bg.bounds_cover_gap(0.0));
-    bg.resource<R1CResource>();
-    CHECK_FALSE(bg.exact_complete());
-    CHECK_FALSE(bg.bounds_cover_gap(0.0));
-    bg.eliminate_arcs(0.0);
-    CHECK(bg.eliminated_bucket_arcs() == 0);
+    // The graph has no vertex a cut may hold (C excludes source and sink),
+    // so the reconfiguration is a new, empty cut set: what is checked is
+    // the proof the flags report, not a new price.
+    const std::vector<R1Cut> cuts;
+    for (bool bidir : {false, true}) {
+        CAPTURE(bidir);
+        OneArcGraph g;
+        BucketGraph<R1CPack> bg(g.pv, R1CPack{R1CResource{}},
+                                {.bucket_steps = {5.0, 1.0}, .bidirectional = bidir});
+        bg.build();
+        bg.update_arc_costs(g.rc);
+        CHECK(bg.solve().empty());
+        REQUIRE(bg.exact_complete());
+        // Reading a resource proves as much as before; a kept reference
+        // reconfigures it, and update_arc_costs() says so.
+        auto& r1c = bg.resource<R1CResource>();
+        CHECK(bg.exact_complete());
+        CHECK(bg.bounds_cover_gap(0.0));
+        r1c.set_cuts(cuts, g.pv.n_vertices, g.pv.n_arcs);
+        bg.update_arc_costs(g.rc);
+        CHECK_FALSE(bg.exact_complete());
+        CHECK_FALSE(bg.bounds_cover_gap(0.0));
+        CHECK_FALSE(bg.bounds_cover_gap(0.0, true));
+        bg.eliminate_arcs(0.0);
+        bg.eliminate_arcs_label_based(0.0);
+        CHECK(bg.fix_buckets(0.0) == 0);
+        CHECK(bg.eliminated_bucket_arcs() == 0);
 
-    Solver<R1CPack> solver(g.pv, R1CPack{R1CResource{}}, {.bucket_steps = {5.0, 1.0}});
-    solver.build();
-    solver.set_stage(Stage::Exact);
-    solver.update_arc_costs(g.rc);
-    CHECK(solver.solve().empty());
-    REQUIRE(solver.exact_complete());
-    solver.resource<R1CResource>();
-    CHECK_FALSE(solver.exact_complete());
-    solver.eliminate_arcs(0.0);
-    CHECK(solver.eliminated_bucket_arcs() == 0);
+        OneArcGraph sg;
+        Solver<R1CPack> solver(sg.pv, R1CPack{R1CResource{}},
+                               {.bucket_steps = {5.0, 1.0}, .bidirectional = bidir});
+        solver.build();
+        solver.set_stage(Stage::Exact);
+        solver.update_arc_costs(sg.rc);
+        CHECK(solver.solve().empty());
+        REQUIRE(solver.exact_complete());
+        auto& solver_r1c = solver.resource<R1CResource>();
+        CHECK(solver.exact_complete());
+        solver_r1c.set_cuts(cuts, sg.pv.n_vertices, sg.pv.n_arcs);
+        solver.update_arc_costs(sg.rc);
+        CHECK_FALSE(solver.exact_complete());
+        solver.eliminate_arcs(0.0);
+        solver.eliminate_arcs_label_based(0.0);
+        CHECK(solver.fix_buckets(0.0) == 0);
+        CHECK(solver.eliminated_bucket_arcs() == 0);
+    }
 }
 
 TEST_CASE("Diamond graph: multiple equal-cost paths") {

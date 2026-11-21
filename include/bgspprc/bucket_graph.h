@@ -368,12 +368,11 @@ public:
     }
 
     /// Access a resource in the pack (for runtime reconfiguration). A
-    /// reconfigured resource prices paths anew, so this drops the last
-    /// solve's proof as update_arc_costs() does. A view's borrowed data
-    /// changed outside the pack is not seen: call update_arc_costs() then.
+    /// reconfigured resource (new cuts or duals, or a view's borrowed data
+    /// changed) prices paths anew, but nothing here sees it: call
+    /// update_arc_costs() after it, which drops the last solve as proof (#160).
     template <typename R>
     R& resource() {
-        invalidate_proof();
         return std::get<R>(pack_.resources);
     }
 
@@ -498,7 +497,7 @@ public:
     /// max_paths): an empty result proves there is none. False after a
     /// heuristic stage, or when an SCC's label cap cut it (label_cap_hit()) or enumeration
     /// stopped short (enumeration_complete()), and before the first solve
-    /// after build(), update_arc_costs() or resource(). Arc elimination and
+    /// after build() or update_arc_costs(). Arc elimination and
     /// bucket fixing do nothing unless labelling was exact_complete(); an
     /// Enumerate whose result alone was cut to max_paths made every label and
     /// still allows them.
