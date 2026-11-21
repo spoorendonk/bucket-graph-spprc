@@ -1598,6 +1598,140 @@ TEST_CASE("Single-arc graph") {
     CHECK(bp[0].reduced_cost == doctest::Approx(5.0));
 }
 
+namespace {
+
+/// source → sink by one arc, whose reduced cost a test changes (#160).
+struct OneArcGraph {
+    int from[1] = {0};
+    int to[1] = {1};
+    double cost[1] = {0.0};
+    double td[1] = {1.0};
+    double lb[2] = {0.0, 0.0};
+    double ub[2] = {10.0, 10.0};
+    const double* ar[1] = {td};
+    const double* vl[1] = {lb};
+    const double* vu[1] = {ub};
+    double rc[1] = {2.0};
+    ProblemView pv;
+
+    OneArcGraph() {
+        pv.n_vertices = 2;
+        pv.source = 0;
+        pv.sink = 1;
+        pv.n_arcs = 1;
+        pv.arc_from = from;
+        pv.arc_to = to;
+        pv.arc_base_cost = cost;
+        pv.n_resources = 1;
+        pv.arc_resource = ar;
+        pv.vertex_lb = vl;
+        pv.vertex_ub = vu;
+        pv.n_main_resources = 1;
+    }
+};
+
+}  // namespace
+
+TEST_CASE("Cost update drops the elimination proof of the old costs (#160)") {
+    for (bool bidir : {false, true}) {
+        CAPTURE(bidir);
+        const BucketGraph<EmptyPack>::Options opts{.bucket_steps = {5.0, 1.0},
+                                                   .bidirectional = bidir};
+
+        // At +2 an exact solve finds nothing and its bounds eliminate the arc.
+        OneArcGraph control;
+        BucketGraph<EmptyPack> old_costs(control.pv, EmptyPack{}, opts);
+        old_costs.build();
+        old_costs.update_arc_costs(control.rc);
+        CHECK(old_costs.solve().empty());
+        CHECK(old_costs.exact_complete());
+        CHECK(old_costs.bounds_cover_gap(0.0));
+        old_costs.eliminate_arcs(0.0);
+        CHECK(old_costs.eliminated_bucket_arcs() > 0);
+
+        // Switched to −2 before eliminating, the +2 proof eliminates nothing,
+        // and the next solve finds the arc a fresh graph finds.
+        OneArcGraph g;
+        BucketGraph<EmptyPack> bg(g.pv, EmptyPack{}, opts);
+        bg.build();
+        bg.update_arc_costs(g.rc);
+        CHECK(bg.solve().empty());
+        REQUIRE(bg.exact_complete());
+        g.rc[0] = -2.0;
+        bg.update_arc_costs(g.rc);
+        CHECK_FALSE(bg.exact_complete());
+        CHECK_FALSE(bg.bounds_cover_gap(0.0));
+        CHECK_FALSE(bg.bounds_cover_gap(0.0, true));
+        bg.eliminate_arcs(0.0);
+        bg.eliminate_arcs_label_based(0.0);
+        CHECK(bg.fix_buckets(0.0) == 0);
+        CHECK(bg.eliminated_bucket_arcs() == 0);
+        CHECK(bg.n_fixed_buckets() == 0);
+        auto paths = bg.solve();
+        REQUIRE(paths.size() == 1);
+        CHECK(paths[0].reduced_cost == doctest::Approx(-2.0));
+        CHECK(paths[0].arcs == std::vector<int>{0});
+        CHECK(bg.exact_complete());
+        CHECK(bg.bounds_cover_gap(0.0));
+
+        BucketGraph<EmptyPack> fresh(g.pv, EmptyPack{}, opts);
+        fresh.build();
+        fresh.update_arc_costs(g.rc);
+        auto fresh_paths = fresh.solve();
+        REQUIRE(fresh_paths.size() == 1);
+        CHECK(fresh_paths[0].reduced_cost == doctest::Approx(paths[0].reduced_cost));
+
+        // The same through Solver, whose cover_gap must not relabel on the
+        // old solve's say-so.
+        OneArcGraph sg;
+        Solver<EmptyPack> solver(sg.pv, EmptyPack{},
+                                 {.bucket_steps = {5.0, 1.0}, .bidirectional = bidir});
+        solver.build();
+        solver.set_stage(Stage::Exact);
+        solver.update_arc_costs(sg.rc);
+        CHECK(solver.solve().empty());
+        REQUIRE(solver.exact_complete());
+        sg.rc[0] = -2.0;
+        solver.update_arc_costs(sg.rc);
+        CHECK_FALSE(solver.exact_complete());
+        solver.eliminate_arcs(0.0);
+        solver.eliminate_arcs_label_based(0.0);
+        CHECK(solver.fix_buckets(0.0) == 0);
+        CHECK(solver.eliminated_bucket_arcs() == 0);
+        auto solver_paths = solver.solve();
+        REQUIRE(solver_paths.size() == 1);
+        CHECK(solver_paths[0].reduced_cost == doctest::Approx(-2.0));
+        CHECK(solver.exact_complete());
+    }
+}
+
+TEST_CASE("Resource reconfiguration drops the elimination proof (#160)") {
+    using R1CPack = ResourcePack<R1CResource>;
+    OneArcGraph g;
+    BucketGraph<R1CPack> bg(g.pv, R1CPack{R1CResource{}}, {.bucket_steps = {5.0, 1.0}});
+    bg.build();
+    bg.update_arc_costs(g.rc);
+    CHECK(bg.solve().empty());
+    REQUIRE(bg.exact_complete());
+    REQUIRE(bg.bounds_cover_gap(0.0));
+    bg.resource<R1CResource>();
+    CHECK_FALSE(bg.exact_complete());
+    CHECK_FALSE(bg.bounds_cover_gap(0.0));
+    bg.eliminate_arcs(0.0);
+    CHECK(bg.eliminated_bucket_arcs() == 0);
+
+    Solver<R1CPack> solver(g.pv, R1CPack{R1CResource{}}, {.bucket_steps = {5.0, 1.0}});
+    solver.build();
+    solver.set_stage(Stage::Exact);
+    solver.update_arc_costs(g.rc);
+    CHECK(solver.solve().empty());
+    REQUIRE(solver.exact_complete());
+    solver.resource<R1CResource>();
+    CHECK_FALSE(solver.exact_complete());
+    solver.eliminate_arcs(0.0);
+    CHECK(solver.eliminated_bucket_arcs() == 0);
+}
+
 TEST_CASE("Diamond graph: multiple equal-cost paths") {
     // 0 → 1 → 3
     // 0 → 2 → 3 (same cost)

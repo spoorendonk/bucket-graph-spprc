@@ -63,9 +63,13 @@ public:
         labelled_gap_ = NEG_INF;
     }
 
-    /// Fast cost update — O(1), just stores the pointer.
+    /// Fast cost update — O(1), just stores the pointer. Like
+    /// BucketGraph::update_arc_costs(), it drops the last solve as proof
+    /// (#160): exact_complete() is false, and elimination and fixing do
+    /// nothing, until the next solve().
     void update_arc_costs(std::span<const double> reduced_costs) {
         bg_.update_arc_costs(reduced_costs.data());
+        invalidate_proof();
     }
 
     /// Solve SPPRC — returns paths with negative reduced cost.
@@ -169,9 +173,11 @@ public:
     void reset_midpoint() { bg_.reset_midpoint(); }
     [[nodiscard]] double midpoint() const { return bg_.midpoint(); }
 
-    /// Access a resource in the pack (for runtime reconfiguration).
+    /// Access a resource in the pack (for runtime reconfiguration); drops the
+    /// last solve as proof, as update_arc_costs() does.
     template <typename R>
     R& resource() {
+        invalidate_proof();
         return bg_.template resource<R>();
     }
 
@@ -248,6 +254,13 @@ public:
     }
 
 private:
+    /// The last solve was for other costs: cover_gap must not label at the
+    /// gap on its say-so.
+    void invalidate_proof() {
+        exact_complete_ = false;
+        labelled_gap_ = NEG_INF;
+    }
+
     /// Label at `gap` when the last solve was exact but its bounds do not
     /// cover the gap, so elimination and fixing there keep every path below it.
     void cover_gap(double gap, bool label_based) {

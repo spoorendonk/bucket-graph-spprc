@@ -330,10 +330,17 @@ public:
         label_cap_hit_ = false;
     }
 
-    /// Update reduced costs (fast, O(1) — just stores the pointer).
+    /// Update reduced costs (fast, O(1) — just stores the pointer). Call it
+    /// again after changing the costs in place, too. The last solve's bounds
+    /// and labels were for the old costs, so this drops them as proof (#160):
+    /// exact_complete() and bounds_cover_gap() are false, and elimination and
+    /// fixing do nothing, until the next solve(). Arcs already eliminated and
+    /// buckets already fixed stay; they were proven at the costs of their own
+    /// call (reset_elimination() drops them).
     void update_arc_costs(const double* reduced_costs) {
         reduced_costs_ = reduced_costs;
         arc_costs_dirty_ = true;
+        invalidate_proof();
     }
 
     /// Refresh inlined cost fields on all bucket arcs and jump arcs.
@@ -360,9 +367,13 @@ public:
         }
     }
 
-    /// Access a resource in the pack (for runtime reconfiguration).
+    /// Access a resource in the pack (for runtime reconfiguration). A
+    /// reconfigured resource prices paths anew, so this drops the last
+    /// solve's proof as update_arc_costs() does. A view's borrowed data
+    /// changed outside the pack is not seen: call update_arc_costs() then.
     template <typename R>
     R& resource() {
+        invalidate_proof();
         return std::get<R>(pack_.resources);
     }
 
@@ -487,9 +498,10 @@ public:
     /// max_paths): an empty result proves there is none. False after a
     /// heuristic stage, or when an SCC's label cap cut it (label_cap_hit()) or enumeration
     /// stopped short (enumeration_complete()), and before the first solve
-    /// after build(). Arc elimination and bucket fixing do nothing unless
-    /// labelling was exact_complete(); an Enumerate whose result alone was
-    /// cut to max_paths made every label and still allows them.
+    /// after build(), update_arc_costs() or resource(). Arc elimination and
+    /// bucket fixing do nothing unless labelling was exact_complete(); an
+    /// Enumerate whose result alone was cut to max_paths made every label and
+    /// still allows them.
     bool exact_complete() const {
         return solved_ && (solved_stage_ == Stage::Exact || solved_stage_ == Stage::Enumerate) &&
                !label_cap_hit_.load(std::memory_order_relaxed) && enum_complete_;
@@ -860,6 +872,13 @@ public:
     }
 
 private:
+    /// The last solve's c_best, completions and labels no longer price paths
+    /// as the next solve will: they prove nothing for elimination or fixing.
+    void invalidate_proof() {
+        completion_ready_ = false;
+        solved_ = false;
+    }
+
     // Per-direction counters for parallel mode. Separate structs with
     // cache-line padding to avoid false sharing between fw/bw threads.
     struct alignas(64) DirCounters {
