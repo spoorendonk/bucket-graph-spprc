@@ -509,7 +509,8 @@ public:
     /// True when the last solve()'s bounds and labels cover every path
     /// costing below `gap`, so arc elimination (label_based for
     /// eliminate_arcs_label_based) and bucket fixing at `gap` drop nothing
-    /// such a path uses. False unless the solve was exact_complete(), and when
+    /// such a path uses. False unless the solve was exact_complete() (so also
+    /// after update_arc_costs(), #160, until the next solve), and when
     /// it pruned labels against an Options::theta below `gap` (#116): the
     /// parallel bidir and Enumerate completion prunes drop labels from c_best,
     /// and the bw post-pass prune drops the partners label-based elimination

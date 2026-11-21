@@ -109,7 +109,9 @@ public:
         return paths;
     }
 
-    // Elimination and fixing need an exact prior solve. When it pruned below
+    // Elimination and fixing need an exact prior solve at the current costs:
+    // an update_arc_costs() since, even passing the same costs, leaves them
+    // doing nothing until the next solve (#160). When it pruned below
     // the gap (BucketGraph::bounds_cover_gap), they first label again at the
     // gap (BucketGraph::label_bounds, #116): the per-solve statistics then
     // describe that labelling, save_warm_labels() keeps its labels, and the
@@ -191,7 +193,8 @@ public:
     [[nodiscard]] bool enumeration_complete() const { return bg_.enumeration_complete(); }
 
     /// Whether the last solve was exact and hit no label cap, so an empty
-    /// result proves no path within theta exists; see BucketGraph::exact_complete().
+    /// result proves no path within theta exists; false after build() or
+    /// update_arc_costs() until the next solve. See BucketGraph::exact_complete().
     [[nodiscard]] bool exact_complete() const { return exact_complete_; }
 
     /// Whether the last solve() stopped labelling an SCC at
@@ -341,11 +344,11 @@ private:
 
     // exact_complete() and label_cap_hit() of the last solve() or enumerate(),
     // which the labelling behind elimination and fixing (cover_gap) leaves as
-    // they were.
+    // they were; update_arc_costs() clears exact_complete_ (#160).
     bool exact_complete_ = false;
     bool label_cap_hit_ = false;
     // Largest gap cover_gap labelled at since the last solve, enumerate,
-    // build or reset_elimination; NEG_INF when none.
+    // build, reset_elimination or update_arc_costs; NEG_INF when none.
     double labelled_gap_ = NEG_INF;
 
     // Accumulated timings across solve iterations (including A+ retries)
