@@ -65,8 +65,9 @@ MODE_ORDER = [
 # directory names ng8/ng16/ng24.
 SET_DISPLAY = {"ng8": "rcspp", "ng16": "rcspp", "ng24": "rcspp"}
 
-# The bgspprc mode used for both head-to-head comparisons (consistently fastest
-# across ng=16/24; mono wins at ng=8 only — see the mode ablation table).
+# The bgspprc mode used for both head-to-head comparisons: the default CLI
+# build. It is not the fastest everywhere (mono leads on rcspp at every ng) —
+# see the mode ablation table.
 BG_MODE = "para_bidir_vec"
 # Pathwyse comparison covers sppcc + vrp only. The rcspp `.graph` set has its
 # own comparison axis (vs Petersen & Spoorendonk 2025 — the rcspp table).

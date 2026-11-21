@@ -348,22 +348,24 @@ paper comparison above).
 | rcspp | 24 | para_bidir_base  |   2.532 |   14.792 |  52/56 |
 | rcspp | 24 | para_bidir_vec   |   2.588 |   15.433 |  52/56 |
 
-The ng=8 rows cover 37 of the 56 instances. The `para_bidir_base` ng=8
-sweep lost its runs on R209–R211, RC101–RC108 and RC201–RC208: the
-binaries were removed partway through it (05064d7), and the runner of the
-time wrote those runs like timeouts. `bgspprc.csv` records them as
-`ERROR(127)`, what the runner now writes for a solver binary that is
-missing, so the table leaves those 19 instances out of every ng=8 mode
-(#159). The ng=8 `para_bidir_vec` row here is therefore not the paper
-comparison's, which has all 56.
+The ng=8 rows cover 37 of the 56 instances: C1, C2, R1 and R201–R208. The
+2026-05-07 `para_bidir_base` ng=8 sweep has no result for the last 19 in
+sorted order (R209–R211 and the whole RC family), and the runner of the
+time wrote a failed run like a timeout. They were failed runs, not
+timeouts (#159): the sweep started at 11:41:30Z and was committed 17.6 min
+later, while 19 timeouts alone take 38 min, and the April run of the same
+mode it replaced solved all 19, none slower than 43.5 s. That sweep's
+commit (05064d7) reports the build removing the solver binaries while it
+ran, which `timeout` reports as exit 127. So `bgspprc.csv` records them as
+`ERROR(127)`, and the table leaves those 19 instances out of every ng=8
+mode, keeping the modes on the same instances. The ng=8 `para_bidir_vec`
+row here is therefore not the paper comparison's, which has all 56.
 
-On rcspp, mono is fastest at ng=8 (sgm 1.10 s vs para_bidir_vec 1.62 s)
-because the search tree is shallow and bidirectional fw/bw splitting
-overhead dominates; from ng=16 upward para_bidir_vec catches up and stays
-within a sub-second sgm of the leader. SIMD (`_vec`) and scalar
-(`_base`) are within 5% of each other across all rows — these
-instances are dominated by graph traversal, not the dominance inner
-loop.
+On rcspp, mono leads at every ng (sgm 1.10 / 1.58 / 1.94 s), with
+para_bidir_vec 0.5–0.7 s behind it and plain bidir further back. By sgm,
+SIMD (`_vec`) and scalar (`_base`) are within 5% of each other in every
+rcspp row — these instances are dominated by graph traversal, not the
+dominance inner loop.
 
 Reproduce: `python3 benchmarks/compute_means.py modes` (full 54-row
 table including spprclib + roberti).
