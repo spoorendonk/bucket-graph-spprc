@@ -199,6 +199,7 @@ if(BGSPPRC_BUILD_TESTS)
         tests/test_executor.cpp
         tests/test_problem_view.cpp
         tests/test_resource.cpp
+        tests/test_scc.cpp
         tests/test_bucket_graph.cpp
         tests/test_small_instance.cpp
         tests/test_stress.cpp)

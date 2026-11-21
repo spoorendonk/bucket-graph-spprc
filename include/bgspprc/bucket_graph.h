@@ -17,7 +17,6 @@
 #include <queue>
 #include <ranges>
 #include <span>
-#include <stack>
 #include <stdexcept>
 #include <tuple>
 #include <type_traits>
@@ -42,6 +41,7 @@
 #include "parallel_sort.h"
 #include "problem_view.h"
 #include "resource.h"
+#include "scc.h"
 #include "types.h"
 
 namespace bgspprc {
@@ -1201,85 +1201,23 @@ private:
         auto& bucket_scc_id = (dir == Direction::Forward) ? fw_bucket_scc_id_ : bw_bucket_scc_id_;
 
         scc_topo.clear();
-        bucket_scc_id.assign(n, -1);
 
-        // Build adjacency (reserve from bucket arc counts + 2 for same-vertex)
-        std::vector<std::vector<int>> adj(n);
-        for (int bi = 0; bi < n; ++bi) {
-            auto& arcs = (dir == Direction::Forward) ? buckets_[bi].bucket_arcs
-                                                     : buckets_[bi].bw_bucket_arcs;
-            adj[bi].reserve(arcs.size() + 2);
-            for (const auto& ba : arcs) {
-                adj[bi].push_back(ba.to_bucket);
-            }
-        }
-
-        // Same-vertex adjacent edges (direction-dependent)
-        for (int v = 0; v < pv_.n_vertices; ++v) {
-            auto [start, end] = vertex_bucket_range(v);
-            auto& nb = vertex_n_buckets_[v];
-            for (int bi = start; bi < end; ++bi) {
-                int k0 = (bi - start) / nb[1];
-                int k1 = (bi - start) % nb[1];
-                if (dir == Direction::Forward) {
-                    // Forward: resource increases → edge to next bucket
-                    if (k0 + 1 < nb[0]) {
-                        adj[bi].push_back(start + (k0 + 1) * nb[1] + k1);
-                    }
-                    if (k1 + 1 < nb[1]) {
-                        adj[bi].push_back(start + k0 * nb[1] + k1 + 1);
-                    }
-                } else {
-                    // Backward: resource decreases → edge to previous bucket
-                    if (k0 > 0) {
-                        adj[bi].push_back(start + (k0 - 1) * nb[1] + k1);
-                    }
-                    if (k1 > 0) {
-                        adj[bi].push_back(start + k0 * nb[1] + (k1 - 1));
-                    }
+        // The SCC graph is the completion edges: bucket arcs, then the jumps
+        // to the next bucket of the same vertex (fw: resource up, bw: down).
+        // Read in place, one bucket's at a time (the last one is cached:
+        // tarjan_scc asks a node's successors in a row until it descends).
+        int cached_bi = -1;
+        CompletionEdges cached;
+        const int n_scc = detail::tarjan_scc(
+            n,
+            [&](int bi, int k) {
+                if (bi != cached_bi) {
+                    cached = completion_edges(bi, dir);
+                    cached_bi = bi;
                 }
-            }
-        }
-
-        // Tarjan's SCC
-        std::vector<int> index(n, -1);
-        std::vector<int> lowlink(n, -1);
-        std::vector<bool> on_stack(n, false);
-        std::stack<int> stack;
-        int idx = 0;
-        int n_scc = 0;
-
-        std::function<void(int)> strongconnect = [&](int v) {
-            index[v] = lowlink[v] = idx++;
-            stack.push(v);
-            on_stack[v] = true;
-
-            for (int w : adj[v]) {
-                if (index[w] == -1) {
-                    strongconnect(w);
-                    lowlink[v] = std::min(lowlink[v], lowlink[w]);
-                } else if (on_stack[w]) {
-                    lowlink[v] = std::min(lowlink[v], index[w]);
-                }
-            }
-
-            if (lowlink[v] == index[v]) {
-                int w;
-                do {
-                    w = stack.top();
-                    stack.pop();
-                    on_stack[w] = false;
-                    bucket_scc_id[w] = n_scc;
-                } while (w != v);
-                ++n_scc;
-            }
-        };
-
-        for (int i = 0; i < n; ++i) {
-            if (index[i] == -1) {
-                strongconnect(i);
-            }
-        }
+                return cached.target(k);
+            },
+            bucket_scc_id);
 
         scc_buckets.assign(n_scc, {});
         for (int i = 0; i < n; ++i) {
@@ -2828,11 +2766,36 @@ private:
     /// these edges, so that bucket is final or in bi's SCC.
     template <typename F>
     void for_each_completion_edge(int bi, Direction dir, F&& f) const {
-        const auto& arcs =
-            (dir == Direction::Forward) ? buckets_[bi].bucket_arcs : buckets_[bi].bw_bucket_arcs;
-        for (const auto& ba : arcs) {
+        const CompletionEdges edges = completion_edges(bi, dir);
+        for (const auto& ba : edges.arcs) {
             f(ba.to_bucket, ba.cost, ba.resource);
         }
+        for (int j = 0; j < edges.n_jumps; ++j) {
+            f(edges.jumps[j], 0.0, nullptr);
+        }
+    }
+
+    /// The edges for_each_completion_edge walks, by index: the SCC graph is
+    /// these same edges (compute_sccs), read in place rather than copied.
+    struct CompletionEdges {
+        std::span<const BucketArc> arcs;
+        std::array<int, 2> jumps{};  // next bucket in q[0], then in q[1]
+        int n_jumps = 0;
+
+        /// The k-th edge's target bucket, or -1 past the last.
+        [[nodiscard]] int target(int k) const {
+            const int n_arcs = static_cast<int>(arcs.size());
+            if (k < n_arcs) {
+                return arcs[k].to_bucket;
+            }
+            return (k - n_arcs < n_jumps) ? jumps[k - n_arcs] : -1;
+        }
+    };
+
+    [[nodiscard]] CompletionEdges completion_edges(int bi, Direction dir) const {
+        CompletionEdges edges;
+        edges.arcs =
+            (dir == Direction::Forward) ? buckets_[bi].bucket_arcs : buckets_[bi].bw_bucket_arcs;
         const int v = buckets_[bi].vertex;
         const int start = vertex_bucket_start_[v];
         const auto& vnb = vertex_n_buckets_[v];
@@ -2840,19 +2803,20 @@ private:
         const int k1 = (bi - start) % vnb[1];
         if (dir == Direction::Forward) {
             if (k0 + 1 < vnb[0]) {
-                f(bi + vnb[1], 0.0, nullptr);
+                edges.jumps[edges.n_jumps++] = bi + vnb[1];
             }
             if (k1 + 1 < vnb[1]) {
-                f(bi + 1, 0.0, nullptr);
+                edges.jumps[edges.n_jumps++] = bi + 1;
             }
         } else {
             if (k0 > 0) {
-                f(bi - vnb[1], 0.0, nullptr);
+                edges.jumps[edges.n_jumps++] = bi - vnb[1];
             }
             if (k1 > 0) {
-                f(bi - 1, 0.0, nullptr);
+                edges.jumps[edges.n_jumps++] = bi - 1;
             }
         }
+        return edges;
     }
 
     /// Finite completion bounds for an SCC holding a negative cycle (#121);

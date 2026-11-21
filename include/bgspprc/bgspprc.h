@@ -14,5 +14,6 @@
 #include "resources/ng_path.h"
 #include "resources/side.h"
 #include "resources/standard.h"
+#include "scc.h"
 #include "solver.h"
 #include "types.h"
