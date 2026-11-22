@@ -352,6 +352,7 @@ public:
     /// no such promise.
     void build() {
         build_buckets();
+        clear_multi_jump_fronts();  // the new buckets have no jump arcs
         build_bucket_arcs(Direction::Forward);
         compute_sccs(Direction::Forward);
         if (opts_.bidirectional) {
@@ -526,7 +527,9 @@ public:
     /// no dominance: it keeps every label that can still reach a path below
     /// theta, so an uncut one is exhaustive. Its result is every path the
     /// pack's resources admit that costs below theta and uses no arc or
-    /// bucket eliminated or fixed before it. When they were eliminated and
+    /// bucket eliminated or fixed before it, each once: on a 2D grid one
+    /// path can have two labels (a bucket's jump arcs for one arc, #164), and
+    /// every stage's result drops such repeats. When they were eliminated and
     /// fixed at a gap of at least theta under the current arc costs, that
     /// is every such path up to the dominance tolerance of the solve that
     /// eliminated or fixed them. Stage::Exact furnishes no such list
@@ -935,6 +938,7 @@ public:
             b.jump_arcs.clear();
             b.bw_jump_arcs.clear();
         }
+        clear_multi_jump_fronts();
         build_bucket_arcs(Direction::Forward);
         if (opts_.bidirectional) {
             build_bucket_arcs(Direction::Backward);
@@ -1411,7 +1415,15 @@ private:
     /// same-vertex bucket b' that still has the bucket arc for a.
     /// During extension, the label's resource is boosted to b'.lb (fw) / b'.ub
     /// (bw).
+    void clear_multi_jump_fronts() {
+        for (auto& f : multi_jump_front_) {
+            f.store(false, std::memory_order_relaxed);
+        }
+    }
+
     void obtain_jump_arcs(Direction dir) {
+        auto& multi_front = multi_jump_front_[dir == Direction::Forward ? 0 : 1];
+        multi_front.store(false, std::memory_order_relaxed);
         for (auto& b : buckets_) {
             if (dir == Direction::Forward) {
                 b.jump_arcs.clear();
@@ -1572,13 +1584,18 @@ private:
                     if (mr == none) {
                         r = next[bi - vstart];  // b's row has no candidate
                     }
+                    int front = 0;
                     while (r >= 0) {
                         mr = m[(r * n1) + k1];
                         out.push_back(make_jump_arc(a, vstart + (r * n1) + mr));
+                        ++front;
                         if (mr == k1) {
                             break;
                         }
                         r = next[(r * n1) + k1];
+                    }
+                    if (front > 1) {
+                        multi_front.store(true, std::memory_order_relaxed);
                     }
                 }
             }
@@ -4579,6 +4596,11 @@ private:
             return a.reduced_cost < b.reduced_cost;
         };
 
+        if (multi_jump_front_[0].load(std::memory_order_relaxed) ||
+            multi_jump_front_[1].load(std::memory_order_relaxed)) {
+            return select_distinct(candidates, cmp);
+        }
+
         int limit = static_cast<int>(candidates.size());
         if (opts_.max_paths > 0 && limit > opts_.max_paths) {
             limit = opts_.max_paths;
@@ -4596,6 +4618,52 @@ private:
         paths.reserve(limit);
         for (const auto& c : candidates) {
             paths.push_back(realize_path(c));
+        }
+        return paths;
+    }
+
+    /// select_and_realize when one path may be among the candidates more
+    /// than once (#164). On a 2D grid a bucket lacking arc a jumps to every
+    /// Pareto-minimal (fw) / maximal (bw) bucket of its vertex holding a, so
+    /// one label extended along a can become two, for the same arcs at
+    /// incomparable q. Neither dominates the other, and Enumerate keeps both
+    /// anyway, so the path, and every path extending it, reaches the sink or
+    /// is joined once per such label. Dropping one label would lose the paths
+    /// only its q admits, so the result is made distinct instead: every
+    /// candidate is realized in cost order and a repeat of an earlier one's
+    /// arcs is skipped, keeping the cheapest (repeats cost the same up to the
+    /// rounding of the order they were summed in). max_paths counts distinct
+    /// paths, and Enumerate is cut short only by a distinct one past it.
+    template <typename Cmp>
+    std::vector<Path> select_distinct(std::vector<PathCandidate>& candidates, Cmp cmp) {
+        if (candidates.size() > 1) {
+            parallel_sort(executor_, candidates.begin(), candidates.end(), cmp);
+        }
+        auto hash_of = [](const std::vector<int>& arcs) {
+            std::size_t h = arcs.size();
+            for (int a : arcs) {
+                h ^= std::hash<int>{}(a) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+            }
+            return h;
+        };
+        std::vector<Path> paths;
+        std::unordered_multimap<std::size_t, std::size_t> seen;  // hash -> paths index
+        for (const auto& c : candidates) {
+            Path p = realize_path(c);
+            const std::size_t h = hash_of(p.arcs);
+            auto [lo, hi] = seen.equal_range(h);
+            if (std::any_of(lo, hi,
+                            [&](const auto& e) { return paths[e.second].arcs == p.arcs; })) {
+                continue;
+            }
+            if (opts_.max_paths > 0 && std::cmp_equal(paths.size(), opts_.max_paths)) {
+                if (opts_.stage == Stage::Enumerate) {
+                    enum_complete_ = false;
+                }
+                break;
+            }
+            seen.emplace(h, paths.size());
+            paths.push_back(std::move(p));
         }
         return paths;
     }
@@ -4922,10 +4990,13 @@ private:
     int total_enum_labels_ = 0;  // global label counter for enumeration
     std::atomic<bool> enum_complete_ = true;
     std::atomic<bool> label_cap_hit_ = false;  // label_cap_hit()
-    Stage solved_stage_ = Stage::Exact;        // stage of the last solve()
-    bool solved_ = false;                      // solve() ran since build()
-    int enum_sink_labels_ = 0;                 // labels that landed in sink buckets
-    double fixing_theta_ = INF;                // theta used in last fix_buckets call
+    // Per direction (fw, bw): some bucket has two or more jump arcs for one
+    // arc, so labelling may reach one path twice (select_and_realize, #164).
+    std::array<std::atomic<bool>, 2> multi_jump_front_{};
+    Stage solved_stage_ = Stage::Exact;  // stage of the last solve()
+    bool solved_ = false;                // solve() ran since build()
+    int enum_sink_labels_ = 0;           // labels that landed in sink buckets
+    double fixing_theta_ = INF;          // theta used in last fix_buckets call
 
     DirCounters fw_counters_;
     DirCounters bw_counters_;

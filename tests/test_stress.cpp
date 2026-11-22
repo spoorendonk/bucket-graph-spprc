@@ -3152,6 +3152,93 @@ TEST_CASE("Elimination keeps the paths that need a jump arc (#115)") {
     }
 }
 
+TEST_CASE("2D Enumerate after elimination returns each path once (#164)") {
+    // On a 2D grid a bucket whose own bucket arc for a was eliminated gets a
+    // jump arc to each Pareto-minimal bucket of its vertex still holding a,
+    // e.g. (k0+1, k1) and (k0, k1+1). Each makes a label for the same arc
+    // sequence, at incomparable q, and Enumerate keeps both: a path reached
+    // the sink, or was joined, once per such label. Under the costs of the
+    // elimination itself that cannot show: the eliminated (bucket, arc)
+    // bounds every path of both labels at or above the gap, so Enumerate at
+    // theta = gap prunes them. Under the next duals, as in column
+    // generation, it did: 44 of these 240 runs returned a path twice.
+    int fronts = 0;  // (bucket, arc) pairs with two or more jump arcs
+    for (bool bidir : {false, true}) {
+        for (int seed = 0; seed < 120; ++seed) {
+            CAPTURE(bidir);
+            CAPTURE(seed);
+            RandomTwInstance inst(seed, 2);
+            const int n = inst.pv.n_vertices;
+            std::mt19937 rng(seed);
+            std::uniform_real_distribution<double> U(0, 1);
+            std::vector<double> reduced(inst.cost_v);
+            for (int a = 0; a < inst.pv.n_arcs; ++a) {
+                const int v = inst.to_v[a];
+                reduced[a] -= (v > 0 && v < n - 1) ? 3.0 + (U(rng) * 6.0) : 0.0;
+            }
+            const double gap = 4.0;
+            const BucketGraph<EmptyPack>::Options opts{
+                .bucket_steps = {1.5, 1.0}, .theta = 1e9, .bidirectional = bidir};
+            auto enumerate = [&](BucketGraph<EmptyPack>& bg) {
+                bg.set_stage(Stage::Enumerate);
+                bg.set_theta(gap);
+                std::vector<std::vector<int>> v;
+                for (const auto& p : bg.solve()) {
+                    v.push_back(p.arcs);
+                }
+                CHECK(bg.enumeration_complete());
+                std::ranges::sort(v);
+                return v;
+            };
+
+            BucketGraph<EmptyPack> fresh(inst.pv, EmptyPack{}, opts);
+            fresh.build();
+            fresh.update_arc_costs(reduced.data());
+            auto all = enumerate(fresh);
+            CHECK(std::ranges::adjacent_find(all) == all.end());
+
+            BucketGraph<EmptyPack> bg(inst.pv, EmptyPack{}, opts);
+            bg.build();
+            bg.update_arc_costs(reduced.data());
+            bg.set_stage(Stage::Exact);
+            bg.solve();
+            REQUIRE(bg.exact_complete());
+            bg.fix_buckets(gap);
+            bg.eliminate_arcs(gap);
+            for (int bi = 0; bi < bg.n_buckets(); ++bi) {
+                for (const auto* jarcs : {&bg.bucket(bi).jump_arcs, &bg.bucket(bi).bw_jump_arcs}) {
+                    std::vector<int> ids;
+                    for (const auto& ja : *jarcs) {
+                        ids.push_back(ja.arc_id);
+                    }
+                    std::ranges::sort(ids);
+                    fronts += std::ranges::adjacent_find(ids) != ids.end() ? 1 : 0;
+                }
+            }
+            const auto got = enumerate(bg);
+            CHECK(std::ranges::adjacent_find(got) == got.end());
+            auto distinct = got;
+            distinct.erase(std::ranges::unique(distinct).begin(), distinct.end());
+            CHECK(distinct == all);
+
+            // Other duals, as column generation sets after elimination.
+            std::vector<double> reduced2(inst.cost_v);
+            for (int a = 0; a < inst.pv.n_arcs; ++a) {
+                const int v = inst.to_v[a];
+                reduced2[a] -= (v > 0 && v < n - 1) ? 6.0 + (U(rng) * 10.0) : 0.0;
+            }
+            bg.update_arc_costs(reduced2.data());
+            const auto got2 = enumerate(bg);
+            CHECK(std::ranges::adjacent_find(got2) == got2.end());
+            BucketGraph<EmptyPack> fresh2(inst.pv, EmptyPack{}, opts);
+            fresh2.build();
+            fresh2.update_arc_costs(reduced2.data());
+            CHECK(std::ranges::includes(enumerate(fresh2), got2));
+        }
+    }
+    CHECK(fronts > 0);  // the case under test was reached
+}
+
 TEST_CASE("Completion bounds stay lower bounds in a negative bucket cycle (#115)") {
     // 0 -> 1 <-> 2 -> 3, windows [0, 10], one bucket per vertex: 1 and 2 form
     // one SCC whose cycle 1 2 1 costs -2 and takes 0.2, so the best path
