@@ -111,6 +111,7 @@ Built-in resources:
 | `test_resource.cpp` | All resource types: extend, domination, concatenation |
 | `test_scc.cpp` | `detail::tarjan_scc` (`scc.h`): numbering vs. the old recursive Tarjan, partition, topo order, deep chain |
 | `test_bucket_graph.cpp` | Bucket construction, arcs, labeling basics |
+| `test_grid_size.cpp` | Grid sizing checks (#161): axis, vertex and total counts, refusal, boundary mapping; also built under UBSan |
 | `test_small_instance.cpp` | End-to-end solver on 5-10 vertex instances |
 | `test_stress.cpp` | Larger instances, 2D buckets, bidir, ng-paths, elimination, fixing, enumeration |
 | `test_benchmarks.cpp` | Solver vs benchmark instances, checks optimal values |
@@ -141,7 +142,7 @@ Naming, as enforced by `.clang-tidy`:
 - Test files: `test_<module>.cpp` in `tests/`.
 - Name test cases descriptively: `TEST_CASE("solver returns optimal for feasible input")`.
 - Every test target is built twice — once normally and once with `BGSPPRC_DISABLE_SIMD` — so a SIMD path that diverges from its scalar fallback fails the suite. Keep both registered when adding a target. SIMD needs libstdc++'s `<experimental/simd>`: on libc++ (macOS, Apple clang) both builds take the scalar path, so only a libstdc++ gate checks the SIMD code.
-
+- `test_grid_size.cpp` is also built alone with `-fsanitize=float-cast-overflow,signed-integer-overflow -fno-sanitize-recover=all` (`grid_ubsan`, `grid_ubsan_nosimd`) where the compiler has it; configure warns and drops them otherwise.
 ## Python
 
 The Python here is benchmark tooling under `benchmarks/`, not a packaged
@@ -374,6 +375,7 @@ See [References](README.md#references) for full citations. Key papers:
 - `c_best`, completions and labels are proof only for the costs they were labelled at: `update_arc_costs()` (on `BucketGraph` and `Solver`) clears `exact_complete()` and `bounds_cover_gap()`, so elimination and fixing do nothing until the next solve (#160). Arcs and buckets already eliminated or fixed stay. A resource reconfigured through `resource<R>()` (or a kept reference to it, or a view's borrowed data) is not seen: call `update_arc_costs()` after it. The accessor itself drops nothing, so reading a resource between solve and elimination is safe.
 - Labels are pruned against the solve's `theta` (parallel bidir and Enumerate completion prunes, the bw post-pass prune), so `c_best` and label-based partners cover only paths below it. Elimination and fixing at a larger gap do nothing on `BucketGraph` (`bounds_cover_gap`) until `label_bounds(gap)` labels at the gap without concatenating; `Solver` does that first (#116).
 - Outside symmetric mode a path ends where it first reaches the sink (#124) and leaves the source once (#125): no bucket arc, forward or backward, is built for an arc out of the sink or into the source (a label otherwise walks back through the terminal, and mono and bidir disagree), the join skips those arcs, and `cost_of` refuses a walk that leaves the sink or comes back to the source. So `source == sink` there is only the empty path (#110, decided for every pricer). A depot tour needs the depot split into a source and a sink copy, as the CLI's readers do; symmetric mode needs `source == sink` (the constructor throws `std::invalid_argument` otherwise, #126) and keeps its depot tours, single ones only (#123): a label back at the depot is not extended again, and `cost_of` refuses a walk that returns before its last arc.
+- Grid counts are taken in double and int64 before any `int` conversion (`detail::grid_axis_count`, `grid_add_vertex`): `build()` sizes the grid before touching it, and a non-positive step, a non-finite window, or more than `INT_MAX` buckets on an axis, at a vertex or in total throws `std::invalid_argument` and keeps the old grid (#161). `vertex_bucket_index` clamps the offset in double before its cast.
 - Solver starts at `Stage::Heuristic1` by default. Benchmarks should call `set_stage(Stage::Exact)` for deterministic results.
 - F-class Roberti instances with large capacity windows are inherently slow with step=10 bidir — filter them from benchmarks.
 - Benchmark tables come solely from `benchmarks/compute_means.py`, which reads the source CSVs (`bgspprc.csv`, `pathwyse.csv`, `pull_algo_runtimes.csv`, and for the PathWyse 1.1.0 table `pathwyse-1.1.0/{bgspprc,pathwyse}.csv`) and joins them in-memory — there are no committed `comparison_*.csv` files. It uses shift=1 s and TL→120 s for every table; `--rows` dumps the per-row joins (the former comparison CSVs) for spot-checking. Don't reintroduce a materialized join CSV: it goes stale against `bgspprc.csv` (the README numbers used to drift this way).

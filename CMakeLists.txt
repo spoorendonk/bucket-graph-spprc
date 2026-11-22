@@ -201,6 +201,7 @@ if(BGSPPRC_BUILD_TESTS)
         tests/test_resource.cpp
         tests/test_scc.cpp
         tests/test_bucket_graph.cpp
+        tests/test_grid_size.cpp
         tests/test_small_instance.cpp
         tests/test_stress.cpp)
 
@@ -214,6 +215,32 @@ if(BGSPPRC_BUILD_TESTS)
     target_link_libraries(test_runner_nosimd PRIVATE bgspprc doctest::doctest)
     target_compile_definitions(test_runner_nosimd PRIVATE BGSPPRC_DISABLE_SIMD)
     add_test(NAME unit_tests_nosimd COMMAND test_runner_nosimd)
+
+    # Grid sizing (#161) under the sanitizers that flag an unrepresentable
+    # float-to-int cast or an int overflow, aborting on the first one. Both
+    # SIMD builds, as for every test target. Skipped with a warning where the
+    # compiler or its runtime lacks them.
+    include(CheckCXXSourceCompiles)
+    set(BGSPPRC_UBSAN_FLAGS
+        -fsanitize=float-cast-overflow,signed-integer-overflow -fno-sanitize-recover=all)
+    list(JOIN BGSPPRC_UBSAN_FLAGS " " CMAKE_REQUIRED_FLAGS)  # a string, not a list
+    set(CMAKE_REQUIRED_LINK_OPTIONS ${BGSPPRC_UBSAN_FLAGS})
+    check_cxx_source_compiles("int main() { return 0; }" BGSPPRC_HAS_UBSAN)
+    unset(CMAKE_REQUIRED_FLAGS)
+    unset(CMAKE_REQUIRED_LINK_OPTIONS)
+    if(BGSPPRC_HAS_UBSAN)
+        foreach(_variant ubsan ubsan_nosimd)
+            add_executable(test_grid_${_variant} tests/test_main.cpp tests/test_grid_size.cpp)
+            target_link_libraries(test_grid_${_variant} PRIVATE bgspprc doctest::doctest)
+            target_compile_options(test_grid_${_variant} PRIVATE ${BGSPPRC_UBSAN_FLAGS})
+            target_link_options(test_grid_${_variant} PRIVATE ${BGSPPRC_UBSAN_FLAGS})
+            add_test(NAME grid_${_variant} COMMAND test_grid_${_variant})
+        endforeach()
+        target_compile_definitions(test_grid_ubsan_nosimd PRIVATE BGSPPRC_DISABLE_SIMD)
+    else()
+        message(WARNING "The compiler lacks -fsanitize=float-cast-overflow: the "
+                        "grid_ubsan tests are not registered.")
+    endif()
 
     if(BGSPPRC_BUILD_CLI)
         add_executable(test_cli tests/test_main.cpp tests/test_instance_io.cpp)

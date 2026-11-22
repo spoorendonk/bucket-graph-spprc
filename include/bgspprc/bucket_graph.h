@@ -18,6 +18,7 @@
 #include <ranges>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
@@ -189,6 +190,35 @@ private:
     AdjacencyView view_;
 };
 
+/// The most buckets a grid may hold: bucket ids are `int` (#161).
+inline constexpr std::int64_t kMaxGridBuckets = std::numeric_limits<int>::max();
+
+/// Buckets along one main resource of a vertex: ⌈range / step⌉, at least one.
+/// Counted in double before any conversion to `int`, so a step too fine for its
+/// window, a step that is not positive, or a NaN or infinite range gives
+/// nullopt instead of an unrepresentable cast.
+[[nodiscard]] inline std::optional<int> grid_axis_count(double range, double step) noexcept {
+    if (!(step > 0.0)) {
+        return std::nullopt;
+    }
+    const double c = std::ceil(range / step);
+    if (!(c <= static_cast<double>(kMaxGridBuckets))) {  // NaN, +inf or too many
+        return std::nullopt;
+    }
+    return c < 1.0 ? 1 : static_cast<int>(c);
+}
+
+/// `total` buckets so far plus a vertex's nb[0]·nb[1], in int64: nullopt
+/// past kMaxGridBuckets. Each factor is at most INT_MAX, so neither the
+/// product nor the sum overflows int64.
+[[nodiscard]] inline std::optional<int> grid_add_vertex(int total, std::array<int, 2> nb) noexcept {
+    const std::int64_t sum = std::int64_t{total} + (std::int64_t{nb[0]} * std::int64_t{nb[1]});
+    if (sum > kMaxGridBuckets) {
+        return std::nullopt;
+    }
+    return static_cast<int>(sum);
+}
+
 }  // namespace detail
 
 /// Phase timing breakdown from a single solve() call.
@@ -311,7 +341,10 @@ private:
     }
 
 public:
-    /// Build the bucket graph structure.
+    /// Build the bucket graph structure. Throws std::invalid_argument, before
+    /// touching the current grid, when a main resource's step is not positive,
+    /// its window is not finite, or the grid would exceed INT_MAX buckets
+    /// along an axis, at a vertex or in total (#161).
     void build() {
         build_buckets();
         build_bucket_arcs(Direction::Forward);
@@ -1029,22 +1062,52 @@ private:
         }
     }
 
+    /// Buckets per vertex and axis, checked to fit `int` per axis, per vertex
+    /// and in total before anything is converted or allocated (#161).
+    std::vector<std::array<int, 2>> size_grid() const {
+        std::vector<std::array<int, 2>> n_buckets(static_cast<std::size_t>(pv_.n_vertices), {1, 1});
+        int total = 0;
+        for (int v = 0; v < pv_.n_vertices; ++v) {
+            const auto& vstep = step_for_vertex(v);
+            auto& nb = n_buckets[static_cast<std::size_t>(v)];
+            for (int r = 0; r < n_main_; ++r) {
+                const double range = pv_.vertex_ub[r][v] - pv_.vertex_lb[r][v];
+                const std::optional<int> c = detail::grid_axis_count(range, vstep[r]);
+                if (!c) {
+                    throw std::invalid_argument(
+                        "BucketGraph: vertex " + std::to_string(v) + " main resource " +
+                        std::to_string(r) + " needs a positive bucket step and a finite window " +
+                        "of at most INT_MAX buckets");
+                }
+                nb[r] = *c;
+            }
+            const std::optional<int> t = detail::grid_add_vertex(total, nb);
+            if (!t) {
+                throw std::invalid_argument(
+                    "BucketGraph: the bucket grid exceeds INT_MAX buckets "
+                    "at vertex " +
+                    std::to_string(v));
+            }
+            total = *t;
+        }
+        return n_buckets;
+    }
+
     void build_buckets() {
+        // Sized first, so a grid that cannot be indexed throws before the
+        // current one is cleared.
+        std::vector<std::array<int, 2>> n_buckets = size_grid();
+
         buckets_.clear();
         vertex_bucket_start_.assign(pv_.n_vertices, -1);
-        vertex_n_buckets_.assign(pv_.n_vertices, {0, 0});
+        vertex_n_buckets_ = std::move(n_buckets);
 
         int total = 0;
         for (int v = 0; v < pv_.n_vertices; ++v) {
             vertex_bucket_start_[v] = total;
 
             auto& vstep = step_for_vertex(v);
-            std::array<int, 2> nb = {1, 1};
-            for (int r = 0; r < n_main_; ++r) {
-                double range = pv_.vertex_ub[r][v] - pv_.vertex_lb[r][v];
-                nb[r] = std::max(1, static_cast<int>(std::ceil(range / vstep[r])));
-            }
-            vertex_n_buckets_[v] = nb;
+            const std::array<int, 2> nb = vertex_n_buckets_[v];
 
             for (int k1 = 0; k1 < nb[0]; ++k1) {
                 for (int k2 = 0; k2 < nb[1]; ++k2) {
@@ -1088,8 +1151,17 @@ private:
         std::array<int, 2> k = {0, 0};
         for (int r = 0; r < n_main_; ++r) {
             const double lb = pv_.vertex_lb[r][vertex];
-            k[r] = std::min(static_cast<int>((q[r] - lb) / vstep[r]), nb[r] - 1);
-            k[r] = std::max(k[r], 0);
+            // Clamped to [0, nb − 1] in double, before the cast: a q far
+            // outside the window (or NaN) has no int offset (#161).
+            const double t = (q[r] - lb) / vstep[r];
+            const int last = nb[r] - 1;
+            if (!(t < static_cast<double>(last))) {
+                k[r] = last;
+            } else if (t > 0.0) {
+                k[r] = static_cast<int>(t);
+            } else {
+                k[r] = 0;
+            }
             // offset / step can round up across a bucket edge (187 / 1.1 gives
             // 170, yet 170 · 1.1 > 187): keep q at or above the lb that
             // build_buckets computes, which the bucket arc tests start from.
