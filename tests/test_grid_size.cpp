@@ -128,8 +128,33 @@ TEST_CASE("A step too fine for its window is refused, the grid kept (#161)") {
     REQUIRE(paths.size() == 1);
     CHECK(paths[0].reduced_cost == doctest::Approx(-2.0));
 
-    // One step pair per vertex, or no build can index them.
+    // The refusal put the request back to the kept grid's (uniform 0.25, no
+    // per-vertex steps), so the next rebuild is that grid again.
+    CHECK(bg.bucket_steps()[0] == 0.25);
+    bg.build();
+    CHECK(bg.n_buckets() == 12);
+
+    // One step pair per vertex, or none for the uniform steps.
     CHECK_THROWS_AS(bg.set_vertex_bucket_steps({{0.25, 0.0}}), std::invalid_argument);
+    bg.set_vertex_bucket_steps({{0.5, 0.0}, {0.5, 0.0}, {0.5, 0.0}});
+    bg.build();
+    CHECK(bg.n_buckets() == 6);
+    bg.set_vertex_bucket_steps({});
+    bg.build();
+    CHECK(bg.n_buckets() == 12);
+
+    // A refused build puts ξ back too (with the uniform steps it halved), so
+    // the next doubling starts from the kept grid's ξ, not the refused one.
+    const double xi0 = bg.xi();
+    bg.double_xi();
+    REQUIRE(bg.xi() == 2.0 * xi0);
+    REQUIRE(bg.bucket_steps()[0] == 0.125);
+    bg.set_vertex_bucket_steps({{1e-12, 0.0}, {1e-12, 0.0}, {1e-12, 0.0}});
+    CHECK_THROWS_AS(bg.build(), std::invalid_argument);
+    CHECK(bg.xi() == xi0);
+    CHECK(bg.bucket_steps()[0] == 0.25);
+    bg.build();
+    CHECK(bg.n_buckets() == 12);
 
     // The issue's input: an explicit uniform step of 1e-12 on [0, 1].
     BucketGraph<EmptyPack> fine(g.pv, EmptyPack{}, {.bucket_steps = {1e-12, 0.0}});

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 namespace bgspprc {
@@ -55,7 +56,9 @@ public:
     /// Whether the bucket graph built its own adjacency rather than borrowing one.
     [[nodiscard]] bool owns_adjacency() const noexcept { return bg_.owns_adjacency(); }
 
-    /// Build bucket graph (call once, or after step size changes).
+    /// Build bucket graph (call once, or after step size changes). Throws
+    /// std::invalid_argument for a grid it cannot index, as
+    /// BucketGraph::build() does (#161).
     void build() {
         bg_.build();
         exact_complete_ = false;
@@ -76,9 +79,9 @@ public:
     /// Uses multi-stage progression: Heuristic1 → Heuristic2 → Exact.
     /// In Exact stage, accumulates dominance stats for BG2021 §6.3 A+
     /// ξ-doubling: on CG convergence (empty exact pricing), checks if finer
-    /// buckets would help and retries if so. That rebuild throws
-    /// std::invalid_argument if the finer grid exceeds INT_MAX buckets
-    /// (BucketGraph::build(), #161); the old grid is kept and still solves.
+    /// buckets would help and retries if so. A finer grid past INT_MAX
+    /// buckets is refused (BucketGraph::build(), #161): then there is no
+    /// refinement, and the old grid, ξ and steps stay.
     std::vector<Path> solve() {
         accumulated_timings_.reset();
         bg_.set_stage(stage_);
@@ -231,7 +234,7 @@ public:
 
     /// Adaptive bucket step sizes. Returns true if steps changed and the grid
     /// was rebuilt; the rebuild throws as BucketGraph::build() does (#161),
-    /// keeping the old grid.
+    /// keeping the old grid and putting the steps back.
     bool adapt_bucket_steps(double threshold = 20.0) {
         bool changed = bg_.adapt_bucket_steps(threshold);
         if (changed) {
@@ -249,7 +252,8 @@ public:
     /// Current ξ (BG2021 §6.3), the nominal bucket count per vertex; see BucketGraph::xi().
     [[nodiscard]] double xi() const { return bg_.xi(); }
 
-    /// Set per-vertex bucket step sizes.
+    /// Set per-vertex bucket step sizes: one pair per vertex, or none for the
+    /// uniform steps (std::invalid_argument otherwise).
     void set_vertex_bucket_steps(std::vector<std::array<double, 2>> steps) {
         bg_.set_vertex_bucket_steps(std::move(steps));
     }
@@ -295,7 +299,14 @@ private:
 
         if (avg_ratio > 500.0 && arcs_per_vertex < 10000.0) {
             bg_.double_xi();
-            bg_.build();
+            try {
+                bg_.build();
+            } catch (const std::invalid_argument&) {
+                // The finer grid exceeds INT_MAX buckets (#161): the build
+                // kept the grid and put ξ and the steps back, so there is no
+                // refinement and this convergence stands.
+                return false;
+            }
             return true;
         }
         return false;

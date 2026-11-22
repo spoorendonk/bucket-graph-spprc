@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -35,7 +36,8 @@ class BucketFixBitmap {
 public:
     void resize(int n_buckets) {
         n_ = n_buckets;
-        int n_words = (n_buckets + 63) / 64;
+        // In size_t: n_buckets + 63 overflows int for a grid near INT_MAX (#161).
+        const std::size_t n_words = (static_cast<std::size_t>(n_buckets) + 63) / 64;
         bits_.assign(n_words, 0);
         n_fixed_ = 0;
     }

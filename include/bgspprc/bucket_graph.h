@@ -345,9 +345,11 @@ public:
     /// Build the bucket graph structure. Throws std::invalid_argument, before
     /// touching the current grid, when a main resource's step is not positive
     /// and finite, its window is not finite, or the grid would exceed INT_MAX
-    /// buckets along an axis, at a vertex or in total (#161). The grid and the
-    /// steps it was built with then stay as they were, so it still solves;
-    /// bucket_steps() shows the refused request until the next build.
+    /// buckets along an axis, at a vertex or in total (#161). That refusal
+    /// keeps the grid, and puts the steps and ξ back to those it was built
+    /// from (bucket_steps(), xi()), so it still solves and a later rebuild or
+    /// refinement starts from them. Other exceptions (std::bad_alloc) keep
+    /// no such promise.
     void build() {
         build_buckets();
         build_bucket_arcs(Direction::Forward);
@@ -705,12 +707,12 @@ public:
 
     /// Set per-vertex bucket step sizes. Overrides uniform opts_.bucket_steps
     /// during build. Size must equal n_vertices (std::invalid_argument
-    /// otherwise, since build() indexes it per vertex).
+    /// otherwise, since build() indexes it per vertex); an empty vector goes
+    /// back to the uniform steps.
     void set_vertex_bucket_steps(std::vector<std::array<double, 2>> steps) {
-        if (std::cmp_not_equal(steps.size(), pv_.n_vertices)) {
+        if (!steps.empty() && std::cmp_not_equal(steps.size(), pv_.n_vertices)) {
             throw std::invalid_argument(
-                "BucketGraph: set_vertex_bucket_steps needs one step "
-                "pair per vertex");
+                "BucketGraph: set_vertex_bucket_steps needs one step pair per vertex, or none");
         }
         vertex_bucket_steps_ = std::move(steps);
     }
@@ -1104,19 +1106,41 @@ private:
         return n_buckets;
     }
 
+    /// The request (steps and ξ) the current grid was built from, restored
+    /// when a rebuild is refused so the request and the grid agree again.
+    struct BuiltRequest {
+        std::array<double, 2> bucket_steps;
+        std::vector<std::array<double, 2>> vertex_bucket_steps;
+        double xi;
+    };
+
     void build_buckets() {
         // Sized first, so a grid that cannot be indexed throws before the
-        // current one is cleared.
-        std::vector<std::array<int, 2>> n_buckets = size_grid();
+        // current one is cleared, and the request goes back to the one the
+        // kept grid was built from: otherwise each later rebuild, or ξ
+        // doubling or step halving from the refused values, is refused again.
+        std::vector<std::array<int, 2>> n_buckets;
+        try {
+            n_buckets = size_grid();
+        } catch (const std::invalid_argument&) {
+            if (built_request_) {
+                opts_.bucket_steps = built_request_->bucket_steps;
+                vertex_bucket_steps_ = built_request_->vertex_bucket_steps;
+                xi_ = built_request_->xi;
+            }
+            throw;
+        }
         std::vector<std::array<double, 2>> steps(static_cast<std::size_t>(pv_.n_vertices));
         for (int v = 0; v < pv_.n_vertices; ++v) {
             steps[static_cast<std::size_t>(v)] = step_for_vertex(v);
         }
+        BuiltRequest request{opts_.bucket_steps, vertex_bucket_steps_, xi_};
 
         buckets_.clear();
         vertex_bucket_start_.assign(pv_.n_vertices, -1);
         vertex_n_buckets_ = std::move(n_buckets);
         grid_steps_ = std::move(steps);
+        built_request_ = std::move(request);
 
         int total = 0;
         for (int v = 0; v < pv_.n_vertices; ++v) {
@@ -4699,6 +4723,7 @@ private:
     std::vector<Bucket> buckets_;
     std::vector<std::array<double, 2>> vertex_bucket_steps_;  // per-vertex steps (optional)
     std::vector<std::array<double, 2>> grid_steps_;           // per-vertex steps of the built grid
+    std::optional<BuiltRequest> built_request_;               // what grid_steps_ came from
     BucketFixBitmap fixed_;
     std::vector<double> fw_completion_;    // forward cost-to-go (b → sink)
     std::vector<double> bw_completion_;    // backward cost-to-go (b → source)
