@@ -3288,6 +3288,7 @@ TEST_CASE("2D Enumerate after elimination returns each path once (#164)") {
                 BucketGraph<EmptyPack> exact(inst.pv, EmptyPack{}, exact_opts);
                 eliminate(exact);
                 exact.update_arc_costs(reduced2.data());
+                exact.set_theta(gap);  // as bg's
                 const auto best = exact.solve();
                 REQUIRE(std::cmp_equal(best.size(), kx));
                 for (int i = 0; i < kx; ++i) {

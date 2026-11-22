@@ -1254,6 +1254,9 @@ private:
 
     void build_bucket_arcs(Direction dir) {
         int nb = static_cast<int>(buckets_.size());
+        // This clears dir's jump arcs, so their front flag goes too.
+        multi_jump_front_[dir == Direction::Forward ? 0 : 1].store(false,
+                                                                   std::memory_order_relaxed);
 
         // Outer loop over buckets: each bucket independently scans arcs at its
         // vertex, making the iteration data-race-free and parallelizable.
@@ -4636,7 +4639,10 @@ private:
     /// rounding of the order they were summed in). max_paths caps the distinct
     /// paths returned, and a distinct one past it marks Enumerate cut. Its
     /// labelling stops earlier, at max_paths sink labels (at_label_cap),
-    /// which counts repeats, so a cut enumeration may return fewer.
+    /// which counts repeats, so a cut enumeration may return fewer. Its
+    /// max_enum_labels counts every copy too, and copies multiply along a
+    /// path through several such fronts, so either cap can clear
+    /// enumeration_complete() where the distinct paths alone would not.
     template <typename Cmp>
     std::vector<Path> select_distinct(std::vector<PathCandidate>& candidates, Cmp cmp) {
         // With max_paths set, sort only a prefix in cost order, as
