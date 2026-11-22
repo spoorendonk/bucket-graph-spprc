@@ -76,7 +76,9 @@ public:
     /// Uses multi-stage progression: Heuristic1 → Heuristic2 → Exact.
     /// In Exact stage, accumulates dominance stats for BG2021 §6.3 A+
     /// ξ-doubling: on CG convergence (empty exact pricing), checks if finer
-    /// buckets would help and retries if so.
+    /// buckets would help and retries if so. That rebuild throws
+    /// std::invalid_argument if the finer grid exceeds INT_MAX buckets
+    /// (BucketGraph::build(), #161); the old grid is kept and still solves.
     std::vector<Path> solve() {
         accumulated_timings_.reset();
         bg_.set_stage(stage_);
@@ -227,7 +229,9 @@ public:
     /// Save warm labels for next solve (top fraction by cost).
     void save_warm_labels(double fraction = 0.7) { bg_.save_warm_labels(fraction); }
 
-    /// Adaptive bucket step sizes. Returns true if steps changed (needs rebuild).
+    /// Adaptive bucket step sizes. Returns true if steps changed and the grid
+    /// was rebuilt; the rebuild throws as BucketGraph::build() does (#161),
+    /// keeping the old grid.
     bool adapt_bucket_steps(double threshold = 20.0) {
         bool changed = bg_.adapt_bucket_steps(threshold);
         if (changed) {

@@ -195,10 +195,11 @@ inline constexpr std::int64_t kMaxGridBuckets = std::numeric_limits<int>::max();
 
 /// Buckets along one main resource of a vertex: ⌈range / step⌉, at least one.
 /// Counted in double before any conversion to `int`, so a step too fine for its
-/// window, a step that is not positive, or a NaN or infinite range gives
-/// nullopt instead of an unrepresentable cast.
+/// window, a step that is not positive and finite, or a range that is not
+/// finite gives nullopt instead of an unrepresentable cast (an infinite step
+/// or bound would also make the bucket bounds NaN).
 [[nodiscard]] inline std::optional<int> grid_axis_count(double range, double step) noexcept {
-    if (!(step > 0.0)) {
+    if (!(step > 0.0) || !std::isfinite(step) || !std::isfinite(range)) {
         return std::nullopt;
     }
     const double c = std::ceil(range / step);
@@ -342,9 +343,11 @@ private:
 
 public:
     /// Build the bucket graph structure. Throws std::invalid_argument, before
-    /// touching the current grid, when a main resource's step is not positive,
-    /// its window is not finite, or the grid would exceed INT_MAX buckets
-    /// along an axis, at a vertex or in total (#161).
+    /// touching the current grid, when a main resource's step is not positive
+    /// and finite, its window is not finite, or the grid would exceed INT_MAX
+    /// buckets along an axis, at a vertex or in total (#161). The grid and the
+    /// steps it was built with then stay as they were, so it still solves;
+    /// bucket_steps() shows the refused request until the next build.
     void build() {
         build_buckets();
         build_bucket_arcs(Direction::Forward);
@@ -701,9 +704,14 @@ public:
     }
 
     /// Set per-vertex bucket step sizes. Overrides uniform opts_.bucket_steps
-    /// during build. Size must equal n_vertices.
+    /// during build. Size must equal n_vertices (std::invalid_argument
+    /// otherwise, since build() indexes it per vertex).
     void set_vertex_bucket_steps(std::vector<std::array<double, 2>> steps) {
-        assert(static_cast<int>(steps.size()) == pv_.n_vertices);
+        if (std::cmp_not_equal(steps.size(), pv_.n_vertices)) {
+            throw std::invalid_argument(
+                "BucketGraph: set_vertex_bucket_steps needs one step "
+                "pair per vertex");
+        }
         vertex_bucket_steps_ = std::move(steps);
     }
 
@@ -1024,6 +1032,9 @@ private:
     /// Each step shrinks by this factor when ξ doubles: ξ^(1/n_main).
     double xi_step_factor() const { return (n_main_ == 2) ? std::numbers::sqrt2 : 2.0; }
 
+    /// The step requested for v, which the next build() sizes the grid with.
+    /// The built grid reads grid_steps_ instead: a refused build (#161)
+    /// leaves the request changed but the grid as it was.
     const std::array<double, 2>& step_for_vertex(int v) const {
         if (!vertex_bucket_steps_.empty()) {
             return vertex_bucket_steps_[v];
@@ -1076,8 +1087,8 @@ private:
                 if (!c) {
                     throw std::invalid_argument(
                         "BucketGraph: vertex " + std::to_string(v) + " main resource " +
-                        std::to_string(r) + " needs a positive bucket step and a finite window " +
-                        "of at most INT_MAX buckets");
+                        std::to_string(r) + " needs a positive finite bucket step and a finite " +
+                        "window of at most INT_MAX buckets");
                 }
                 nb[r] = *c;
             }
@@ -1097,16 +1108,21 @@ private:
         // Sized first, so a grid that cannot be indexed throws before the
         // current one is cleared.
         std::vector<std::array<int, 2>> n_buckets = size_grid();
+        std::vector<std::array<double, 2>> steps(static_cast<std::size_t>(pv_.n_vertices));
+        for (int v = 0; v < pv_.n_vertices; ++v) {
+            steps[static_cast<std::size_t>(v)] = step_for_vertex(v);
+        }
 
         buckets_.clear();
         vertex_bucket_start_.assign(pv_.n_vertices, -1);
         vertex_n_buckets_ = std::move(n_buckets);
+        grid_steps_ = std::move(steps);
 
         int total = 0;
         for (int v = 0; v < pv_.n_vertices; ++v) {
             vertex_bucket_start_[v] = total;
 
-            auto& vstep = step_for_vertex(v);
+            const std::array<double, 2>& vstep = grid_steps_[v];
             const std::array<int, 2> nb = vertex_n_buckets_[v];
 
             for (int k1 = 0; k1 < nb[0]; ++k1) {
@@ -1146,7 +1162,7 @@ private:
     int vertex_bucket_index(int vertex, const std::array<double, 2>& q) const {
         int start = vertex_bucket_start_[vertex];
         const auto& nb = vertex_n_buckets_[vertex];
-        auto& vstep = step_for_vertex(vertex);
+        const std::array<double, 2>& vstep = grid_steps_[vertex];  // the grid's, not the request
 
         std::array<int, 2> k = {0, 0};
         for (int r = 0; r < n_main_; ++r) {
@@ -4682,6 +4698,7 @@ private:
 
     std::vector<Bucket> buckets_;
     std::vector<std::array<double, 2>> vertex_bucket_steps_;  // per-vertex steps (optional)
+    std::vector<std::array<double, 2>> grid_steps_;           // per-vertex steps of the built grid
     BucketFixBitmap fixed_;
     std::vector<double> fw_completion_;    // forward cost-to-go (b → sink)
     std::vector<double> bw_completion_;    // backward cost-to-go (b → source)

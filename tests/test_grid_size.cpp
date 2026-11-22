@@ -16,8 +16,9 @@ TEST_CASE("Grid axis count is checked in double before conversion (#161)") {
     CHECK(detail::grid_axis_count(10.0, 3.0) == 4);
     CHECK(detail::grid_axis_count(0.0, 1.0) == 1);
     CHECK(detail::grid_axis_count(-5.0, 1.0) == 1);
-    CHECK(detail::grid_axis_count(1.0, inf) == 1);
     CHECK(detail::grid_axis_count(static_cast<double>(kMax), 1.0) == kMax);
+    CHECK_FALSE(detail::grid_axis_count(1.0, inf));  // lb + 0 · inf is NaN
+    CHECK_FALSE(detail::grid_axis_count(-inf, 1.0));
     CHECK_FALSE(detail::grid_axis_count(static_cast<double>(kMax) + 0.5, 1.0));
     CHECK_FALSE(detail::grid_axis_count(static_cast<double>(kMax) + 1.0, 1.0));
     CHECK_FALSE(detail::grid_axis_count(1.0, 1e-12));
@@ -71,21 +72,64 @@ struct UnitWindowGraph {
 };
 }  // namespace
 
+namespace {
+// 0 → 1 → 2 on windows [0, 1], consuming 0.25 then 0.5: the label at vertex 1
+// (q = 0.25) reaches the sink only from the bucket it belongs in, since
+// 0.75 + 0.5 > 1.
+struct UnitWindowChain {
+    int from[2] = {0, 1};
+    int to[2] = {1, 2};
+    double cost[2] = {-1.0, -1.0};
+    double time_d[2] = {0.25, 0.5};
+    double tw_lb[3] = {0.0, 0.0, 0.0};
+    double tw_ub[3] = {1.0, 1.0, 1.0};
+    const double* arc_res[1] = {time_d};
+    const double* v_lb[1] = {tw_lb};
+    const double* v_ub[1] = {tw_ub};
+    ProblemView pv;
+
+    UnitWindowChain() {
+        pv.n_vertices = 3;
+        pv.source = 0;
+        pv.sink = 2;
+        pv.n_arcs = 2;
+        pv.arc_from = from;
+        pv.arc_to = to;
+        pv.arc_base_cost = cost;
+        pv.n_resources = 1;
+        pv.arc_resource = arc_res;
+        pv.vertex_lb = v_lb;
+        pv.vertex_ub = v_ub;
+        pv.n_main_resources = 1;
+    }
+};
+}  // namespace
+
 TEST_CASE("A step too fine for its window is refused, the grid kept (#161)") {
-    UnitWindowGraph g;
+    UnitWindowChain g;
     BucketGraph<EmptyPack> bg(g.pv, EmptyPack{}, {.bucket_steps = {0.25, 0.0}, .theta = 1e9});
     bg.build();
-    REQUIRE(bg.n_buckets() == 8);
+    REQUIRE(bg.n_buckets() == 12);
 
     // 1 / 1e-12 buckets per vertex do not fit an int: refused before the cast.
-    bg.set_vertex_bucket_steps({{1e-12, 0.0}, {1e-12, 0.0}});
+    bg.set_vertex_bucket_steps({{1e-12, 0.0}, {1e-12, 0.0}, {1e-12, 0.0}});
     CHECK_THROWS_AS(bg.build(), std::invalid_argument);
-    CHECK(bg.n_buckets() == 8);  // the old grid is untouched
+    CHECK(bg.n_buckets() == 12);  // the old grid is untouched
 
-    // Two vertices of 2^30 buckets each fit an axis but not the total.
-    bg.set_vertex_bucket_steps({{0x1p-30, 0.0}, {0x1p-30, 0.0}});
+    // Three vertices of 2^30 buckets each fit an axis but not the total.
+    bg.set_vertex_bucket_steps({{0x1p-30, 0.0}, {0x1p-30, 0.0}, {0x1p-30, 0.0}});
     CHECK_THROWS_AS(bg.build(), std::invalid_argument);
-    CHECK(bg.n_buckets() == 8);
+    CHECK(bg.n_buckets() == 12);
+
+    // The kept grid still places labels by its own steps, not the refused
+    // ones: by 2^-30 the vertex-1 label would land in [0.75, 1] and miss
+    // the sink.
+    auto paths = bg.solve();
+    REQUIRE(paths.size() == 1);
+    CHECK(paths[0].reduced_cost == doctest::Approx(-2.0));
+
+    // One step pair per vertex, or no build can index them.
+    CHECK_THROWS_AS(bg.set_vertex_bucket_steps({{0.25, 0.0}}), std::invalid_argument);
 
     // The issue's input: an explicit uniform step of 1e-12 on [0, 1].
     BucketGraph<EmptyPack> fine(g.pv, EmptyPack{}, {.bucket_steps = {1e-12, 0.0}});
