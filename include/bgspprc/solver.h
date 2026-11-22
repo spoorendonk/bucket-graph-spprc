@@ -194,12 +194,16 @@ public:
         return bg_.cost_of(arcs);
     }
 
-    /// Whether the last enumeration was complete (no caps hit).
+    /// Whether the last enumeration hit none of its caps, so it returned
+    /// every path costing below theta. See BucketGraph::enumeration_complete().
     [[nodiscard]] bool enumeration_complete() const { return bg_.enumeration_complete(); }
 
-    /// Whether the last solve was exact and hit no label cap, so an empty
-    /// result proves no path within theta exists; false after build() or
-    /// update_arc_costs() until the next solve. See BucketGraph::exact_complete().
+    /// Whether the last solve was exact and hit no label cap. Exact pricing
+    /// returns the paths below theta that survive dominance, not all of
+    /// them, so an empty result proves no path costs below theta up to the
+    /// dominance tolerance; only an enumeration lists them all. False after
+    /// build() or update_arc_costs() until the next solve. See
+    /// BucketGraph::exact_complete().
     [[nodiscard]] bool exact_complete() const { return exact_complete_; }
 
     /// Whether the last solve() stopped labelling an SCC at

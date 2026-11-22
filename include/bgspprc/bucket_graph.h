@@ -519,6 +519,14 @@ public:
 
     void set_stage(Stage s) { opts_.stage = s; }
     void set_theta(double t) { opts_.theta = t; }
+
+    /// False when the last solve() ran Stage::Enumerate and stopped at one of
+    /// its caps (max_enum_labels, max_paths, kEnumSccLabelCap); true
+    /// otherwise, which says something only after Enumerate. That stage keeps
+    /// every label without dominance, so an uncut one is exhaustive: its
+    /// result is every path the pack's resources admit that costs below
+    /// theta, each once. Stage::Exact furnishes no such list
+    /// (exact_complete()).
     bool enumeration_complete() const { return enum_complete_; }
 
     /// True when the last solve() stopped labelling an SCC at its label cap
@@ -531,14 +539,24 @@ public:
     bool label_cap_hit() const { return label_cap_hit_.load(std::memory_order_relaxed); }
 
     /// True when the last solve() ran Stage::Exact or Stage::Enumerate and
-    /// hit no label cap, so it returned every path within theta (up to
-    /// max_paths): an empty result proves there is none. False after a
-    /// heuristic stage, or when an SCC's label cap cut it (label_cap_hit()) or enumeration
-    /// stopped short (enumeration_complete()), and before the first solve
-    /// after build() or update_arc_costs(). Arc elimination and
-    /// bucket fixing do nothing unless labelling was exact_complete(); an
-    /// Enumerate whose result alone was cut to max_paths made every label and
-    /// still allows them.
+    /// hit no label cap. What that proves differs by stage:
+    /// - Exact drops dominated labels, so it returns the paths costing below
+    ///   theta whose labels survived dominance, not every such path. A label
+    ///   is dropped only for one costing at most EPS more (types.h) that
+    ///   every extension of it can match, so a dropped path is covered by a
+    ///   kept one within EPS per dominance along it. So a non-empty result
+    ///   holds a path within that tolerance of the cheapest, and an empty
+    ///   one proves that no path costs below theta less that tolerance.
+    /// - Enumerate keeps every label, so its result is every path costing
+    ///   below theta (enumeration_complete()), and an empty one proves there
+    ///   is none.
+    /// False after a heuristic stage, when an SCC's label cap cut the solve
+    /// (label_cap_hit()) or enumeration stopped short
+    /// (enumeration_complete()), and before the first solve after build() or
+    /// update_arc_costs(). Arc elimination and bucket fixing do nothing
+    /// unless labelling was exact_complete(); an Enumerate whose result alone
+    /// was cut to max_paths made every label and still allows them, though
+    /// exact_complete() itself is then false.
     bool exact_complete() const {
         return solved_ && (solved_stage_ == Stage::Exact || solved_stage_ == Stage::Enumerate) &&
                !label_cap_hit_.load(std::memory_order_relaxed) && enum_complete_;
