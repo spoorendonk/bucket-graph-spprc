@@ -522,10 +522,13 @@ public:
 
     /// False when the last solve() ran Stage::Enumerate and stopped at one of
     /// its caps (max_enum_labels, max_paths, kEnumSccLabelCap); true
-    /// otherwise, which says something only after Enumerate. That stage keeps
-    /// every label without dominance, so an uncut one is exhaustive: its
-    /// result is every path the pack's resources admit that costs below
-    /// theta, each once. Stage::Exact furnishes no such list
+    /// otherwise, which says something only after Enumerate. That stage has
+    /// no dominance: it keeps every label that can still reach a path below
+    /// theta, so an uncut one is exhaustive. Its result is every path the
+    /// pack's resources admit that costs below theta and uses no arc or
+    /// bucket eliminated or fixed before it; that is every such path when
+    /// they were eliminated and fixed at a gap of at least theta under the
+    /// current arc costs. Stage::Exact furnishes no such list
     /// (exact_complete()).
     bool enumeration_complete() const { return enum_complete_; }
 
@@ -539,15 +542,18 @@ public:
     bool label_cap_hit() const { return label_cap_hit_.load(std::memory_order_relaxed); }
 
     /// True when the last solve() ran Stage::Exact or Stage::Enumerate and
-    /// hit no label cap. What that proves differs by stage:
+    /// hit no label cap. What that proves differs by stage, and in both only
+    /// over the arcs and buckets not eliminated or fixed (see
+    /// enumeration_complete() for when that is all of them):
     /// - Exact drops dominated labels, so it returns the paths costing below
-    ///   theta whose labels survived dominance, not every such path. A label
-    ///   is dropped only for one costing at most EPS more (types.h) that
-    ///   every extension of it can match, so a dropped path is covered by a
-    ///   kept one within EPS per dominance along it. So a non-empty result
-    ///   holds a path within that tolerance of the cheapest, and an empty
-    ///   one proves that no path costs below theta less that tolerance.
-    /// - Enumerate keeps every label, so its result is every path costing
+    ///   theta whose labels survived dominance (the max_paths cheapest of
+    ///   them when max_paths is set), not every such path. A label is
+    ///   dropped only for one costing at most EPS more (types.h) that every
+    ///   extension of it can match, so a dropped path is covered by a kept
+    ///   one within EPS per dominance along it. So a non-empty result holds
+    ///   a path within that tolerance of the cheapest, and an empty one
+    ///   proves that no path costs below theta less that tolerance.
+    /// - Enumerate has no dominance, so its result is every path costing
     ///   below theta (enumeration_complete()), and an empty one proves there
     ///   is none.
     /// False after a heuristic stage, when an SCC's label cap cut the solve

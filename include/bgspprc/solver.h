@@ -194,14 +194,18 @@ public:
         return bg_.cost_of(arcs);
     }
 
-    /// Whether the last enumeration hit none of its caps, so it returned
-    /// every path costing below theta. See BucketGraph::enumeration_complete().
+    /// False when the last solve() or enumerate() was an enumeration cut by
+    /// one of its caps; true otherwise, which says something only after
+    /// enumerate(): then it returned every path costing below theta, over
+    /// the arcs and buckets not eliminated or fixed. See
+    /// BucketGraph::enumeration_complete().
     [[nodiscard]] bool enumeration_complete() const { return bg_.enumeration_complete(); }
 
     /// Whether the last solve was exact and hit no label cap. Exact pricing
-    /// returns the paths below theta that survive dominance, not all of
-    /// them, so an empty result proves no path costs below theta up to the
-    /// dominance tolerance; only an enumeration lists them all. False after
+    /// returns the paths below theta that survive dominance (at most
+    /// max_paths), not all of them, so an empty result proves no path costs
+    /// below theta up to the dominance tolerance, over the arcs and buckets
+    /// not eliminated or fixed; only an enumeration lists them all. False after
     /// build() or update_arc_costs() until the next solve. See
     /// BucketGraph::exact_complete().
     [[nodiscard]] bool exact_complete() const { return exact_complete_; }
