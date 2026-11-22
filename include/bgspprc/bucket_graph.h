@@ -526,9 +526,10 @@ public:
     /// no dominance: it keeps every label that can still reach a path below
     /// theta, so an uncut one is exhaustive. Its result is every path the
     /// pack's resources admit that costs below theta and uses no arc or
-    /// bucket eliminated or fixed before it; that is every such path when
-    /// they were eliminated and fixed at a gap of at least theta under the
-    /// current arc costs. Stage::Exact furnishes no such list
+    /// bucket eliminated or fixed before it. When they were eliminated and
+    /// fixed at a gap of at least theta under the current arc costs, that
+    /// is every such path up to the dominance tolerance of the solve that
+    /// eliminated or fixed them. Stage::Exact furnishes no such list
     /// (exact_complete()).
     bool enumeration_complete() const { return enum_complete_; }
 
@@ -547,12 +548,14 @@ public:
     /// enumeration_complete() for when that is all of them):
     /// - Exact drops dominated labels, so it returns the paths costing below
     ///   theta whose labels survived dominance (the max_paths cheapest of
-    ///   them when max_paths is set), not every such path. A label is
-    ///   dropped only for one costing at most EPS more (types.h) that every
-    ///   extension of it can match, so a dropped path is covered by a kept
-    ///   one within EPS per dominance along it. So a non-empty result holds
-    ///   a path within that tolerance of the cheapest, and an empty one
-    ///   proves that no path costs below theta less that tolerance.
+    ///   them when max_paths is set), not every such path. Its prunes
+    ///   against theta (completion, bw partner) drop only labels that
+    ///   cannot reach a path below theta. Dominance drops a label only for
+    ///   one whose every extension costs at most EPS (types.h) more than
+    ///   the dropped label's same extension, so a dropped path is covered by
+    ///   a kept one within EPS per dominance along it. So a non-empty result
+    ///   holds a path within that tolerance of the cheapest, and an empty
+    ///   one proves that no path costs below theta less that tolerance.
     /// - Enumerate has no dominance, so its result is every path costing
     ///   below theta (enumeration_complete()), and an empty one proves there
     ///   is none.
