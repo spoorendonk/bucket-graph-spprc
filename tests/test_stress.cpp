@@ -3190,6 +3190,15 @@ TEST_CASE("2D Enumerate after elimination returns each path once (#164)") {
                 std::ranges::sort(v);
                 return v;
             };
+            auto eliminate = [&](BucketGraph<EmptyPack>& bg) {
+                bg.build();
+                bg.update_arc_costs(reduced.data());
+                bg.set_stage(Stage::Exact);
+                bg.solve();
+                REQUIRE(bg.exact_complete());
+                bg.fix_buckets(gap);
+                bg.eliminate_arcs(gap);
+            };
 
             BucketGraph<EmptyPack> fresh(inst.pv, EmptyPack{}, opts);
             fresh.build();
@@ -3198,13 +3207,7 @@ TEST_CASE("2D Enumerate after elimination returns each path once (#164)") {
             CHECK(std::ranges::adjacent_find(all) == all.end());
 
             BucketGraph<EmptyPack> bg(inst.pv, EmptyPack{}, opts);
-            bg.build();
-            bg.update_arc_costs(reduced.data());
-            bg.set_stage(Stage::Exact);
-            bg.solve();
-            REQUIRE(bg.exact_complete());
-            bg.fix_buckets(gap);
-            bg.eliminate_arcs(gap);
+            eliminate(bg);
             for (int bi = 0; bi < bg.n_buckets(); ++bi) {
                 for (const auto* jarcs : {&bg.bucket(bi).jump_arcs, &bg.bucket(bi).bw_jump_arcs}) {
                     std::vector<int> ids;
@@ -3234,6 +3237,63 @@ TEST_CASE("2D Enumerate after elimination returns each path once (#164)") {
             fresh2.build();
             fresh2.update_arc_costs(reduced2.data());
             CHECK(std::ranges::includes(enumerate(fresh2), got2));
+
+            // max_paths counts distinct paths: the cheapest of got2, each once.
+            if (got2.size() < 2) {
+                continue;
+            }
+            const int k = std::max(1, static_cast<int>(got2.size()) / 3);
+            auto capped_opts = opts;
+            capped_opts.max_paths = k;
+            BucketGraph<EmptyPack> capped(inst.pv, EmptyPack{}, capped_opts);
+            eliminate(capped);
+            capped.update_arc_costs(reduced2.data());
+            capped.set_stage(Stage::Enumerate);
+            capped.set_theta(gap);
+            const auto top = capped.solve();
+            std::vector<std::vector<int>> top_arcs;
+            top_arcs.reserve(top.size());
+            for (const auto& p : top) {
+                top_arcs.push_back(p.arcs);
+            }
+            CHECK(std::cmp_less_equal(top.size(), k));
+            CHECK(std::ranges::is_sorted(top, {}, &BucketGraph<EmptyPack>::Path::reduced_cost));
+            std::ranges::sort(top_arcs);
+            CHECK(std::ranges::adjacent_find(top_arcs) == top_arcs.end());
+            CHECK(std::ranges::includes(got2, top_arcs));
+            CHECK(!capped.enumeration_complete());  // got2 holds more than k
+
+            // Exact has no labelling cap, so there max_paths keeps the k
+            // cheapest distinct paths of the uncapped result.
+            bg.set_stage(Stage::Exact);
+            const auto every = bg.solve();
+            std::vector<std::vector<int>> every_arcs;
+            every_arcs.reserve(every.size());
+            for (const auto& p : every) {
+                every_arcs.push_back(p.arcs);
+            }
+            std::ranges::sort(every_arcs);
+            CHECK(std::ranges::adjacent_find(every_arcs) == every_arcs.end());
+            // Repeats are rare in Exact (the two labels meet again at a
+            // window's lower bound and dominate each other). On seed 116 bidir
+            // they leave the k cheapest candidates short of k distinct paths
+            // for k in 34..36, so the prefix select_distinct sorts must grow:
+            // sweep k there, and only a few k elsewhere, to keep this short.
+            const int k_max =
+                std::min<int>((bidir && seed == 116) ? 40 : 3, static_cast<int>(every.size()));
+            for (int kx = 1; kx <= k_max; ++kx) {
+                CAPTURE(kx);
+                auto exact_opts = opts;
+                exact_opts.max_paths = kx;
+                BucketGraph<EmptyPack> exact(inst.pv, EmptyPack{}, exact_opts);
+                eliminate(exact);
+                exact.update_arc_costs(reduced2.data());
+                const auto best = exact.solve();
+                REQUIRE(std::cmp_equal(best.size(), kx));
+                for (int i = 0; i < kx; ++i) {
+                    CHECK(best[i].reduced_cost == doctest::Approx(every[i].reduced_cost));
+                }
+            }
         }
     }
     CHECK(fronts > 0);  // the case under test was reached

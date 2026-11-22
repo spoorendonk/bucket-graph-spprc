@@ -1409,18 +1409,19 @@ private:
 
     // ── Jump arc generation (Section 4.1, ObtainJumpBucketArcs) ──
 
-    /// Generate jump arcs after arc elimination per Sadykov et al. 2021 §4.1.
-    /// Jump arcs are SAME-VERTEX arcs: when a bucket arc for arc a is eliminated
-    /// from bucket b, create a jump arc from b to a higher (fw) / lower (bw)
-    /// same-vertex bucket b' that still has the bucket arc for a.
-    /// During extension, the label's resource is boosted to b'.lb (fw) / b'.ub
-    /// (bw).
+    /// Drop both directions' multi_jump_front_: for buckets with no jump arcs.
     void clear_multi_jump_fronts() {
         for (auto& f : multi_jump_front_) {
             f.store(false, std::memory_order_relaxed);
         }
     }
 
+    /// Generate jump arcs after arc elimination per Sadykov et al. 2021 §4.1.
+    /// Jump arcs are SAME-VERTEX arcs: when a bucket arc for arc a is eliminated
+    /// from bucket b, create a jump arc from b to a higher (fw) / lower (bw)
+    /// same-vertex bucket b' that still has the bucket arc for a.
+    /// During extension, the label's resource is boosted to b'.lb (fw) / b'.ub
+    /// (bw).
     void obtain_jump_arcs(Direction dir) {
         auto& multi_front = multi_jump_front_[dir == Direction::Forward ? 0 : 1];
         multi_front.store(false, std::memory_order_relaxed);
@@ -4632,13 +4633,30 @@ private:
     /// only its q admits, so the result is made distinct instead: every
     /// candidate is realized in cost order and a repeat of an earlier one's
     /// arcs is skipped, keeping the cheapest (repeats cost the same up to the
-    /// rounding of the order they were summed in). max_paths counts distinct
-    /// paths, and Enumerate is cut short only by a distinct one past it.
+    /// rounding of the order they were summed in). max_paths caps the distinct
+    /// paths returned, and a distinct one past it marks Enumerate cut. Its
+    /// labelling stops earlier, at max_paths sink labels (at_label_cap),
+    /// which counts repeats, so a cut enumeration may return fewer.
     template <typename Cmp>
     std::vector<Path> select_distinct(std::vector<PathCandidate>& candidates, Cmp cmp) {
-        if (candidates.size() > 1) {
-            parallel_sort(executor_, candidates.begin(), candidates.end(), cmp);
-        }
+        // With max_paths set, sort only a prefix in cost order, as
+        // select_and_realize does, and widen it when repeats leave it short.
+        const std::size_t n = candidates.size();
+        std::size_t sorted = 0;
+        auto sort_to = [&](std::size_t k) {
+            k = std::min(k, n);
+            if (sorted == 0 && k == n) {
+                if (n > 1) {
+                    parallel_sort(executor_, candidates.begin(), candidates.end(), cmp);
+                }
+            } else {
+                std::partial_sort(candidates.begin() + static_cast<std::ptrdiff_t>(sorted),
+                                  candidates.begin() + static_cast<std::ptrdiff_t>(k),
+                                  candidates.end(), cmp);
+            }
+            sorted = k;
+        };
+        sort_to(opts_.max_paths > 0 ? static_cast<std::size_t>(opts_.max_paths) : n);
         auto hash_of = [](const std::vector<int>& arcs) {
             std::size_t h = arcs.size();
             for (int a : arcs) {
@@ -4648,18 +4666,27 @@ private:
         };
         std::vector<Path> paths;
         std::unordered_multimap<std::size_t, std::size_t> seen;  // hash -> paths index
-        for (const auto& c : candidates) {
-            Path p = realize_path(c);
+        for (std::size_t i = 0; i < n; ++i) {
+            const bool full = opts_.max_paths > 0 && std::cmp_equal(paths.size(), opts_.max_paths);
+            if (full && opts_.stage != Stage::Enumerate) {
+                break;  // only Enumerate asks whether a distinct one is left
+            }
+            if (i == sorted) {
+                if (full) {
+                    sorted = n;  // whether one is left needs no order
+                } else {
+                    sort_to(2 * sorted);
+                }
+            }
+            Path p = realize_path(candidates[i]);
             const std::size_t h = hash_of(p.arcs);
             auto [lo, hi] = seen.equal_range(h);
             if (std::any_of(lo, hi,
                             [&](const auto& e) { return paths[e.second].arcs == p.arcs; })) {
                 continue;
             }
-            if (opts_.max_paths > 0 && std::cmp_equal(paths.size(), opts_.max_paths)) {
-                if (opts_.stage == Stage::Enumerate) {
-                    enum_complete_ = false;
-                }
+            if (full) {
+                enum_complete_ = false;
                 break;
             }
             seen.emplace(h, paths.size());
